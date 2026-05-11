@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./data/db:/app/data/db
+      - ./data/media:/app/data/media
+    environment:
+      - DATABASE_URL=sqlite:////app/data/db/notes.db
+      - MEDIA_DIR=/app/data/media
+      - APP_SECRET_TOKEN=${APP_SECRET_TOKEN:-}
+    expose:
+      - "8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8000
