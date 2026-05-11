@@ -3,6 +3,30 @@ import { notesApi, type Note, type NoteListItem, type ListNotesParams } from '@/
 
 const LIMIT = 50
 
+function extractContentPreview(content: string, maxChars = 120): string {
+  try {
+    const blocks = JSON.parse(content) as Array<Record<string, unknown>>
+    const texts: string[] = []
+    const visitBlock = (block: Record<string, unknown>) => {
+      const blockContent = block.content
+      if (Array.isArray(blockContent)) {
+        for (const item of blockContent) {
+          if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
+            texts.push(String((item as Record<string, unknown>).text ?? ''))
+          }
+        }
+      }
+      if (Array.isArray(block.children)) {
+        for (const child of block.children) visitBlock(child as Record<string, unknown>)
+      }
+    }
+    for (const block of blocks) visitBlock(block)
+    return texts.join(' ').trim().slice(0, maxChars)
+  } catch {
+    return content.slice(0, maxChars)
+  }
+}
+
 interface NotesState {
   notes: NoteListItem[]
   currentNote: Note | null
@@ -58,7 +82,22 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
   async createNote(payload) {
     const response = await notesApi.create(payload)
-    set({ currentNote: response.data })
+    set((s) => ({
+      currentNote: response.data,
+      notes: [
+        {
+          id: response.data.id,
+          title: response.data.title,
+          content_preview: extractContentPreview(response.data.content),
+          category_id: response.data.category_id,
+          tags: response.data.tags,
+          created_at: response.data.created_at,
+          modified_at: response.data.modified_at,
+        },
+        ...s.notes.filter((note) => note.id !== response.data.id),
+      ],
+      total: s.total + (s.notes.some((note) => note.id === response.data.id) ? 0 : 1),
+    }))
     return response.data
   },
 

@@ -19,8 +19,19 @@ import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
 import type { Note } from '@/api/notes'
 
+const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
+
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+function parseNoteContent(content: string): PartialBlock[] {
+  try {
+    const blocks = JSON.parse(content) as PartialBlock[]
+    return blocks.length > 0 ? blocks : EMPTY_DOCUMENT
+  } catch {
+    return EMPTY_DOCUMENT
+  }
 }
 
 export default function EditorView() {
@@ -44,28 +55,53 @@ export default function EditorView() {
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingTags, setGeneratingTags] = useState(false)
-  const [initialContent, setInitialContent] = useState<PartialBlock[] | undefined>(undefined)
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
-
+  const hasPendingChanges = useRef(false)
+  const isSaving = useRef(false)
+  const isHydratingEditor = useRef(false)
+  const syncedEditorKey = useRef<string | null>(null)
   const defaultCategoryId = categoriesStore.categories[0]?.id ?? ''
+  const latestTitle = useRef(title)
+  const latestCategoryId = useRef(categoryId)
+  const latestTags = useRef(tags)
+  const latestDefaultCategoryId = useRef(defaultCategoryId)
+  const latestIsNew = useRef(isNew)
+  const latestNoteId = useRef(noteId)
+  const saveDraftRef = useRef<((force?: boolean) => Promise<Note | null | undefined>) | undefined>(undefined)
 
   const editor = useCreateBlockNote({
-    initialContent,
     uploadFile: async (file: File) => {
       const response = await mediaApi.upload(file)
       return response.data.url
     },
   })
 
+  useEffect(() => { latestTitle.current = title }, [title])
+  useEffect(() => { latestCategoryId.current = categoryId }, [categoryId])
+  useEffect(() => { latestTags.current = tags }, [tags])
+  useEffect(() => { latestDefaultCategoryId.current = defaultCategoryId }, [defaultCategoryId])
+  useEffect(() => { latestIsNew.current = isNew }, [isNew])
+  useEffect(() => { latestNoteId.current = noteId }, [noteId])
+
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
   // Load note data on mount
   useEffect(() => {
     async function init() {
+      setLoaded(false)
+      setNote(null)
+      setTitle('')
+      setCategoryId('')
+      setTags([])
+      createdNoteId.current = null
+      currentNoteContent.current = ''
+      syncedEditorKey.current = null
+      hasPendingChanges.current = false
+
       await categoriesStore.loadCategories()
 
       if (isNew) {
@@ -78,9 +114,7 @@ export default function EditorView() {
         setTitle(data.title)
         setCategoryId(data.category_id)
         setTags([...data.tags])
-        let blocks: PartialBlock[] = []
-        try { blocks = JSON.parse(data.content) } catch { /* empty doc */ }
-        setInitialContent(blocks.length > 0 ? blocks : undefined)
+        currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         setLoaded(true)
       }
     }
@@ -96,45 +130,79 @@ export default function EditorView() {
   }, [defaultCategoryId])
 
   const scheduleAutosave = useCallback(() => {
+    if (isHydratingEditor.current) return
+    hasPendingChanges.current = true
+    currentNoteContent.current = extractPlainText()
     setSaveStatus('Unsaved changes')
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
-    autosaveTimer.current = setTimeout(() => doSave(), 800)
+    autosaveTimer.current = setTimeout(() => {
+      void saveDraftRef.current?.()
+    }, 800)
   }, [])
 
-  async function doSave() {
-    if (!editor) return
+  async function doSave(force = false) {
+    if (!editor || isSaving.current) return note
+    if (!force && !hasPendingChanges.current) return note
+
     setSaveStatus('Saving...')
+    isSaving.current = true
     const content = JSON.stringify(editor.document)
     currentNoteContent.current = extractPlainText()
     const payload = {
-      title: title || 'Untitled',
+      title: latestTitle.current || 'Untitled',
       content,
-      category_id: categoryId || defaultCategoryId,
-      tags,
+      category_id: latestCategoryId.current || latestDefaultCategoryId.current,
+      tags: latestTags.current,
     }
     try {
-      if (isNew && !createdNoteId.current) {
+      if (latestIsNew.current && !createdNoteId.current) {
         const created = await notesStore.createNote(payload)
         createdNoteId.current = created.id
         setNote(created)
         navigate(`/notes/${created.id}`, { replace: true })
       } else {
-        const resolvedId = createdNoteId.current || noteId!
+        const resolvedId = createdNoteId.current || latestNoteId.current!
         const updated = await notesStore.updateNote(resolvedId, payload)
         setNote(updated)
       }
+      hasPendingChanges.current = false
       setSaveStatus('All changes saved')
     } catch {
       setSaveStatus('Error saving')
+      hasPendingChanges.current = true
+    } finally {
+      isSaving.current = false
     }
   }
+
+  useEffect(() => {
+    saveDraftRef.current = doSave
+  })
 
   // Trigger autosave when title/category/tags change
   useEffect(() => { if (loaded) scheduleAutosave() }, [title, categoryId])
   useEffect(() => { if (loaded) scheduleAutosave() }, [tags])
 
-  function extractPlainText(): string {
-    if (!editor) return ''
+  useEffect(() => {
+    if (!editor || !loaded) return
+
+    const editorKey = noteId ?? 'new'
+    if (syncedEditorKey.current === editorKey) return
+
+    const blocks = isNew ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
+    isHydratingEditor.current = true
+    editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
+    currentNoteContent.current = extractPlainText(blocks as unknown[])
+    syncedEditorKey.current = editorKey
+    hasPendingChanges.current = false
+    setSaveStatus('All changes saved')
+    setTimeout(() => {
+      isHydratingEditor.current = false
+    }, 0)
+  }, [editor, loaded, isNew, noteId, note])
+
+  function extractPlainText(blocks: unknown[] | undefined = editor?.document): string {
+    if (!blocks) return ''
     try {
       const texts: string[] = []
       function processBlock(block: Record<string, unknown>) {
@@ -150,7 +218,7 @@ export default function EditorView() {
           for (const child of block.children) processBlock(child as Record<string, unknown>)
         }
       }
-      for (const block of editor.document) { processBlock(block as unknown as Record<string, unknown>); texts.push('\n') }
+      for (const block of blocks) { processBlock(block as unknown as Record<string, unknown>); texts.push('\n') }
       return texts.join('').trim()
     } catch { return '' }
   }
@@ -188,7 +256,17 @@ export default function EditorView() {
     el.style.height = `${el.scrollHeight}px`
   }
 
-  function goBack() {
+  async function goBack() {
+    if (autosaveTimer.current) {
+      clearTimeout(autosaveTimer.current)
+      autosaveTimer.current = null
+    }
+
+    const hasDraftContent = Boolean(title.trim() || extractPlainText() || tags.length)
+    if ((hasPendingChanges.current || (isNew && !createdNoteId.current && hasDraftContent)) && categoryId) {
+      await doSave(true)
+    }
+
     if (window.history.length > 1) navigate(-1)
     else navigate('/notes')
   }
