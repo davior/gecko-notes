@@ -1,5 +1,8 @@
 import type { Note } from '@/api/notes'
 
+type DocxParagraph = InstanceType<(typeof import('docx'))['Paragraph']>
+type DocxTextRun = InstanceType<(typeof import('docx'))['TextRun']>
+
 // ─── Helper: extract plain text from BlockNote JSON ───────────────────────────
 
 function extractPlainText(contentStr: string): string {
@@ -114,7 +117,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 export async function exportToWord(note: Note): Promise<void> {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import('docx')
 
-  const paragraphs: Paragraph[] = [
+  const paragraphs: DocxParagraph[] = [
     new Paragraph({
       text: note.title,
       heading: HeadingLevel.TITLE,
@@ -128,10 +131,10 @@ export async function exportToWord(note: Note): Promise<void> {
     blocks = []
   }
 
-  function blockToParagraph(block: Record<string, unknown>): Paragraph {
+  function blockToParagraph(block: Record<string, unknown>): DocxParagraph {
     const blockType = block.type as string
     const content = block.content as Array<{ type: string; text: string; styles?: Record<string, boolean> }> | undefined
-    const runs: TextRun[] = []
+    const runs: DocxTextRun[] = []
 
     if (Array.isArray(content)) {
       for (const item of content) {
@@ -149,12 +152,11 @@ export async function exportToWord(note: Note): Promise<void> {
 
     if (blockType === 'heading') {
       const level = (block.props as Record<string, unknown>)?.level as number
-      const headingMap: Record<number, HeadingLevel> = {
-        1: HeadingLevel.HEADING_1,
-        2: HeadingLevel.HEADING_2,
-        3: HeadingLevel.HEADING_3,
-      }
-      return new Paragraph({ children: runs, heading: headingMap[level] ?? HeadingLevel.HEADING_1 })
+      const heading =
+        level === 2 ? HeadingLevel.HEADING_2 :
+        level === 3 ? HeadingLevel.HEADING_3 :
+        HeadingLevel.HEADING_1
+      return new Paragraph({ children: runs, heading })
     }
 
     return new Paragraph({ children: runs })
