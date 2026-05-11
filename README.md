@@ -1,2 +1,149 @@
-# gecko-notes
-A simple application for taking notes.
+# Gecko Notes
+
+A full-featured, self-hosted notes application with a block editor, AI assistance, categories, tags, and rich export/share options.
+
+## Features
+
+- Block-based editor powered by BlockNote (headings, lists, code, images, tables, and more)
+- Categories with custom emoji and color
+- Tags with AI-powered tag generation
+- AI writing assistant (Anthropic, OpenAI, Ollama, or any OpenAI-compatible endpoint)
+- Export to PDF, Word (.docx), Markdown, HTML, or clipboard
+- Share via Email, Facebook, X (Twitter), or Substack
+- Full-text search and category filters
+- Infinite scroll note list
+- Print-friendly output
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Vue 3 + Vite + TypeScript + Pinia + Tailwind CSS v3 |
+| Editor | BlockNote (`@blocknote/vue`) |
+| Backend | FastAPI + SQLModel (SQLite) |
+| Container | Docker Compose + Nginx |
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url> gecko-notes
+cd gecko-notes
+cp .env.example .env
+# Edit .env if needed
+```
+
+### 2. Start the app
+
+```bash
+docker compose up -d
+```
+
+The app will be available at **http://localhost:8080** (or the port you set in `.env`).
+
+### 3. Access on your LAN
+
+If your machine's IP is `192.168.1.100`, the app is available at `http://192.168.1.100:8080` from any device on the same network.
+
+## Configuration
+
+Edit `.env` before starting:
+
+```env
+APP_PORT=8080            # Port to expose on your host machine
+APP_SECRET_TOKEN=        # Optional: set a bearer token to protect the API
+```
+
+If `APP_SECRET_TOKEN` is set, all API requests must include:
+```
+Authorization: Bearer <your-token>
+```
+
+## AI Providers
+
+Go to **Settings → AI Providers** to configure an AI provider:
+
+| Provider | Notes |
+|----------|-------|
+| Anthropic | Requires an API key from console.anthropic.com |
+| OpenAI | Requires an API key from platform.openai.com |
+| Ollama | Point to your local Ollama instance (e.g. `http://localhost:11434`) |
+| Custom | Any OpenAI-compatible endpoint |
+
+API keys are stored in the local SQLite database — never transmitted to any third party except the AI provider you configure.
+
+## Backup
+
+Two items to back up regularly:
+
+| Item | Path |
+|------|------|
+| SQLite database | `./data/db/notes.db` |
+| Uploaded media files | `./data/media/` |
+
+Example backup command:
+```bash
+tar -czf gecko-notes-backup-$(date +%Y%m%d).tar.gz data/
+```
+
+## Development
+
+### Backend (FastAPI)
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+### Frontend (Vue 3 + Vite)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server proxies `/api` and `/media` to `http://localhost:8000`.
+
+## Project Structure
+
+```
+gecko-notes/
+├── docker-compose.yml
+├── .env.example
+├── frontend/           # Vue 3 SPA
+│   ├── src/
+│   │   ├── views/      # ListView, EditorView, SettingsView
+│   │   ├── components/ # NoteCard, CategoryPicker, AIPanel, ExportMenu, etc.
+│   │   ├── stores/     # Pinia stores (notes, categories, settings)
+│   │   ├── api/        # Axios API client modules
+│   │   ├── services/   # AI provider abstraction layer
+│   │   └── utils/      # Export and share utilities
+│   └── Dockerfile
+└── backend/            # FastAPI + SQLModel
+    ├── app/
+    │   ├── main.py
+    │   ├── models.py
+    │   ├── schemas.py
+    │   ├── database.py
+    │   ├── seed.py
+    │   └── routers/    # notes, categories, media, settings
+    └── Dockerfile
+```
+
+## Stopping and Updating
+
+```bash
+# Stop
+docker compose down
+
+# Update (after pulling new code)
+docker compose build --no-cache
+docker compose up -d
+```

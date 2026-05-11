@@ -11,6 +11,12 @@ services:
       - APP_SECRET_TOKEN=${APP_SECRET_TOKEN:-}
     expose:
       - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   frontend:
     build: ./frontend
@@ -19,5 +25,3 @@ services:
       - "${APP_PORT:-8080}:80"
     depends_on:
       - backend
-    environment:
-      - BACKEND_URL=http://backend:8000
