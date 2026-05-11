@@ -102,7 +102,7 @@
     </div>
 
     <!-- Editor area -->
-    <div class="flex-1 overflow-auto px-4 pb-4 print-content" ref="editorContainerRef">
+    <div class="flex-1 min-h-0 overflow-auto px-4 pb-4 print-content" ref="editorContainerRef">
       <div v-if="!loaded" class="flex items-center justify-center h-full">
         <svg class="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -139,6 +139,35 @@
       {{ toastMessage }}
     </div>
 
+    <!-- Slash menu -->
+    <Teleport to="body">
+      <div
+        v-if="slashMenuVisible && slashMenuItems.length > 0"
+        class="fixed z-50 w-72 max-h-80 overflow-y-auto bg-white rounded-xl border border-gray-200 shadow-lg p-1"
+        :style="{ top: slashMenuPos.top + 'px', left: slashMenuPos.left + 'px' }"
+      >
+        <template v-for="(item, index) in slashMenuItems" :key="item.key">
+          <div
+            v-if="index === 0 || item.group !== slashMenuItems[index - 1].group"
+            class="px-3 pt-2 pb-0.5 text-xs font-semibold text-gray-400 uppercase tracking-wide"
+          >
+            {{ item.group }}
+          </div>
+          <button
+            class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors text-left"
+            :class="index === slashMenuSelectedIndex ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50 text-gray-900'"
+            @mousedown.prevent="selectSlashMenuItem(item)"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="font-medium leading-tight">{{ item.title }}</div>
+              <div class="text-xs text-gray-400 truncate leading-tight">{{ item.subtext }}</div>
+            </div>
+            <span v-if="item.badge" class="text-xs text-gray-400 font-mono shrink-0">{{ item.badge }}</span>
+          </button>
+        </template>
+      </div>
+    </Teleport>
+
     <!-- Delete confirmation modal -->
     <div
       v-if="showDeleteConfirm"
@@ -163,6 +192,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ArrowLeft, Sparkles, Printer, Trash2 } from 'lucide-vue-next'
 import {
   BlockNoteEditor,
+  getDefaultSlashMenuItems,
   type PartialBlock,
 } from '@blocknote/core'
 import '@blocknote/core/fonts/inter.css'
@@ -216,6 +246,14 @@ let editor: BlockNoteEditor | null = null
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 let createdNoteId: string | null = null
 
+// ─── Slash menu ───────────────────────────────────────────────────────────────
+
+type SlashMenuItem = ReturnType<typeof getDefaultSlashMenuItems>[number]
+const slashMenuVisible = ref(false)
+const slashMenuPos = ref({ top: 0, left: 0 })
+const slashMenuItems = ref<SlashMenuItem[]>([])
+const slashMenuSelectedIndex = ref(0)
+
 const defaultCategoryId = computed(() => categoriesStore.categories[0]?.id ?? '')
 const currentNoteContent = ref('')
 
@@ -252,6 +290,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
+  document.removeEventListener('keydown', handleSlashMenuKeydown, true)
   editor?.mount(null)
 })
 
@@ -273,7 +312,72 @@ function initEditor(initialContent: PartialBlock[]) {
 
   editor.mount(editorRef.value)
   editorRef.value.style.minHeight = '400px'
+  setupSlashMenu()
 }
+
+function setupSlashMenu() {
+  if (!editor) return
+  const allItems = getDefaultSlashMenuItems(editor)
+
+  editor.suggestionMenus.onUpdate('/', (state) => {
+    if (state.show) {
+      const q = (state.query ?? '').toLowerCase()
+      slashMenuItems.value = q
+        ? allItems.filter(
+            (item) =>
+              item.title.toLowerCase().includes(q) ||
+              (item.subtext ?? '').toLowerCase().includes(q) ||
+              (item.aliases ?? []).some((a: string) => a.toLowerCase().includes(q)),
+          )
+        : allItems
+      slashMenuSelectedIndex.value = 0
+      slashMenuVisible.value = slashMenuItems.value.length > 0
+      const rect = state.referencePos as DOMRect
+      slashMenuPos.value = { top: rect.bottom + 4, left: rect.left }
+    } else {
+      slashMenuVisible.value = false
+    }
+  })
+}
+
+function selectSlashMenuItem(item: SlashMenuItem) {
+  editor?.suggestionMenus.clearQuery()
+  item.onItemClick()
+  slashMenuVisible.value = false
+}
+
+function handleSlashMenuKeydown(e: KeyboardEvent) {
+  if (!slashMenuVisible.value) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    e.stopPropagation()
+    slashMenuSelectedIndex.value = Math.min(
+      slashMenuSelectedIndex.value + 1,
+      slashMenuItems.value.length - 1,
+    )
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    e.stopPropagation()
+    slashMenuSelectedIndex.value = Math.max(slashMenuSelectedIndex.value - 1, 0)
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    e.stopPropagation()
+    const item = slashMenuItems.value[slashMenuSelectedIndex.value]
+    if (item) selectSlashMenuItem(item)
+  } else if (e.key === 'Escape') {
+    e.stopPropagation()
+    slashMenuVisible.value = false
+    editor?.suggestionMenus.closeMenu()
+  }
+}
+
+watch(slashMenuVisible, (visible) => {
+  if (visible) {
+    document.addEventListener('keydown', handleSlashMenuKeydown, true)
+  } else {
+    document.removeEventListener('keydown', handleSlashMenuKeydown, true)
+  }
+})
 
 // ─── Autosave ─────────────────────────────────────────────────────────────────
 
