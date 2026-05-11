@@ -1,61 +1,50 @@
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { create } from 'zustand'
 import { categoriesApi, type Category, type CategoryCreate, type CategoryUpdate } from '@/api/categories'
 
-export const useCategoriesStore = defineStore('categories', () => {
-  const categories = ref<Category[]>([])
-  const loading = ref(false)
+interface CategoriesState {
+  categories: Category[]
+  loading: boolean
+  loadCategories: () => Promise<void>
+  createCategory: (payload: CategoryCreate) => Promise<Category>
+  updateCategory: (id: string, payload: CategoryUpdate) => Promise<Category>
+  deleteCategory: (id: string) => Promise<void>
+  getCategoryById: (id: string) => Category | undefined
+}
 
-  const categoriesMap = computed(() => {
-    const map: Record<string, Category> = {}
-    for (const cat of categories.value) {
-      map[cat.id] = cat
-    }
-    return map
-  })
+export const useCategoriesStore = create<CategoriesState>((set, get) => ({
+  categories: [],
+  loading: false,
 
-  async function loadCategories() {
-    loading.value = true
+  async loadCategories() {
+    set({ loading: true })
     try {
       const response = await categoriesApi.list()
-      categories.value = response.data
+      set({ categories: response.data })
     } finally {
-      loading.value = false
+      set({ loading: false })
     }
-  }
+  },
 
-  async function createCategory(payload: CategoryCreate) {
+  async createCategory(payload) {
     const response = await categoriesApi.create(payload)
-    categories.value.push(response.data)
+    set((s) => ({ categories: [...s.categories, response.data] }))
     return response.data
-  }
+  },
 
-  async function updateCategory(id: string, payload: CategoryUpdate) {
+  async updateCategory(id, payload) {
     const response = await categoriesApi.update(id, payload)
-    const idx = categories.value.findIndex((c) => c.id === id)
-    if (idx !== -1) {
-      categories.value[idx] = response.data
-    }
+    set((s) => ({
+      categories: s.categories.map((c) => (c.id === id ? response.data : c)),
+    }))
     return response.data
-  }
+  },
 
-  async function deleteCategory(id: string) {
+  async deleteCategory(id) {
     await categoriesApi.delete(id)
-    categories.value = categories.value.filter((c) => c.id !== id)
-  }
+    set((s) => ({ categories: s.categories.filter((c) => c.id !== id) }))
+  },
 
-  function getCategoryById(id: string): Category | undefined {
-    return categoriesMap.value[id]
-  }
-
-  return {
-    categories,
-    loading,
-    categoriesMap,
-    loadCategories,
-    createCategory,
-    updateCategory,
-    deleteCategory,
-    getCategoryById,
-  }
-})
+  getCategoryById(id) {
+    return get().categories.find((c) => c.id === id)
+  },
+}))

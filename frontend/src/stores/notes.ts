@@ -1,95 +1,89 @@
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { create } from 'zustand'
 import { notesApi, type Note, type NoteListItem, type ListNotesParams } from '@/api/notes'
 
-export const useNotesStore = defineStore('notes', () => {
-  const notes = ref<NoteListItem[]>([])
-  const currentNote = ref<Note | null>(null)
-  const total = ref(0)
-  const loading = ref(false)
-  const hasMore = ref(true)
+const LIMIT = 50
 
-  const LIMIT = 50
+interface NotesState {
+  notes: NoteListItem[]
+  currentNote: Note | null
+  total: number
+  loading: boolean
+  hasMore: boolean
+  loadNotes: (params?: ListNotesParams, reset?: boolean) => Promise<void>
+  loadMore: (params?: ListNotesParams) => Promise<void>
+  loadNote: (id: string) => Promise<Note>
+  createNote: (payload: { title: string; content?: string; category_id: string; tags?: string[] }) => Promise<Note>
+  updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; tags?: string[] }) => Promise<Note>
+  deleteNote: (id: string) => Promise<void>
+  clearCurrentNote: () => void
+}
 
-  async function loadNotes(params: ListNotesParams = {}, reset = true) {
-    if (loading.value) return
-    loading.value = true
+export const useNotesStore = create<NotesState>((set, get) => ({
+  notes: [],
+  currentNote: null,
+  total: 0,
+  loading: false,
+  hasMore: true,
+
+  async loadNotes(params = {}, reset = true) {
+    if (get().loading) return
+    set({ loading: true })
     try {
       const response = await notesApi.list({
         limit: LIMIT,
-        offset: reset ? 0 : notes.value.length,
+        offset: reset ? 0 : get().notes.length,
         ...params,
       })
-      if (reset) {
-        notes.value = response.data
-      } else {
-        notes.value.push(...response.data)
-      }
-      total.value = response.total
-      hasMore.value = notes.value.length < response.total
+      set((s) => ({
+        notes: reset ? response.data : [...s.notes, ...response.data],
+        total: response.total,
+        hasMore: (reset ? response.data.length : s.notes.length + response.data.length) < response.total,
+      }))
     } finally {
-      loading.value = false
+      set({ loading: false })
     }
-  }
+  },
 
-  async function loadMore(params: ListNotesParams = {}) {
-    if (!hasMore.value || loading.value) return
-    await loadNotes(params, false)
-  }
+  async loadMore(params = {}) {
+    const { hasMore, loading } = get()
+    if (!hasMore || loading) return
+    await get().loadNotes(params, false)
+  },
 
-  async function loadNote(id: string) {
+  async loadNote(id) {
     const response = await notesApi.get(id)
-    currentNote.value = response.data
+    set({ currentNote: response.data })
     return response.data
-  }
+  },
 
-  async function createNote(payload: { title: string; content?: string; category_id: string; tags?: string[] }) {
+  async createNote(payload) {
     const response = await notesApi.create(payload)
-    currentNote.value = response.data
+    set({ currentNote: response.data })
     return response.data
-  }
+  },
 
-  async function updateNote(id: string, payload: { title?: string; content?: string; category_id?: string; tags?: string[] }) {
+  async updateNote(id, payload) {
     const response = await notesApi.update(id, payload)
-    currentNote.value = response.data
-    // Update in list if present
-    const idx = notes.value.findIndex((n) => n.id === id)
-    if (idx !== -1) {
-      notes.value[idx] = {
-        ...notes.value[idx],
-        title: response.data.title,
-        category_id: response.data.category_id,
-        tags: response.data.tags,
-        modified_at: response.data.modified_at,
-      }
-    }
+    set((s) => ({
+      currentNote: response.data,
+      notes: s.notes.map((n) =>
+        n.id === id
+          ? { ...n, title: response.data.title, category_id: response.data.category_id, tags: response.data.tags, modified_at: response.data.modified_at }
+          : n,
+      ),
+    }))
     return response.data
-  }
+  },
 
-  async function deleteNote(id: string) {
+  async deleteNote(id) {
     await notesApi.delete(id)
-    notes.value = notes.value.filter((n) => n.id !== id)
-    if (currentNote.value?.id === id) {
-      currentNote.value = null
-    }
-  }
+    set((s) => ({
+      notes: s.notes.filter((n) => n.id !== id),
+      currentNote: s.currentNote?.id === id ? null : s.currentNote,
+    }))
+  },
 
-  function clearCurrentNote() {
-    currentNote.value = null
-  }
-
-  return {
-    notes,
-    currentNote,
-    total,
-    loading,
-    hasMore,
-    loadNotes,
-    loadMore,
-    loadNote,
-    createNote,
-    updateNote,
-    deleteNote,
-    clearCurrentNote,
-  }
-})
+  clearCurrentNote() {
+    set({ currentNote: null })
+  },
+}))
