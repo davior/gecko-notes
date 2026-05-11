@@ -9,7 +9,7 @@ from app.database import get_session
 from app.models import AIProvider, AppSetting
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
-    DataResponse, ListResponse, SettingsUpdate
+    AICompleteRequest, DataResponse, ListResponse, SettingsUpdate
 )
 
 router = APIRouter()
@@ -139,6 +139,85 @@ def activate_ai_provider(provider_id: str, session: Session = Depends(get_sessio
     session.commit()
     session.refresh(provider)
     return DataResponse(data=AIProviderRead.model_validate(provider))
+
+
+@router.post("/ai-complete", response_model=Dict[str, Any])
+async def ai_complete(payload: AICompleteRequest, session: Session = Depends(get_session)):
+    """Proxy AI completion requests server-side to avoid CORS issues in the browser."""
+    provider = session.exec(select(AIProvider).where(AIProvider.is_active == True)).first()
+    if not provider:
+        raise HTTPException(status_code=503, detail={"code": "no_provider", "message": "No active AI provider configured"})
+    if not provider.enabled:
+        raise HTTPException(status_code=503, detail={"code": "provider_disabled", "message": "Active AI provider is disabled"})
+
+    try:
+        if provider.provider_type == "anthropic":
+            body: Dict[str, Any] = {
+                "model": provider.model,
+                "max_tokens": 2048,
+                "messages": [{"role": "user", "content": payload.prompt}],
+            }
+            if payload.system_prompt:
+                body["system"] = payload.system_prompt
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": provider.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json=body,
+                )
+            if not response.is_success:
+                raise HTTPException(status_code=502, detail={"code": "upstream_error", "message": f"Anthropic API error: {response.status_code}"})
+            data = response.json()
+            return {"text": data.get("content", [{}])[0].get("text", "")}
+
+        elif provider.provider_type in ("openai", "custom"):
+            base = (provider.base_url or "https://api.openai.com").rstrip("/")
+            messages: list = []
+            if payload.system_prompt:
+                messages.append({"role": "system", "content": payload.system_prompt})
+            messages.append({"role": "user", "content": payload.prompt})
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{base}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {provider.api_key}",
+                        "content-type": "application/json",
+                    },
+                    json={"model": provider.model, "max_tokens": 2048, "messages": messages},
+                )
+            if not response.is_success:
+                raise HTTPException(status_code=502, detail={"code": "upstream_error", "message": f"OpenAI API error: {response.status_code}"})
+            data = response.json()
+            return {"text": data.get("choices", [{}])[0].get("message", {}).get("content", "")}
+
+        elif provider.provider_type == "ollama":
+            base = (provider.base_url or "http://localhost:11434").rstrip("/")
+            messages = []
+            if payload.system_prompt:
+                messages.append({"role": "system", "content": payload.system_prompt})
+            messages.append({"role": "user", "content": payload.prompt})
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{base}/api/chat",
+                    headers={"content-type": "application/json"},
+                    json={"model": provider.model, "messages": messages, "stream": False},
+                )
+            if not response.is_success:
+                raise HTTPException(status_code=502, detail={"code": "upstream_error", "message": f"Ollama error: {response.status_code}"})
+            data = response.json()
+            return {"text": data.get("message", {}).get("content", "")}
+
+        else:
+            raise HTTPException(status_code=400, detail={"code": "unknown_provider", "message": f"Unknown provider type: {provider.provider_type}"})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "upstream_error", "message": str(e)})
 
 
 @router.post("/ai-providers/test", response_model=Dict[str, Any])

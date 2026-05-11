@@ -5,7 +5,7 @@ import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
-import type { PartialBlock } from '@blocknote/core'
+import type { BlockNoteEditor, PartialBlock } from '@blocknote/core'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -21,6 +21,32 @@ import type { Note } from '@/api/notes'
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+// Separate component so useCreateBlockNote is only called after initialContent is known.
+// This prevents the editor from being created with empty content on the first render.
+function EditorCanvas({
+  initialContent,
+  onChange,
+  onReady,
+}: {
+  initialContent: PartialBlock[] | undefined
+  onChange: () => void
+  onReady: (editor: BlockNoteEditor) => void
+}) {
+  const editor = useCreateBlockNote({
+    initialContent,
+    uploadFile: async (file: File) => {
+      const response = await mediaApi.upload(file)
+      return response.data.url
+    },
+  })
+
+  useEffect(() => {
+    onReady(editor)
+  }, [editor])
+
+  return <BlockNoteView editor={editor} onChange={onChange} theme="light" />
 }
 
 export default function EditorView() {
@@ -50,28 +76,38 @@ export default function EditorView() {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
+  // Holds the editor instance provided by EditorCanvas once it mounts
+  const editorRef = useRef<BlockNoteEditor | null>(null)
+  // True during initialization to prevent autosave from firing on state changes caused by loading
+  const skipAutosaveRef = useRef(true)
+  // Always points to the latest doSave to avoid stale closures in the scheduleAutosave timer
+  const doSaveRef = useRef<() => void>(() => {})
 
   const defaultCategoryId = categoriesStore.categories[0]?.id ?? ''
 
-  const editor = useCreateBlockNote({
-    initialContent,
-    uploadFile: async (file: File) => {
-      const response = await mediaApi.upload(file)
-      return response.data.url
-    },
-  })
-
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
-  // Load note data on mount
+  // Load note data on mount (or when noteId changes)
   useEffect(() => {
+    skipAutosaveRef.current = true
+    createdNoteId.current = null
+    setLoaded(false)
+    setNote(null)
+    setTitle('')
+    setCategoryId('')
+    setTags([])
+    setInitialContent(undefined)
+
     async function init() {
       await categoriesStore.loadCategories()
 
       if (isNew) {
         setCategoryId(defaultCategoryId)
         setLoaded(true)
-        setTimeout(() => titleRef.current?.focus(), 0)
+        setTimeout(() => {
+          titleRef.current?.focus()
+          skipAutosaveRef.current = false
+        }, 0)
       } else if (noteId) {
         const data = await notesStore.loadNote(noteId)
         setNote(data)
@@ -82,26 +118,22 @@ export default function EditorView() {
         try { blocks = JSON.parse(data.content) } catch { /* empty doc */ }
         setInitialContent(blocks.length > 0 ? blocks : undefined)
         setLoaded(true)
+        setTimeout(() => { skipAutosaveRef.current = false }, 0)
       }
     }
     init()
     return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }
   }, [noteId])
 
-  // Sync categoryId once categories load (for new notes)
+  // Sync categoryId once categories load (for new notes whose categories weren't ready yet)
   useEffect(() => {
     if (isNew && !categoryId && defaultCategoryId) {
       setCategoryId(defaultCategoryId)
     }
   }, [defaultCategoryId])
 
-  const scheduleAutosave = useCallback(() => {
-    setSaveStatus('Unsaved changes')
-    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
-    autosaveTimer.current = setTimeout(() => doSave(), 800)
-  }, [])
-
   async function doSave() {
+    const editor = editorRef.current
     if (!editor) return
     setSaveStatus('Saving...')
     const content = JSON.stringify(editor.document)
@@ -129,11 +161,21 @@ export default function EditorView() {
     }
   }
 
-  // Trigger autosave when title/category/tags change
-  useEffect(() => { if (loaded) scheduleAutosave() }, [title, categoryId])
-  useEffect(() => { if (loaded) scheduleAutosave() }, [tags])
+  // Keep doSaveRef current so the timer always calls the latest version
+  doSaveRef.current = doSave
+
+  const scheduleAutosave = useCallback(() => {
+    setSaveStatus('Unsaved changes')
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => doSaveRef.current(), 800)
+  }, [])
+
+  // Trigger autosave when title/category/tags change, but not during initial load
+  useEffect(() => { if (loaded && !skipAutosaveRef.current) scheduleAutosave() }, [title, categoryId])
+  useEffect(() => { if (loaded && !skipAutosaveRef.current) scheduleAutosave() }, [tags])
 
   function extractPlainText(): string {
+    const editor = editorRef.current
     if (!editor) return ''
     try {
       const texts: string[] = []
@@ -215,6 +257,7 @@ export default function EditorView() {
   }
 
   function insertAIText(text: string) {
+    const editor = editorRef.current
     if (!editor) return
     editor.insertBlocks(
       [{ type: 'paragraph', content: text }],
@@ -225,6 +268,7 @@ export default function EditorView() {
   }
 
   function replaceAIText(text: string) {
+    const editor = editorRef.current
     if (!editor) return
     editor.updateBlock(editor.getTextCursorPosition().block, { content: text })
     setShowAIPanel(false)
@@ -334,10 +378,10 @@ export default function EditorView() {
             </svg>
           </div>
         ) : (
-          <BlockNoteView
-            editor={editor}
+          <EditorCanvas
+            initialContent={initialContent}
             onChange={scheduleAutosave}
-            theme="light"
+            onReady={(ed) => { editorRef.current = ed }}
           />
         )}
       </div>

@@ -136,6 +136,12 @@ class AIProviderTest(BaseModel):
     model: str
 
 
+# AI complete proxy schema
+class AICompleteRequest(BaseModel):
+    prompt: str
+    system_prompt: Optional[str] = None
+
+
 # Settings schemas
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]

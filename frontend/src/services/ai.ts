@@ -1,4 +1,5 @@
 import type { AIProvider } from '@/api/settings'
+import apiClient from '@/api/client'
 
 export interface AIService {
   complete(prompt: string, systemPrompt?: string): Promise<string>
@@ -14,39 +15,15 @@ const TAG_GENERATION_PROMPT = `You are a tagging assistant. Analyse the followin
 Content:
 {note_content}`
 
-// ─── Anthropic Provider ───────────────────────────────────────────────────────
+// All providers proxy through the backend to avoid CORS restrictions.
 
-class AnthropicProvider implements AIService {
-  constructor(private config: { apiKey: string; model: string }) {}
-
+class BackendProxyProvider implements AIService {
   async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: { role: string; content: string }[] = [{ role: 'user', content: prompt }]
-    const body: Record<string, unknown> = {
-      model: this.config.model,
-      max_tokens: 2048,
-      messages,
-    }
-    if (systemPrompt) {
-      body.system = systemPrompt
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
+    const response = await apiClient.post<{ text: string }>('/settings/ai-complete', {
+      prompt,
+      system_prompt: systemPrompt,
     })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Anthropic API error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    return data.content?.[0]?.text ?? ''
+    return response.data.text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -69,7 +46,7 @@ class AnthropicProvider implements AIService {
   async improveWriting(text: string): Promise<string> {
     return this.complete(
       `Please improve the following text for clarity and style, keeping the same meaning:\n\n${text}`,
-      'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.'
+      "You are a skilled editor. Improve writing while preserving the author's voice and meaning."
     )
   }
 
@@ -84,152 +61,6 @@ class AnthropicProvider implements AIService {
     try {
       await this.complete('Hi', 'Respond with just "ok"')
       return true
-    } catch {
-      return false
-    }
-  }
-}
-
-// ─── OpenAI / Custom OpenAI-compatible Provider ───────────────────────────────
-
-class OpenAIProvider implements AIService {
-  private baseUrl: string
-
-  constructor(private config: { apiKey: string; model: string; baseUrl?: string | null }) {
-    this.baseUrl = (config.baseUrl ?? 'https://api.openai.com').replace(/\/$/, '')
-  }
-
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: { role: string; content: string }[] = []
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt })
-    }
-    messages.push({ role: 'user', content: prompt })
-
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: 2048,
-        messages,
-      }),
-    })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`OpenAI API error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-
-  async generateTags(noteContent: string): Promise<string[]> {
-    const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
-    const result = await this.complete(prompt)
-    try {
-      return JSON.parse(result)
-    } catch {
-      return []
-    }
-  }
-
-  async summarise(noteContent: string): Promise<string> {
-    return this.complete(
-      `Please summarise the following note content concisely:\n\n${noteContent}`,
-      'You are a helpful writing assistant. Provide clear, concise summaries.'
-    )
-  }
-
-  async improveWriting(text: string): Promise<string> {
-    return this.complete(
-      `Please improve the following text for clarity and style, keeping the same meaning:\n\n${text}`,
-      'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.'
-    )
-  }
-
-  async continueWriting(context: string): Promise<string> {
-    return this.complete(
-      `Please continue writing from where this text leaves off:\n\n${context}`,
-      'You are a helpful writing assistant. Continue the text naturally and coherently.'
-    )
-  }
-
-  async testConnection(): Promise<boolean> {
-    try {
-      await this.complete('Hi', 'Respond with just "ok"')
-      return true
-    } catch {
-      return false
-    }
-  }
-}
-
-// ─── Ollama Provider ──────────────────────────────────────────────────────────
-
-class OllamaProvider implements AIService {
-  private baseUrl: string
-
-  constructor(private config: { model: string; baseUrl?: string | null }) {
-    this.baseUrl = (config.baseUrl ?? 'http://localhost:11434').replace(/\/$/, '')
-  }
-
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: { role: string; content: string }[] = []
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt })
-    }
-    messages.push({ role: 'user', content: prompt })
-
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        stream: false,
-      }),
-    })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Ollama error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    return data.message?.content ?? ''
-  }
-
-  async generateTags(noteContent: string): Promise<string[]> {
-    const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
-    const result = await this.complete(prompt)
-    try {
-      return JSON.parse(result)
-    } catch {
-      return []
-    }
-  }
-
-  async summarise(noteContent: string): Promise<string> {
-    return this.complete(`Please summarise the following note content concisely:\n\n${noteContent}`)
-  }
-
-  async improveWriting(text: string): Promise<string> {
-    return this.complete(`Please improve the following text for clarity and style:\n\n${text}`)
-  }
-
-  async continueWriting(context: string): Promise<string> {
-    return this.complete(`Please continue writing from where this text leaves off:\n\n${context}`)
-  }
-
-  async testConnection(): Promise<boolean> {
-    try {
-      const response = await fetch(`${this.baseUrl}/api/tags`)
-      return response.ok
     } catch {
       return false
     }
@@ -238,31 +69,7 @@ class OllamaProvider implements AIService {
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-export function createAIService(provider: AIProvider): AIService {
-  switch (provider.provider_type) {
-    case 'anthropic':
-      return new AnthropicProvider({
-        apiKey: provider.api_key,
-        model: provider.model,
-      })
-    case 'openai':
-      return new OpenAIProvider({
-        apiKey: provider.api_key,
-        model: provider.model,
-        baseUrl: provider.base_url,
-      })
-    case 'ollama':
-      return new OllamaProvider({
-        model: provider.model,
-        baseUrl: provider.base_url,
-      })
-    case 'custom':
-      return new OpenAIProvider({
-        apiKey: provider.api_key,
-        model: provider.model,
-        baseUrl: provider.base_url,
-      })
-    default:
-      throw new Error(`Unknown provider type: ${provider.provider_type}`)
-  }
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function createAIService(_provider: AIProvider): AIService {
+  return new BackendProxyProvider()
 }
