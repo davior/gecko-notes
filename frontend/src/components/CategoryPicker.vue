@@ -14,6 +14,7 @@
     <Teleport to="body">
       <div
         v-if="open"
+        ref="dropdownRef"
         class="fixed z-50 mt-1 w-56 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
         :style="dropdownStyle"
       >
@@ -58,6 +59,7 @@ const selectedCategory = computed(() => categoriesStore.getCategoryById(props.mo
 
 const open = ref(false)
 const containerRef = ref<HTMLElement | null>(null)
+const dropdownRef = ref<HTMLElement | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
 
 function updateDropdownPosition() {
@@ -75,7 +77,10 @@ function select(id: string) {
 }
 
 function handleClickOutside(e: MouseEvent) {
-  if (containerRef.value && !containerRef.value.contains(e.target as Node)) {
+  const target = e.target as Node
+  const inTrigger = containerRef.value?.contains(target) ?? false
+  const inDropdown = dropdownRef.value?.contains(target) ?? false
+  if (!inTrigger && !inDropdown) {
     open.value = false
   }
 }

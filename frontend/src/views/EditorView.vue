@@ -252,6 +252,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
+  editor?.mount(null)
 })
 
 function initEditor(initialContent: PartialBlock[]) {
@@ -270,13 +271,8 @@ function initEditor(initialContent: PartialBlock[]) {
     scheduleAutosave()
   })
 
-  // Mount the editor to the DOM
-  const editorEl = editor.domElement
-  if (editorRef.value && editorEl) {
-    editorRef.value.appendChild(editorEl)
-    editorEl.style.minHeight = '400px'
-    editorEl.style.outline = 'none'
-  }
+  editor.mount(editorRef.value)
+  editorRef.value.style.minHeight = '400px'
 }
 
 // ─── Autosave ─────────────────────────────────────────────────────────────────
