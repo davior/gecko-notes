@@ -90,6 +90,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           id: response.data.id,
           title: response.data.title,
           content_preview: extractContentPreview(response.data.content),
+          first_image_url: null,
           category_id: response.data.category_id,
           tags: response.data.tags,
           is_pinned: response.data.is_pinned,

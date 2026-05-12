@@ -15,6 +15,26 @@ from app.schemas import (
 router = APIRouter()
 
 
+def extract_first_image(content_str: str) -> Optional[str]:
+    """Return the URL of the first image block in BlockNote JSON content."""
+    try:
+        blocks = json.loads(content_str)
+        def find_image(block_list):
+            for block in block_list:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "image":
+                    url = block.get("props", {}).get("url", "")
+                    if url:
+                        return url
+                found = find_image(block.get("children", []))
+                if found:
+                    return found
+        return find_image(blocks)
+    except Exception:
+        return None
+
+
 def extract_plain_text(content_str: str, max_chars: int = 200) -> str:
     """Extract plain text from BlockNote JSON content."""
     try:
@@ -61,6 +81,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         id=note.id,
         title=note.title,
         content_preview=extract_plain_text(note.content, 120),
+        first_image_url=extract_first_image(note.content),
         category_id=note.category_id,
         tags=tags,
         is_pinned=note.is_pinned,

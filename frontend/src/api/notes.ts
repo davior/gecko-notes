@@ -4,6 +4,7 @@ export interface NoteListItem {
   id: string
   title: string
   content_preview: string
+  first_image_url: string | null
   category_id: string
   tags: string[]
   is_pinned: boolean

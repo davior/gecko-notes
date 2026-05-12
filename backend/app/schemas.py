@@ -87,6 +87,7 @@ class NoteListItem(BaseModel):
     id: str
     title: str
     content_preview: str
+    first_image_url: Optional[str]
     category_id: str
     tags: List[str]
     is_pinned: bool
