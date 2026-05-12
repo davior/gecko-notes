@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, type AIProvider } from '@/api/settings'
+import { settingsApi, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate } from '@/api/settings'
 import { createAIService, type AIService } from '@/services/ai'
 
 interface SettingsState {
@@ -10,6 +10,10 @@ interface SettingsState {
   activeProvider: AIProvider | null
   defaultSortOrder: string
   theme: 'light' | 'dark'
+  systemPrompts: SystemPrompt[]
+  activeSystemPrompt: SystemPrompt | null
+  aiTemperature: number
+  aiPrefill: string
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -19,10 +23,19 @@ interface SettingsState {
   activateAIProvider: (id: string) => Promise<AIProvider>
   refreshAIService: () => void
   toggleTheme: () => void
+  loadSystemPrompts: () => Promise<void>
+  createSystemPrompt: (payload: SystemPromptCreate) => Promise<SystemPrompt>
+  updateSystemPrompt: (id: string, payload: SystemPromptUpdate) => Promise<SystemPrompt>
+  deleteSystemPrompt: (id: string) => Promise<void>
+  activateSystemPrompt: (id: string) => Promise<SystemPrompt>
 }
 
 function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
   return providers.find((p) => p.is_active && p.enabled) ?? null
+}
+
+function deriveActiveSystemPrompt(prompts: SystemPrompt[]): SystemPrompt | null {
+  return prompts.find((p) => p.is_active) ?? null
 }
 
 const storedTheme = (localStorage.getItem('theme') as 'light' | 'dark') ?? 'light'
@@ -40,13 +53,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeProvider: null,
   defaultSortOrder: 'modified_at',
   theme: storedTheme,
+  systemPrompts: [],
+  activeSystemPrompt: null,
+  aiTemperature: 0.8,
+  aiPrefill: '',
 
   async loadSettings() {
     set({ loading: true })
     try {
-      const [settings, providers] = await Promise.all([
+      const [settings, providers, prompts] = await Promise.all([
         settingsApi.getAll(),
         settingsApi.listAIProviders(),
+        settingsApi.listSystemPrompts(),
       ])
       set({
         appSettings: settings,
@@ -54,6 +72,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         activeProvider: deriveActiveProvider(providers.data),
         aiService: deriveAIService(providers.data),
         defaultSortOrder: (settings['default_sort_order'] as string) ?? 'modified_at',
+        systemPrompts: prompts.data,
+        activeSystemPrompt: deriveActiveSystemPrompt(prompts.data),
+        aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
+        aiPrefill: (settings['ai_prefill'] as string) ?? '',
       })
     } finally {
       set({ loading: false })
@@ -65,6 +87,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({
       appSettings: updated,
       defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
+      aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
+      aiPrefill: (updated['ai_prefill'] as string) ?? '',
     })
   },
 
@@ -121,5 +145,48 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = get().theme === 'light' ? 'dark' : 'light'
     localStorage.setItem('theme', next)
     set({ theme: next })
+  },
+
+  async loadSystemPrompts() {
+    const response = await settingsApi.listSystemPrompts()
+    set({
+      systemPrompts: response.data,
+      activeSystemPrompt: deriveActiveSystemPrompt(response.data),
+    })
+  },
+
+  async createSystemPrompt(payload) {
+    const response = await settingsApi.createSystemPrompt(payload)
+    set((s) => {
+      const prompts = [...s.systemPrompts, response.data]
+      return { systemPrompts: prompts, activeSystemPrompt: deriveActiveSystemPrompt(prompts) }
+    })
+    return response.data
+  },
+
+  async updateSystemPrompt(id, payload) {
+    const response = await settingsApi.updateSystemPrompt(id, payload)
+    set((s) => {
+      const prompts = s.systemPrompts.map((p) => (p.id === id ? response.data : p))
+      return { systemPrompts: prompts, activeSystemPrompt: deriveActiveSystemPrompt(prompts) }
+    })
+    return response.data
+  },
+
+  async deleteSystemPrompt(id) {
+    await settingsApi.deleteSystemPrompt(id)
+    set((s) => {
+      const prompts = s.systemPrompts.filter((p) => p.id !== id)
+      return { systemPrompts: prompts, activeSystemPrompt: deriveActiveSystemPrompt(prompts) }
+    })
+  },
+
+  async activateSystemPrompt(id) {
+    const response = await settingsApi.activateSystemPrompt(id)
+    set((s) => {
+      const prompts = s.systemPrompts.map((p) => ({ ...p, is_active: p.id === id }))
+      return { systemPrompts: prompts, activeSystemPrompt: deriveActiveSystemPrompt(prompts) }
+    })
+    return response.data
   },
 }))

@@ -140,6 +140,32 @@ class AIProviderTest(BaseModel):
     model: str
 
 
+# System Prompt schemas
+class SystemPromptCreate(BaseModel):
+    name: str
+    content: str
+    is_active: bool = False
+    sort_order: int = 0
+
+
+class SystemPromptUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class SystemPromptRead(BaseModel):
+    id: str
+    name: str
+    content: str
+    is_active: bool
+    sort_order: int
+
+    class Config:
+        from_attributes = True
+
+
 # Settings schemas
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]

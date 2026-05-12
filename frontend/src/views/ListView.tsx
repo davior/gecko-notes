@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown, Moon, Sun, LayoutList, LayoutGrid } from 'lucide-react'
+import { Search, Settings, Plus, ArrowUpDown, Moon, Sun, LayoutList, LayoutGrid, X, Copy } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
+import AIBar from '@/components/AIBar'
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
@@ -27,6 +28,7 @@ export default function ListView() {
     (defaultSortOrder as 'modified_at' | 'created_at') || 'modified_at',
   )
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
+  const [aiResult, setAiResult] = useState('')
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -71,6 +73,10 @@ export default function ListView() {
     const next: ViewMode = viewMode === 'list' ? 'card' : 'list'
     localStorage.setItem('viewMode', next)
     setViewMode(next)
+  }
+
+  async function copyAIResult() {
+    await navigator.clipboard.writeText(aiResult)
   }
 
   const pinnedNotes = notes.filter((n) => n.is_pinned)
@@ -209,12 +215,46 @@ export default function ListView() {
         )}
       </main>
 
+      {/* AI result pane */}
+      {aiResult && (
+        <div className="shrink-0 mx-4 mb-2 rounded-xl border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-blue-700 dark:text-blue-400 uppercase tracking-wide">AI Response</span>
+            <div className="flex items-center gap-2">
+              <button
+                className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                onClick={copyAIResult}
+              >
+                <Copy className="w-3 h-3" />
+                Copy
+              </button>
+              <button
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                onClick={() => setAiResult('')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{aiResult}</p>
+        </div>
+      )}
+
+      <div className="shrink-0 no-print">
+        <AIBar
+          getNoteContext={() => ''}
+          getSelectedText={() => ''}
+          onResult={(text) => setAiResult(text)}
+          placeholder="Ask AI a question…"
+        />
+      </div>
+
       <Link
         to="/notes/new"
-        className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center transition-colors no-print"
+        className="fixed bottom-20 right-6 w-12 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center transition-colors no-print"
         aria-label="New note"
       >
-        <Plus className="w-7 h-7" />
+        <Plus className="w-6 h-6" />
       </Link>
     </div>
   )
