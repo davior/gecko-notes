@@ -9,6 +9,7 @@ interface SettingsState {
   loading: boolean
   activeProvider: AIProvider | null
   defaultSortOrder: string
+  theme: 'light' | 'dark'
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -17,11 +18,14 @@ interface SettingsState {
   deleteAIProvider: (id: string) => Promise<void>
   activateAIProvider: (id: string) => Promise<AIProvider>
   refreshAIService: () => void
+  toggleTheme: () => void
 }
 
 function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
   return providers.find((p) => p.is_active && p.enabled) ?? null
 }
+
+const storedTheme = (localStorage.getItem('theme') as 'light' | 'dark') ?? 'light'
 
 function deriveAIService(providers: AIProvider[]): AIService | null {
   const active = deriveActiveProvider(providers)
@@ -35,6 +39,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   loading: false,
   activeProvider: null,
   defaultSortOrder: 'modified_at',
+  theme: storedTheme,
 
   async loadSettings() {
     set({ loading: true })
@@ -110,5 +115,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   refreshAIService() {
     const { aiProviders } = get()
     set({ activeProvider: deriveActiveProvider(aiProviders), aiService: deriveAIService(aiProviders) })
+  },
+
+  toggleTheme() {
+    const next = get().theme === 'light' ? 'dark' : 'light'
+    localStorage.setItem('theme', next)
+    set({ theme: next })
   },
 }))

@@ -13,8 +13,10 @@ const modelPlaceholders: Record<string, string> = {
 }
 
 const typeBadge: Record<string, string> = {
-  anthropic: 'bg-purple-100 text-purple-700', openai: 'bg-green-100 text-green-700',
-  ollama: 'bg-orange-100 text-orange-700', custom: 'bg-gray-100 text-gray-700',
+  anthropic: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
+  openai: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+  ollama: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400',
+  custom: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
 }
 
 export default function AIProviderManager() {
@@ -82,13 +84,13 @@ export default function AIProviderManager() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-gray-900">AI Providers</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">AI Providers</h2>
         <button className="btn-primary text-sm" onClick={startAddNew}><Plus className="w-4 h-4" /> Add Provider</button>
       </div>
 
       {showForm && (
-        <div className="card p-5 mb-4 border-blue-200 bg-blue-50">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">{editingId ? 'Edit Provider' : 'New Provider'}</h3>
+        <div className="card p-5 mb-4 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">{editingId ? 'Edit Provider' : 'New Provider'}</h3>
           <div className="space-y-3">
             <div>
               <label className="label">Display Name</label>
@@ -127,7 +129,7 @@ export default function AIProviderManager() {
             </div>
             <div className="flex items-center gap-2">
               <input id="enabled-check" type="checkbox" checked={f.enabled} onChange={(e) => setF({ enabled: e.target.checked })} className="rounded" />
-              <label htmlFor="enabled-check" className="text-sm text-gray-700">Enabled</label>
+              <label htmlFor="enabled-check" className="text-sm text-gray-700 dark:text-gray-300">Enabled</label>
             </div>
           </div>
           <div className="flex gap-2 mt-4">
@@ -145,16 +147,16 @@ export default function AIProviderManager() {
 
       <div className="space-y-3">
         {aiProviders.map((p) => (
-          <div key={p.id} className={`card p-4 ${p.is_active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
+          <div key={p.id} className={`card p-4 ${p.is_active ? 'ring-2 ring-blue-500 dark:ring-offset-gray-800 ring-offset-1' : ''}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium text-sm text-gray-900">{p.name}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadge[p.provider_type] ?? 'bg-gray-100 text-gray-700'}`}>{p.provider_type}</span>
-                  {p.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">✓ Active</span>}
-                  {!p.enabled && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Disabled</span>}
+                  <span className="font-medium text-sm text-gray-900 dark:text-gray-100">{p.name}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadge[p.provider_type] ?? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>{p.provider_type}</span>
+                  {p.is_active && <span className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full font-medium">✓ Active</span>}
+                  {!p.enabled && <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">Disabled</span>}
                 </div>
-                <p className="text-xs text-gray-400">{p.model}</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500">{p.model}</p>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 {!p.is_active && <button className="text-xs text-blue-600 hover:underline px-2" onClick={() => activate(p.id)}>Set Active</button>}
@@ -165,7 +167,7 @@ export default function AIProviderManager() {
           </div>
         ))}
         {aiProviders.length === 0 && !showForm && (
-          <div className="text-center text-gray-400 py-8 text-sm">No AI providers configured. Add one to enable AI features.</div>
+          <div className="text-center text-gray-400 dark:text-gray-500 py-8 text-sm">No AI providers configured. Add one to enable AI features.</div>
         )}
       </div>
 

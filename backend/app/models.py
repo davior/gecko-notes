@@ -18,6 +18,7 @@ class Note(SQLModel, table=True):
     content: str  # BlockNote JSON serialised as string
     category_id: str = Field(foreign_key="category.id")
     tags: str = Field(default='[]')  # JSON array serialised as string
+    is_pinned: bool = Field(default=False)
     created_at: datetime
     modified_at: datetime
 

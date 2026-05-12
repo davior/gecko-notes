@@ -66,6 +66,7 @@ class NoteUpdate(BaseModel):
     content: Optional[str] = None
     category_id: Optional[str] = None
     tags: Optional[List[str]] = None
+    is_pinned: Optional[bool] = None
 
 
 class NoteRead(BaseModel):
@@ -74,6 +75,7 @@ class NoteRead(BaseModel):
     content: str
     category_id: str
     tags: List[str]
+    is_pinned: bool
     created_at: datetime
     modified_at: datetime
 
@@ -87,6 +89,7 @@ class NoteListItem(BaseModel):
     content_preview: str
     category_id: str
     tags: List[str]
+    is_pinned: bool
     created_at: datetime
     modified_at: datetime
 

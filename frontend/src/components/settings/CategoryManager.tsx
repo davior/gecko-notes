@@ -74,7 +74,7 @@ export default function CategoryManager() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-gray-900">Categories</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Categories</h2>
         <button className="btn-primary text-sm" onClick={startAddNew}>
           <Plus className="w-4 h-4" /> Add Category
         </button>
@@ -82,8 +82,8 @@ export default function CategoryManager() {
 
       <div className="space-y-2">
         {addingNew && (
-          <div className="card p-4 border-blue-200 bg-blue-50">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">New Category</h3>
+          <div className="card p-4 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
+            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">New Category</h3>
             <div className="flex flex-col gap-3">
               <FormFields form={newForm} onChange={setNewForm} />
               <div className="flex gap-2">
@@ -111,8 +111,8 @@ export default function CategoryManager() {
                 </div>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
                   <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                  <span className="text-sm font-medium text-gray-900 truncate">{cat.label}</span>
-                  {cat.is_default && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Default</span>}
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{cat.label}</span>
+                  {cat.is_default && <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">Default</span>}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <button className="btn-ghost p-1.5" title="Edit" onClick={() => startEdit(cat)}>
@@ -133,7 +133,7 @@ export default function CategoryManager() {
         ))}
 
         {categories.length === 0 && !addingNew && (
-          <div className="text-center text-gray-400 py-8 text-sm">No categories yet. Add one to get started.</div>
+          <div className="text-center text-gray-400 dark:text-gray-500 py-8 text-sm">No categories yet. Add one to get started.</div>
         )}
       </div>
 

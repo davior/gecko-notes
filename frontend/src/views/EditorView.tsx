@@ -292,25 +292,33 @@ export default function EditorView() {
     setTimeout(() => setToastMessage(''), 3000)
   }
 
-  function insertAIText(text: string) {
+  async function insertAIText(text: string) {
     if (!editor) return
+    const blocks = await editor.tryParseMarkdownToBlocks(text)
     editor.insertBlocks(
-      [{ type: 'paragraph', content: text }],
+      blocks.length > 0 ? blocks : [{ type: 'paragraph', content: text }],
       editor.getTextCursorPosition().block,
       'after',
     )
     setShowAIPanel(false)
   }
 
-  function replaceAIText(text: string) {
+  async function replaceAIText(text: string) {
     if (!editor) return
-    editor.updateBlock(editor.getTextCursorPosition().block, { content: text })
+    const blocks = await editor.tryParseMarkdownToBlocks(text)
+    if (blocks.length > 1) {
+      editor.insertBlocks(blocks, editor.getTextCursorPosition().block, 'after')
+    } else {
+      editor.updateBlock(editor.getTextCursorPosition().block, { content: blocks[0]?.content ?? text })
+    }
     setShowAIPanel(false)
   }
 
+  const theme = useSettingsStore((s) => s.theme)
+
   return (
-    <div className="flex flex-col h-screen bg-white">
-      <header className="shrink-0 border-b border-gray-100 no-print">
+    <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
+      <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
           <button className="btn-ghost p-2" onClick={goBack}>
             <ArrowLeft className="w-5 h-5" />
@@ -342,7 +350,7 @@ export default function EditorView() {
             value={title}
             placeholder="Untitled"
             rows={1}
-            className="w-full text-3xl font-bold text-gray-900 resize-none border-0 outline-none focus:ring-0 bg-transparent placeholder-gray-300 leading-tight overflow-hidden print-content"
+            className="w-full text-3xl font-bold text-gray-900 dark:text-gray-100 resize-none border-0 outline-none focus:ring-0 bg-transparent placeholder-gray-300 dark:placeholder-gray-600 leading-tight overflow-hidden print-content"
             onChange={(e) => { setTitle(e.target.value); autoResizeTitle(e.target) }}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (document.querySelector('[contenteditable]') as HTMLElement)?.focus() } }}
           />
@@ -415,12 +423,12 @@ export default function EditorView() {
           <BlockNoteView
             editor={editor}
             onChange={scheduleAutosave}
-            theme="light"
+            theme={theme}
           />
         )}
       </div>
 
-      <div className="shrink-0 px-6 py-2 border-t border-gray-100 flex items-center gap-2 no-print">
+      <div className="shrink-0 px-6 py-2 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center gap-2 no-print">
         <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
       </div>
 
@@ -443,8 +451,8 @@ export default function EditorView() {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowDeleteConfirm(false)}>
-          <div className="bg-white rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Note</h3>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Note</h3>
             <p className="text-gray-600 text-sm mb-6">Are you sure you want to delete &ldquo;{title}&rdquo;? This cannot be undone.</p>
             <div className="flex gap-3">
               <button className="btn-danger flex-1" onClick={confirmDelete}>Delete</button>

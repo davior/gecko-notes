@@ -9,10 +9,19 @@ import SettingsView from '@/views/SettingsView'
 export default function App() {
   const loadSettings = useSettingsStore((s) => s.loadSettings)
   const loadCategories = useCategoriesStore((s) => s.loadCategories)
+  const theme = useSettingsStore((s) => s.theme)
 
   useEffect(() => {
     Promise.all([loadSettings(), loadCategories()])
   }, [])
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+  }, [theme])
 
   return (
     <div id="app-root" className="h-screen flex flex-col overflow-hidden">
