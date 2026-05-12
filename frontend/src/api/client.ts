@@ -9,9 +9,8 @@ const client = axios.create({
   },
 })
 
-// Inject auth token if present (set by settings store)
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('app_secret_token')
+  const token = localStorage.getItem('auth_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
@@ -22,7 +21,12 @@ client.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      console.warn('Unauthorized – check APP_SECRET_TOKEN')
+      const isAuthEndpoint = error.config?.url?.includes('/auth/')
+      if (!isAuthEndpoint) {
+        localStorage.removeItem('auth_token')
+        localStorage.removeItem('auth_user')
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(error)
   }

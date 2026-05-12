@@ -1,17 +1,26 @@
 import os
-from fastapi import FastAPI, Request, HTTPException, status
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from jose import JWTError
 
 from app.database import init_db, get_session, engine
 from app.seed import run_seed
 from app.routers import notes, categories, media, settings
+from app.routers import auth as auth_router
+from app.auth import decode_token
 from sqlmodel import Session
 
 
-APP_SECRET_TOKEN = os.getenv("APP_SECRET_TOKEN", "")
 MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
+
+PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
+
+
+def _is_public(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith("/media/")
 
 
 @asynccontextmanager
@@ -35,27 +44,37 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    if APP_SECRET_TOKEN:
-        # Skip auth for health check
-        if request.url.path == "/api/health":
-            return await call_next(request)
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer ") or auth_header[7:] != APP_SECRET_TOKEN:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"code": "unauthorized", "message": "Invalid or missing token"}},
-            )
+async def jwt_auth_middleware(request: Request, call_next):
+    if _is_public(request.url.path):
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "unauthorized", "message": "Missing or invalid Authorization header"}},
+        )
+
+    token = auth_header[7:]
+    try:
+        payload = decode_token(token)
+        request.state.user_id = payload.get("sub")
+        request.state.username = payload.get("username")
+    except JWTError:
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "unauthorized", "message": "Invalid or expired token"}},
+        )
+
     return await call_next(request)
 
 
+app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 
-# Serve media files
 os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
