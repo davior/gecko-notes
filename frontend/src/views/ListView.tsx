@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown } from 'lucide-react'
+import { Search, Settings, Plus, ArrowUpDown, Moon, Sun } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -8,10 +8,11 @@ import { useSettingsStore } from '@/stores/settings'
 
 export default function ListView() {
   const navigate = useNavigate()
-  const { notes, loading, hasMore, loadNotes, loadMore } = useNotesStore()
+  const { notes, loading, hasMore, loadNotes, loadMore, pinNote } = useNotesStore()
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const categories = useCategoriesStore((s) => s.categories)
   const defaultSortOrder = useSettingsStore((s) => s.defaultSortOrder)
+  const { theme, toggleTheme } = useSettingsStore()
 
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null)
@@ -58,16 +59,22 @@ export default function ListView() {
     setSortOrder(next)
   }
 
+  const pinnedNotes = notes.filter((n) => n.is_pinned)
+  const unpinnedNotes = notes.filter((n) => !n.is_pinned)
+
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-4 py-3 shrink-0 no-print">
+    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
         <div className="max-w-3xl mx-auto">
           <div className="flex items-center gap-3 mb-3">
-            <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+            <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
               <span className="text-2xl">🦎</span>
               Gecko Notes
             </h1>
             <div className="flex-1" />
+            <button className="btn-ghost p-2" title="Toggle dark mode" onClick={toggleTheme}>
+              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
             <Link to="/settings" className="btn-ghost p-2">
               <Settings className="w-5 h-5" />
             </Link>
@@ -80,13 +87,13 @@ export default function ListView() {
               onChange={(e) => setSearchQuery(e.target.value)}
               type="text"
               placeholder="Search notes..."
-              className="input pl-9"
+              className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
             />
           </div>
 
           <div className="flex items-center gap-2 overflow-x-auto pb-1">
             <button
-              className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors ${activeCategoryId === null ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}
+              className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors ${activeCategoryId === null ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
               onClick={() => setActiveCategoryId(null)}
             >
               All
@@ -94,7 +101,7 @@ export default function ListView() {
             {categories.map((cat) => (
               <button
                 key={cat.id}
-                className="text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors"
+                className="text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors dark:border-gray-600 dark:text-gray-300 dark:bg-gray-700"
                 style={activeCategoryId === cat.id ? { backgroundColor: cat.color, borderColor: cat.color, color: 'white' } : {}}
                 onClick={() => setActiveCategoryId((id) => id === cat.id ? null : cat.id)}
               >
@@ -103,7 +110,7 @@ export default function ListView() {
             ))}
             <div className="flex-1" />
             <button
-              className="text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-gray-400 shrink-0 flex items-center gap-1 transition-colors"
+              className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 shrink-0 flex items-center gap-1 transition-colors"
               onClick={toggleSort}
             >
               <ArrowUpDown className="w-3 h-3" />
@@ -117,30 +124,48 @@ export default function ListView() {
         <div className="max-w-3xl mx-auto space-y-3">
           {loading && notes.length === 0 ? (
             Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="card p-4 animate-pulse">
-                <div className="h-4 bg-gray-200 rounded w-1/3 mb-2" />
-                <div className="h-5 bg-gray-200 rounded w-3/4 mb-2" />
-                <div className="h-3 bg-gray-100 rounded w-full mb-1" />
-                <div className="h-3 bg-gray-100 rounded w-2/3" />
+              <div key={i} className="card dark:bg-gray-800 dark:border-gray-700 p-4 animate-pulse">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/3 mb-2" />
+                <div className="h-5 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-2" />
+                <div className="h-3 bg-gray-100 dark:bg-gray-600 rounded w-full mb-1" />
+                <div className="h-3 bg-gray-100 dark:bg-gray-600 rounded w-2/3" />
               </div>
             ))
           ) : notes.length === 0 ? (
             <div className="text-center py-20">
               <p className="text-5xl mb-4">📝</p>
-              <p className="text-gray-500 text-lg font-medium mb-1">No notes yet</p>
-              <p className="text-gray-400 text-sm mb-6">Create your first note to get started</p>
+              <p className="text-gray-500 dark:text-gray-400 text-lg font-medium mb-1">No notes yet</p>
+              <p className="text-gray-400 dark:text-gray-500 text-sm mb-6">Create your first note to get started</p>
               <Link to="/notes/new" className="btn-primary inline-flex">
                 <Plus className="w-4 h-4" /> New Note
               </Link>
             </div>
           ) : (
             <>
-              {notes.map((note) => (
+              {pinnedNotes.length > 0 && (
+                <>
+                  <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1">Pinned</p>
+                  {pinnedNotes.map((note) => (
+                    <NoteCard
+                      key={note.id}
+                      note={note}
+                      category={getCategoryById(note.category_id)}
+                      onClick={(id) => navigate(`/notes/${id}`)}
+                      onPin={pinNote}
+                    />
+                  ))}
+                  {unpinnedNotes.length > 0 && (
+                    <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 pt-1">Notes</p>
+                  )}
+                </>
+              )}
+              {unpinnedNotes.map((note) => (
                 <NoteCard
                   key={note.id}
                   note={note}
                   category={getCategoryById(note.category_id)}
                   onClick={(id) => navigate(`/notes/${id}`)}
+                  onPin={pinNote}
                 />
               ))}
               <div ref={sentinelRef} className="h-2" />

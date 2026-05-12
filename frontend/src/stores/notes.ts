@@ -38,6 +38,7 @@ interface NotesState {
   loadNote: (id: string) => Promise<Note>
   createNote: (payload: { title: string; content?: string; category_id: string; tags?: string[] }) => Promise<Note>
   updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; tags?: string[] }) => Promise<Note>
+  pinNote: (id: string) => Promise<Note>
   deleteNote: (id: string) => Promise<void>
   clearCurrentNote: () => void
 }
@@ -110,6 +111,20 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           ? { ...n, title: response.data.title, category_id: response.data.category_id, tags: response.data.tags, modified_at: response.data.modified_at }
           : n,
       ),
+    }))
+    return response.data
+  },
+
+  async pinNote(id) {
+    const response = await notesApi.pin(id)
+    set((s) => ({
+      currentNote: s.currentNote?.id === id ? response.data : s.currentNote,
+      notes: s.notes
+        .map((n) => n.id === id ? { ...n, is_pinned: response.data.is_pinned } : n)
+        .sort((a, b) => {
+          if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1
+          return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime()
+        }),
     }))
     return response.data
   },

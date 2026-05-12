@@ -8,8 +8,8 @@ interface Props {
   selectedText?: string
   position?: { top: number; left: number }
   onClose: () => void
-  onInsert: (text: string) => void
-  onReplace: (text: string) => void
+  onInsert: (text: string) => void | Promise<void>
+  onReplace: (text: string) => void | Promise<void>
   onTagsGenerated: (tags: string[]) => void
   onToast: (msg: string) => void
 }
@@ -63,20 +63,20 @@ export default function AIPanel({ noteContent, selectedText, position, onClose, 
   }
 
   return (
-    <div className="fixed z-50 w-80 bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden" style={panelStyle}>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-purple-50">
+    <div className="fixed z-50 w-80 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-xl overflow-hidden" style={panelStyle}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-blue-600" />
-          <span className="text-sm font-semibold text-gray-800">AI Assistant</span>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">AI Assistant</span>
         </div>
-        <button className="text-gray-400 hover:text-gray-600" onClick={onClose}>
+        <button className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" onClick={onClose}>
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {!aiService ? (
         <div className="p-4 text-center">
-          <p className="text-sm text-gray-500">No AI provider configured.</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">No AI provider configured.</p>
           <Link to="/settings/ai-providers" className="text-sm text-blue-600 hover:underline mt-1 block">
             Configure AI Provider →
           </Link>
@@ -87,7 +87,7 @@ export default function AIPanel({ noteContent, selectedText, position, onClose, 
             {quickActions.map((action) => (
               <button
                 key={action.label}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-gray-50 hover:bg-blue-50 hover:text-blue-700 transition-colors text-left border border-gray-100"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-gray-50 dark:bg-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-700 dark:hover:text-blue-400 transition-colors text-left border border-gray-100 dark:border-gray-600 dark:text-gray-300"
                 disabled={loading}
                 onClick={() => runAction(action)}
               >
@@ -118,7 +118,7 @@ export default function AIPanel({ noteContent, selectedText, position, onClose, 
           </div>
 
           {loading && (
-            <div className="px-4 pb-3 flex items-center gap-2 text-sm text-gray-500">
+            <div className="px-4 pb-3 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
               <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
@@ -128,13 +128,13 @@ export default function AIPanel({ noteContent, selectedText, position, onClose, 
           )}
 
           {result && !loading && (
-            <div className="border-t border-gray-100">
+            <div className="border-t border-gray-100 dark:border-gray-700">
               <div className="px-4 py-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Result</span>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Result</span>
                   <button className="text-xs text-blue-600 hover:underline" onClick={copyResult}>Copy</button>
                 </div>
-                <p className="text-sm text-gray-800 whitespace-pre-wrap max-h-40 overflow-y-auto">{result}</p>
+                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{result}</p>
               </div>
               <div className="px-4 pb-3 flex gap-2">
                 <button className="btn-primary text-xs py-1.5 flex-1" onClick={() => onInsert(result)}>Insert at cursor</button>
@@ -145,7 +145,7 @@ export default function AIPanel({ noteContent, selectedText, position, onClose, 
 
           {error && (
             <div className="px-4 pb-3">
-              <p className="text-xs text-red-600 bg-red-50 rounded-lg p-2">{error}</p>
+              <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg p-2">{error}</p>
             </div>
           )}
         </>

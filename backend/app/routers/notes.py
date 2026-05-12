@@ -46,6 +46,7 @@ def note_to_read(note: Note) -> NoteRead:
         content=note.content,
         category_id=note.category_id,
         tags=tags,
+        is_pinned=note.is_pinned,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
@@ -62,6 +63,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         content_preview=extract_plain_text(note.content, 120),
         category_id=note.category_id,
         tags=tags,
+        is_pinned=note.is_pinned,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
@@ -93,9 +95,9 @@ def list_notes(
 
     sort_col = Note.modified_at if sort == "modified_at" else Note.created_at
     if order == "desc":
-        query = query.order_by(sort_col.desc())
+        query = query.order_by(Note.is_pinned.desc(), sort_col.desc())
     else:
-        query = query.order_by(sort_col.asc())
+        query = query.order_by(Note.is_pinned.desc(), sort_col.asc())
 
     count_query = select(func.count()).select_from(Note)
     if category_id:
@@ -160,8 +162,22 @@ def update_note(note_id: str, payload: NoteUpdate, session: Session = Depends(ge
         note.category_id = payload.category_id
     if payload.tags is not None:
         note.tags = json.dumps(payload.tags)
+    if payload.is_pinned is not None:
+        note.is_pinned = payload.is_pinned
 
     note.modified_at = datetime.now(timezone.utc)
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
+
+
+@router.patch("/{note_id}/pin", response_model=DataResponse[NoteRead])
+def pin_note(note_id: str, session: Session = Depends(get_session)):
+    note = session.get(Note, note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    note.is_pinned = not note.is_pinned
     session.add(note)
     session.commit()
     session.refresh(note)

@@ -6,6 +6,7 @@ export interface NoteListItem {
   content_preview: string
   category_id: string
   tags: string[]
+  is_pinned: boolean
   created_at: string
   modified_at: string
 }
@@ -16,6 +17,7 @@ export interface Note {
   content: string
   category_id: string
   tags: string[]
+  is_pinned: boolean
   created_at: string
   modified_at: string
 }
@@ -32,6 +34,7 @@ export interface NoteUpdate {
   content?: string
   category_id?: string
   tags?: string[]
+  is_pinned?: boolean
 }
 
 export interface ListNotesParams {
@@ -65,6 +68,10 @@ export const notesApi = {
 
   update(id: string, payload: NoteUpdate): Promise<{ data: Note }> {
     return client.put(`/notes/${id}`, payload).then((r) => r.data)
+  },
+
+  pin(id: string): Promise<{ data: Note }> {
+    return client.patch(`/notes/${id}/pin`).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {
