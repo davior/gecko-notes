@@ -19,6 +19,10 @@ MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
 
 
+def _is_public(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith("/media/")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -41,7 +45,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def jwt_auth_middleware(request: Request, call_next):
-    if request.url.path in PUBLIC_PATHS:
+    if _is_public(request.url.path):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization", "")
