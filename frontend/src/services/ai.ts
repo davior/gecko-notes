@@ -1,4 +1,5 @@
 import type { AIProvider } from '@/api/settings'
+import client from '@/api/client'
 
 export interface AIService {
   complete(prompt: string, systemPrompt?: string): Promise<string>
@@ -17,11 +18,12 @@ Content:
 // ─── Anthropic Provider ───────────────────────────────────────────────────────
 
 class AnthropicProvider implements AIService {
-  constructor(private config: { apiKey: string; model: string }) {}
+  constructor(private config: { id: string; apiKey: string; model: string }) {}
 
   async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: { role: string; content: string }[] = [{ role: 'user', content: prompt }]
+    const messages = [{ role: 'user', content: prompt }]
     const body: Record<string, unknown> = {
+      provider_id: this.config.id,
       model: this.config.model,
       max_tokens: 2048,
       messages,
@@ -30,23 +32,8 @@ class AnthropicProvider implements AIService {
       body.system = systemPrompt
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Anthropic API error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    return data.content?.[0]?.text ?? ''
+    const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
+    return response.data?.content?.[0]?.text ?? ''
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -242,6 +229,7 @@ export function createAIService(provider: AIProvider): AIService {
   switch (provider.provider_type) {
     case 'anthropic':
       return new AnthropicProvider({
+        id: provider.id,
         apiKey: provider.api_key,
         model: provider.model,
       })

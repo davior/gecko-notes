@@ -1,8 +1,9 @@
 import json
 import uuid
 import httpx
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.database import get_session
@@ -199,3 +200,46 @@ async def test_ai_provider(payload: AIProviderTest):
 
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+# ─── Anthropic Proxy ──────────────────────────────────────────────────────────
+
+class AnthropicProxyRequest(BaseModel):
+    provider_id: str
+    model: str
+    max_tokens: int
+    messages: List[Dict[str, Any]]
+    system: Optional[str] = None
+
+
+@router.post("/ai-providers/proxy/anthropic")
+async def proxy_anthropic(payload: AnthropicProxyRequest, session: Session = Depends(get_session)):
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type != "anthropic":
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})
+
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "max_tokens": payload.max_tokens,
+        "messages": payload.messages,
+    }
+    if payload.system:
+        body["system"] = payload.system
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": provider.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
