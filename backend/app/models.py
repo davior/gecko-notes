@@ -37,3 +37,11 @@ class AIProvider(SQLModel, table=True):
 class AppSetting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: str  # JSON-serialised value
+
+
+class SystemPrompt(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    name: str
+    content: str
+    is_active: bool = Field(default=False)
+    sort_order: int = Field(default=0)

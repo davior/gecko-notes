@@ -1,5 +1,27 @@
 import client from './client'
 
+export interface SystemPrompt {
+  id: string
+  name: string
+  content: string
+  is_active: boolean
+  sort_order: number
+}
+
+export interface SystemPromptCreate {
+  name: string
+  content: string
+  is_active?: boolean
+  sort_order?: number
+}
+
+export interface SystemPromptUpdate {
+  name?: string
+  content?: string
+  is_active?: boolean
+  sort_order?: number
+}
+
 export interface AIProvider {
   id: string
   name: string
@@ -74,5 +96,25 @@ export const settingsApi = {
 
   testAIProvider(payload: AIProviderTest): Promise<{ success: boolean; message: string }> {
     return client.post('/settings/ai-providers/test', payload).then((r) => r.data)
+  },
+
+  listSystemPrompts(): Promise<{ data: SystemPrompt[]; total: number; limit: number; offset: number }> {
+    return client.get('/settings/system-prompts').then((r) => r.data)
+  },
+
+  createSystemPrompt(payload: SystemPromptCreate): Promise<{ data: SystemPrompt }> {
+    return client.post('/settings/system-prompts', payload).then((r) => r.data)
+  },
+
+  updateSystemPrompt(id: string, payload: SystemPromptUpdate): Promise<{ data: SystemPrompt }> {
+    return client.put(`/settings/system-prompts/${id}`, payload).then((r) => r.data)
+  },
+
+  deleteSystemPrompt(id: string): Promise<void> {
+    return client.delete(`/settings/system-prompts/${id}`).then(() => undefined)
+  },
+
+  activateSystemPrompt(id: string): Promise<{ data: SystemPrompt }> {
+    return client.post(`/settings/system-prompts/${id}/activate`).then((r) => r.data)
   },
 }

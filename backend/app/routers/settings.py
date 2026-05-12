@@ -7,10 +7,11 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import AIProvider, AppSetting
+from app.models import AIProvider, AppSetting, SystemPrompt
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
-    DataResponse, ListResponse, SettingsUpdate
+    DataResponse, ListResponse, SettingsUpdate,
+    SystemPromptCreate, SystemPromptUpdate, SystemPromptRead,
 )
 
 router = APIRouter()
@@ -202,6 +203,80 @@ async def test_ai_provider(payload: AIProviderTest):
         return {"success": False, "message": str(e)}
 
 
+# ─── System Prompts ───────────────────────────────────────────────────────────
+
+@router.get("/system-prompts", response_model=ListResponse[SystemPromptRead])
+def list_system_prompts(session: Session = Depends(get_session)):
+    prompts = session.exec(select(SystemPrompt)).all()
+    return ListResponse(
+        data=[SystemPromptRead.model_validate(p) for p in prompts],
+        total=len(prompts),
+        limit=len(prompts),
+        offset=0,
+    )
+
+
+@router.post("/system-prompts", response_model=DataResponse[SystemPromptRead], status_code=201)
+def create_system_prompt(payload: SystemPromptCreate, session: Session = Depends(get_session)):
+    if payload.is_active:
+        for p in session.exec(select(SystemPrompt)).all():
+            p.is_active = False
+            session.add(p)
+    prompt = SystemPrompt(
+        id=str(uuid.uuid4()),
+        name=payload.name,
+        content=payload.content,
+        is_active=payload.is_active,
+        sort_order=payload.sort_order,
+    )
+    session.add(prompt)
+    session.commit()
+    session.refresh(prompt)
+    return DataResponse(data=SystemPromptRead.model_validate(prompt))
+
+
+@router.put("/system-prompts/{prompt_id}", response_model=DataResponse[SystemPromptRead])
+def update_system_prompt(prompt_id: str, payload: SystemPromptUpdate, session: Session = Depends(get_session)):
+    prompt = session.get(SystemPrompt, prompt_id)
+    if not prompt:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
+    if payload.is_active:
+        for p in session.exec(select(SystemPrompt)).all():
+            if p.id != prompt_id:
+                p.is_active = False
+                session.add(p)
+    for field in ["name", "content", "is_active", "sort_order"]:
+        val = getattr(payload, field, None)
+        if val is not None:
+            setattr(prompt, field, val)
+    session.add(prompt)
+    session.commit()
+    session.refresh(prompt)
+    return DataResponse(data=SystemPromptRead.model_validate(prompt))
+
+
+@router.delete("/system-prompts/{prompt_id}", status_code=204)
+def delete_system_prompt(prompt_id: str, session: Session = Depends(get_session)):
+    prompt = session.get(SystemPrompt, prompt_id)
+    if not prompt:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
+    session.delete(prompt)
+    session.commit()
+
+
+@router.post("/system-prompts/{prompt_id}/activate", response_model=DataResponse[SystemPromptRead])
+def activate_system_prompt(prompt_id: str, session: Session = Depends(get_session)):
+    prompt = session.get(SystemPrompt, prompt_id)
+    if not prompt:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
+    for p in session.exec(select(SystemPrompt)).all():
+        p.is_active = p.id == prompt_id
+        session.add(p)
+    session.commit()
+    session.refresh(prompt)
+    return DataResponse(data=SystemPromptRead.model_validate(prompt))
+
+
 # ─── Anthropic Proxy ──────────────────────────────────────────────────────────
 
 class AnthropicProxyRequest(BaseModel):
@@ -210,6 +285,8 @@ class AnthropicProxyRequest(BaseModel):
     max_tokens: int
     messages: List[Dict[str, Any]]
     system: Optional[str] = None
+    temperature: Optional[float] = None
+    prefill: Optional[str] = None
 
 
 @router.post("/ai-providers/proxy/anthropic")
@@ -220,13 +297,19 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, session: Session = Dep
     if provider.provider_type != "anthropic":
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})
 
+    messages = list(payload.messages)
+    if payload.prefill:
+        messages.append({"role": "assistant", "content": payload.prefill})
+
     body: Dict[str, Any] = {
         "model": payload.model,
         "max_tokens": payload.max_tokens,
-        "messages": payload.messages,
+        "messages": messages,
     }
     if payload.system:
         body["system"] = payload.system
+    if payload.temperature is not None:
+        body["temperature"] = payload.temperature
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Printer, Trash2 } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2 } from 'lucide-react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -11,7 +11,7 @@ import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
-import AIPanel from '@/components/AIPanel'
+import AIBar from '@/components/AIBar'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -50,11 +50,11 @@ export default function EditorView() {
   const [newTagInput, setNewTagInput] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
-  const [showAIPanel, setShowAIPanel] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingTags, setGeneratingTags] = useState(false)
+  const [selectedText, setSelectedText] = useState('')
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -86,6 +86,25 @@ export default function EditorView() {
   useEffect(() => { latestDefaultCategoryId.current = defaultCategoryId }, [defaultCategoryId])
   useEffect(() => { latestIsNew.current = isNew }, [isNew])
   useEffect(() => { latestNoteId.current = noteId }, [noteId])
+
+  // Track selected text in the editor
+  useEffect(() => {
+    if (!editor) return
+    const updateSelection = () => {
+      try {
+        const text = editor.getSelectedText?.() ?? ''
+        setSelectedText(text)
+      } catch {
+        setSelectedText('')
+      }
+    }
+    // BlockNote exposes the underlying tiptap editor for selection events
+    const tiptap = (editor as unknown as { _tiptapEditor?: { on: (event: string, cb: () => void) => void; off: (event: string, cb: () => void) => void } })._tiptapEditor
+    if (tiptap) {
+      tiptap.on('selectionUpdate', updateSelection)
+      return () => tiptap.off('selectionUpdate', updateSelection)
+    }
+  }, [editor])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
@@ -300,18 +319,6 @@ export default function EditorView() {
       editor.getTextCursorPosition().block,
       'after',
     )
-    setShowAIPanel(false)
-  }
-
-  async function replaceAIText(text: string) {
-    if (!editor) return
-    const blocks = await editor.tryParseMarkdownToBlocks(text)
-    if (blocks.length > 1) {
-      editor.insertBlocks(blocks, editor.getTextCursorPosition().block, 'after')
-    } else {
-      editor.updateBlock(editor.getTextCursorPosition().block, { content: blocks[0]?.content ?? text })
-    }
-    setShowAIPanel(false)
   }
 
   const theme = useSettingsStore((s) => s.theme)
@@ -328,9 +335,6 @@ export default function EditorView() {
           {note && <ShareMenu note={note} onToast={showToast} />}
           <button className="btn-ghost p-2" title="Print" onClick={handlePrint}>
             <Printer className="w-4 h-4" />
-          </button>
-          <button className="btn-ghost p-2" title="AI Assistant" onClick={() => setShowAIPanel((v) => !v)}>
-            <Sparkles className={`w-4 h-4 ${showAIPanel ? 'text-blue-600' : ''}`} />
           </button>
           <button
             className="btn-ghost p-2 text-red-400 hover:text-red-600 hover:bg-red-50"
@@ -381,8 +385,7 @@ export default function EditorView() {
               disabled={generatingTags}
               onClick={handleGenerateTags}
             >
-              <Sparkles className="w-3 h-3" />
-              {generatingTags ? 'Generating...' : 'Generate Tags'}
+              {generatingTags ? 'Generating...' : '✦ Generate Tags'}
             </button>
           </div>
 
@@ -428,20 +431,17 @@ export default function EditorView() {
         )}
       </div>
 
-      <div className="shrink-0 px-6 py-2 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center gap-2 no-print">
-        <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
-      </div>
-
-      {showAIPanel && (
-        <AIPanel
-          noteContent={currentNoteContent.current}
-          onClose={() => setShowAIPanel(false)}
-          onInsert={insertAIText}
-          onReplace={replaceAIText}
-          onTagsGenerated={onTagsGenerated}
-          onToast={showToast}
+      <div className="shrink-0 no-print">
+        <AIBar
+          getNoteContext={() => currentNoteContent.current}
+          getSelectedText={() => selectedText}
+          onResult={insertAIText}
+          placeholder="Ask AI about this note…"
         />
-      )}
+        <div className="px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center gap-2">
+          <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
+        </div>
+      </div>
 
       {toastMessage && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-4 py-2 rounded-xl shadow-lg text-sm z-50">

@@ -1,8 +1,14 @@
 import type { AIProvider } from '@/api/settings'
 import client from '@/api/client'
 
+export interface AICompleteOptions {
+  systemPrompt?: string
+  temperature?: number
+  prefill?: string
+}
+
 export interface AIService {
-  complete(prompt: string, systemPrompt?: string): Promise<string>
+  complete(prompt: string, options?: AICompleteOptions): Promise<string>
   generateTags(noteContent: string): Promise<string[]>
   summarise(noteContent: string): Promise<string>
   improveWriting(text: string): Promise<string>
@@ -20,20 +26,25 @@ Content:
 class AnthropicProvider implements AIService {
   constructor(private config: { id: string; apiKey: string; model: string }) {}
 
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages = [{ role: 'user', content: prompt }]
+  async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
+    const { systemPrompt, temperature, prefill } = options
+    const messages: { role: string; content: string }[] = [{ role: 'user', content: prompt }]
+    if (prefill) {
+      messages.push({ role: 'assistant', content: prefill })
+    }
+
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
       max_tokens: 2048,
       messages,
     }
-    if (systemPrompt) {
-      body.system = systemPrompt
-    }
+    if (systemPrompt) body.system = systemPrompt
+    if (temperature !== undefined) body.temperature = temperature
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
-    return response.data?.content?.[0]?.text ?? ''
+    const text = response.data?.content?.[0]?.text ?? ''
+    return prefill ? prefill + text : text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -49,27 +60,27 @@ class AnthropicProvider implements AIService {
   async summarise(noteContent: string): Promise<string> {
     return this.complete(
       `Please summarise the following note content concisely:\n\n${noteContent}`,
-      'You are a helpful writing assistant. Provide clear, concise summaries.'
+      { systemPrompt: 'You are a helpful writing assistant. Provide clear, concise summaries.' }
     )
   }
 
   async improveWriting(text: string): Promise<string> {
     return this.complete(
       `Please improve the following text for clarity and style, keeping the same meaning:\n\n${text}`,
-      'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.'
+      { systemPrompt: 'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.' }
     )
   }
 
   async continueWriting(context: string): Promise<string> {
     return this.complete(
       `Please continue writing from where this text leaves off:\n\n${context}`,
-      'You are a helpful writing assistant. Continue the text naturally and coherently.'
+      { systemPrompt: 'You are a helpful writing assistant. Continue the text naturally and coherently.' }
     )
   }
 
   async testConnection(): Promise<boolean> {
     try {
-      await this.complete('Hi', 'Respond with just "ok"')
+      await this.complete('Hi', { systemPrompt: 'Respond with just "ok"' })
       return true
     } catch {
       return false
@@ -86,12 +97,19 @@ class OpenAIProvider implements AIService {
     this.baseUrl = (config.baseUrl ?? 'https://api.openai.com').replace(/\/$/, '')
   }
 
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
+  async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
+    const { systemPrompt, temperature, prefill } = options
     const messages: { role: string; content: string }[] = []
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt })
-    }
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
     messages.push({ role: 'user', content: prompt })
+    if (prefill) messages.push({ role: 'assistant', content: prefill })
+
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      max_tokens: 2048,
+      messages,
+    }
+    if (temperature !== undefined) body.temperature = temperature
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -99,11 +117,7 @@ class OpenAIProvider implements AIService {
         Authorization: `Bearer ${this.config.apiKey}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: 2048,
-        messages,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!response.ok) {
@@ -112,7 +126,8 @@ class OpenAIProvider implements AIService {
     }
 
     const data = await response.json()
-    return data.choices?.[0]?.message?.content ?? ''
+    const text = data.choices?.[0]?.message?.content ?? ''
+    return prefill ? prefill + text : text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -128,27 +143,27 @@ class OpenAIProvider implements AIService {
   async summarise(noteContent: string): Promise<string> {
     return this.complete(
       `Please summarise the following note content concisely:\n\n${noteContent}`,
-      'You are a helpful writing assistant. Provide clear, concise summaries.'
+      { systemPrompt: 'You are a helpful writing assistant. Provide clear, concise summaries.' }
     )
   }
 
   async improveWriting(text: string): Promise<string> {
     return this.complete(
       `Please improve the following text for clarity and style, keeping the same meaning:\n\n${text}`,
-      'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.'
+      { systemPrompt: 'You are a skilled editor. Improve writing while preserving the author\'s voice and meaning.' }
     )
   }
 
   async continueWriting(context: string): Promise<string> {
     return this.complete(
       `Please continue writing from where this text leaves off:\n\n${context}`,
-      'You are a helpful writing assistant. Continue the text naturally and coherently.'
+      { systemPrompt: 'You are a helpful writing assistant. Continue the text naturally and coherently.' }
     )
   }
 
   async testConnection(): Promise<boolean> {
     try {
-      await this.complete('Hi', 'Respond with just "ok"')
+      await this.complete('Hi', { systemPrompt: 'Respond with just "ok"' })
       return true
     } catch {
       return false
@@ -165,21 +180,24 @@ class OllamaProvider implements AIService {
     this.baseUrl = (config.baseUrl ?? 'http://localhost:11434').replace(/\/$/, '')
   }
 
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
+  async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
+    const { systemPrompt, temperature, prefill } = options
     const messages: { role: string; content: string }[] = []
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt })
-    }
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
     messages.push({ role: 'user', content: prompt })
+    if (prefill) messages.push({ role: 'assistant', content: prefill })
+
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      messages,
+      stream: false,
+    }
+    if (temperature !== undefined) body.options = { temperature }
 
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        stream: false,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!response.ok) {
@@ -188,7 +206,8 @@ class OllamaProvider implements AIService {
     }
 
     const data = await response.json()
-    return data.message?.content ?? ''
+    const text = data.message?.content ?? ''
+    return prefill ? prefill + text : text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
