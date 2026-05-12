@@ -12,7 +12,8 @@ export default function ListView() {
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const categories = useCategoriesStore((s) => s.categories)
   const defaultSortOrder = useSettingsStore((s) => s.defaultSortOrder)
-  const { theme, toggleTheme } = useSettingsStore()
+  const theme = useSettingsStore((s) => s.theme)
+  const toggleTheme = useSettingsStore((s) => s.toggleTheme)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null)

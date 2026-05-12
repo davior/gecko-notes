@@ -92,6 +92,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           content_preview: extractContentPreview(response.data.content),
           category_id: response.data.category_id,
           tags: response.data.tags,
+          is_pinned: response.data.is_pinned,
           created_at: response.data.created_at,
           modified_at: response.data.modified_at,
         },
