@@ -25,16 +25,7 @@ function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
   return providers.find((p) => p.is_active && p.enabled) ?? null
 }
 
-function applyTheme(theme: 'light' | 'dark') {
-  if (theme === 'dark') {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
-}
-
 const storedTheme = (localStorage.getItem('theme') as 'light' | 'dark') ?? 'light'
-applyTheme(storedTheme)
 
 function deriveAIService(providers: AIProvider[]): AIService | null {
   const active = deriveActiveProvider(providers)
@@ -129,7 +120,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   toggleTheme() {
     const next = get().theme === 'light' ? 'dark' : 'light'
     localStorage.setItem('theme', next)
-    applyTheme(next)
     set({ theme: next })
   },
 }))
