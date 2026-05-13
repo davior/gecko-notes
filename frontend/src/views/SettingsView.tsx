@@ -1,14 +1,16 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import CategoryManager from '@/components/settings/CategoryManager'
 import AIProviderManager from '@/components/settings/AIProviderManager'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
 import UserManager from '@/components/settings/UserManager'
+import ProfileSettings from '@/components/settings/ProfileSettings'
 import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
+  { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
   { to: '/settings/categories', label: 'Categories', icon: Tag, key: 'categories' },
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
@@ -124,6 +126,7 @@ export default function SettingsView() {
               </div>
             )}
 
+            {tab === 'profile' && <ProfileSettings />}
             {tab === 'users' && <UserManager />}
 
             {tab === 'general' && (

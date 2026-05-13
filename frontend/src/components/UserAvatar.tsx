@@ -8,7 +8,7 @@ export default function UserAvatar() {
   const initial = user.username.charAt(0).toUpperCase()
 
   return (
-    <Link to="/profile" title={`Profile: ${user.username}`} className="shrink-0">
+    <Link to="/settings/profile" title={`Profile: ${user.username}`} className="shrink-0">
       {user.avatar_url ? (
         <img
           src={user.avatar_url}
