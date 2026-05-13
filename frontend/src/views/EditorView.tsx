@@ -55,6 +55,9 @@ export default function EditorView() {
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingTags, setGeneratingTags] = useState(false)
+  const [generatingSummary, setGeneratingSummary] = useState(false)
+  const [summary, setSummary] = useState<string>('')
+  const [summaryOpen, setSummaryOpen] = useState(false)
   const [selectedText, setSelectedText] = useState('')
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
@@ -134,6 +137,8 @@ export default function EditorView() {
         setTitle(data.title)
         setCategoryId(data.category_id)
         setTags([...data.tags])
+        setSummary(data.summary ?? '')
+        setSummaryOpen(Boolean(data.summary))
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         setLoaded(true)
       }
@@ -271,6 +276,28 @@ export default function EditorView() {
     setSuggestedTags(generated.filter((t) => !tags.includes(t)))
   }
 
+  async function handleGenerateSummary() {
+    if (!settingsStore.aiService) { showToast('No AI provider configured'); return }
+    setGeneratingSummary(true)
+    try {
+      const content = extractPlainText()
+      const generated = await settingsStore.aiService.generateSummary(
+        `${title}\n\n${content}`,
+        settingsStore.summaryPrompt,
+      )
+      setSummary(generated)
+      setSummaryOpen(true)
+      const noteId = createdNoteId.current || latestNoteId.current
+      if (noteId) {
+        await notesStore.updateNote(noteId, { summary: generated })
+      }
+    } catch {
+      showToast('Failed to generate summary')
+    } finally {
+      setGeneratingSummary(false)
+    }
+  }
+
   function autoResizeTitle(el: HTMLTextAreaElement) {
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
@@ -389,7 +416,35 @@ export default function EditorView() {
             >
               {generatingTags ? 'Generating...' : '✦ Generate Tags'}
             </button>
+
+            <button
+              className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-purple-50 hover:text-purple-600 hover:border-purple-200 transition-colors flex items-center gap-1"
+              disabled={generatingSummary}
+              onClick={handleGenerateSummary}
+            >
+              {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
+            </button>
           </div>
+
+          {summary && (
+            <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                onClick={() => setSummaryOpen((o) => !o)}
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="text-purple-500">✦</span>
+                  AI Summary
+                </span>
+                <span className="text-gray-400">{summaryOpen ? '▲' : '▼'}</span>
+              </button>
+              {summaryOpen && (
+                <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed whitespace-pre-wrap">
+                  {summary}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-4 mt-2 text-xs text-gray-400">
             {note && <span>Created {formatDate(note.created_at)}</span>}

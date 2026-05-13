@@ -10,6 +10,7 @@ export interface AICompleteOptions {
 export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
   generateTags(noteContent: string): Promise<string[]>
+  generateSummary(noteContent: string, prompt: string): Promise<string>
   summarise(noteContent: string): Promise<string>
   improveWriting(text: string): Promise<string>
   continueWriting(context: string): Promise<string>
@@ -20,6 +21,17 @@ const TAG_GENERATION_PROMPT = `You are a tagging assistant. Analyse the followin
 
 Content:
 {note_content}`
+
+export const DEFAULT_SUMMARY_PROMPT = `You are a knowledge indexing assistant. Create a dense, factual summary of the following note optimised for use in a Retrieval-Augmented Generation (RAG) system.
+
+Requirements:
+- Capture the main topic, key facts, named entities, dates, numbers, and relationships
+- Be self-contained and understandable without the full note
+- Aim for 100-200 words
+- Use plain, direct language — no preamble like "This note discusses..."
+- Preserve technical terms, proper nouns, and specific details exactly
+
+Return only the summary text, no preamble or explanation.`
 
 // ─── Anthropic Provider ───────────────────────────────────────────────────────
 
@@ -55,6 +67,10 @@ class AnthropicProvider implements AIService {
     } catch {
       return []
     }
+  }
+
+  async generateSummary(noteContent: string, prompt: string): Promise<string> {
+    return this.complete(noteContent, { systemPrompt: prompt })
   }
 
   async summarise(noteContent: string): Promise<string> {
@@ -140,6 +156,10 @@ class OpenAIProvider implements AIService {
     }
   }
 
+  async generateSummary(noteContent: string, prompt: string): Promise<string> {
+    return this.complete(noteContent, { systemPrompt: prompt })
+  }
+
   async summarise(noteContent: string): Promise<string> {
     return this.complete(
       `Please summarise the following note content concisely:\n\n${noteContent}`,
@@ -218,6 +238,10 @@ class OllamaProvider implements AIService {
     } catch {
       return []
     }
+  }
+
+  async generateSummary(noteContent: string, prompt: string): Promise<string> {
+    return this.complete(noteContent, { systemPrompt: prompt })
   }
 
   async summarise(noteContent: string): Promise<string> {

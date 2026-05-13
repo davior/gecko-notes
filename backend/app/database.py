@@ -28,6 +28,11 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN summary TEXT"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():

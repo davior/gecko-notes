@@ -67,6 +67,7 @@ def note_to_read(note: Note) -> NoteRead:
         category_id=note.category_id,
         tags=tags,
         is_pinned=note.is_pinned,
+        summary=note.summary,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
@@ -185,6 +186,8 @@ def update_note(note_id: str, payload: NoteUpdate, session: Session = Depends(ge
         note.tags = json.dumps(payload.tags)
     if payload.is_pinned is not None:
         note.is_pinned = payload.is_pinned
+    if payload.summary is not None:
+        note.summary = payload.summary
 
     note.modified_at = datetime.now(timezone.utc)
     session.add(note)
