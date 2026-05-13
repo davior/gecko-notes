@@ -10,21 +10,26 @@ router = APIRouter()
 MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
 
 
-def get_media_dir():
-    os.makedirs(MEDIA_DIR, exist_ok=True)
-    return MEDIA_DIR
+def get_user_media_dir(user_id: str) -> str:
+    path = os.path.join(MEDIA_DIR, user_id)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 @router.post("/upload", response_model=DataResponse[MediaUploadResponse])
 async def upload_media(request: Request, file: UploadFile = File(...)):
-    media_dir = get_media_dir()
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_dir = get_user_media_dir(user_id)
 
     ext = ""
     if file.filename and "." in file.filename:
         ext = "." + file.filename.rsplit(".", 1)[-1].lower()
 
     filename = f"{uuid.uuid4()}{ext}"
-    file_path = os.path.join(media_dir, filename)
+    file_path = os.path.join(user_dir, filename)
 
     contents = await file.read()
     with open(file_path, "wb") as f:
@@ -33,9 +38,8 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     size = len(contents)
     mime_type = file.content_type or "application/octet-stream"
 
-    # Build URL - use the request's base URL
     base_url = str(request.base_url).rstrip("/")
-    url = f"{base_url}/media/{filename}"
+    url = f"{base_url}/media/{user_id}/{filename}"
 
     return DataResponse(data=MediaUploadResponse(
         url=url,
@@ -46,13 +50,16 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
 
 
 @router.delete("/{filename}", status_code=204)
-def delete_media(filename: str):
-    media_dir = get_media_dir()
+def delete_media(filename: str, request: Request):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     # Security: prevent path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail={"code": "invalid_filename", "message": "Invalid filename"})
 
-    file_path = os.path.join(media_dir, filename)
+    file_path = os.path.join(MEDIA_DIR, user_id, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "File not found"})
 
