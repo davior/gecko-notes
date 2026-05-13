@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2 } from 'lucide-react'
+import UserAvatar from '@/components/UserAvatar'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -344,6 +345,7 @@ export default function EditorView() {
           >
             <Trash2 className="w-4 h-4" />
           </button>
+          <UserAvatar />
         </div>
       </header>
 

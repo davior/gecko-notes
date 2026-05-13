@@ -13,12 +13,21 @@ engine = create_engine(
 
 def _run_migrations():
     with engine.connect() as conn:
-        # Add is_pinned column if it doesn't exist (idempotent migration)
         try:
             conn.execute(text("ALTER TABLE note ADD COLUMN is_pinned BOOLEAN NOT NULL DEFAULT 0"))
             conn.commit()
         except Exception:
-            pass  # Column already exists
+            pass
+        try:
+            conn.execute(text("ALTER TABLE user ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE user ADD COLUMN avatar_url TEXT"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():

@@ -10,6 +10,7 @@ from app.database import init_db, get_session, engine
 from app.seed import run_seed
 from app.routers import notes, categories, media, settings
 from app.routers import auth as auth_router
+from app.routers import users as users_router
 from app.auth import decode_token
 from sqlmodel import Session
 
@@ -70,6 +71,7 @@ async def jwt_auth_middleware(request: Request, call_next):
 
 
 app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
+app.include_router(users_router.router, prefix="/api/users", tags=["users"])
 app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])

@@ -1,11 +1,16 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/auth'
 import CategoryManager from '@/components/settings/CategoryManager'
 import AIProviderManager from '@/components/settings/AIProviderManager'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
+import UserManager from '@/components/settings/UserManager'
+import ProfileSettings from '@/components/settings/ProfileSettings'
+import UserAvatar from '@/components/UserAvatar'
 
-const tabs = [
+const baseTabs = [
+  { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
   { to: '/settings/categories', label: 'Categories', icon: Tag, key: 'categories' },
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
@@ -16,6 +21,11 @@ export default function SettingsView() {
   const navigate = useNavigate()
   const { tab = 'categories' } = useParams<{ tab: string }>()
   const { defaultSortOrder, updateAppSettings, aiTemperature, aiPrefill } = useSettingsStore()
+  const user = useAuthStore((s) => s.user)
+
+  const tabs = user?.is_admin
+    ? [...baseTabs, { to: '/settings/users', label: 'Users', icon: Users, key: 'users' }]
+    : baseTabs
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
@@ -24,6 +34,8 @@ export default function SettingsView() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
+        <div className="flex-1" />
+        <UserAvatar />
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -113,6 +125,9 @@ export default function SettingsView() {
                 </div>
               </div>
             )}
+
+            {tab === 'profile' && <ProfileSettings />}
+            {tab === 'users' && <UserManager />}
 
             {tab === 'general' && (
               <div>

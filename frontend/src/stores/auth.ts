@@ -11,6 +11,8 @@ interface AuthState {
   register: (username: string, email: string, password: string) => Promise<void>
   logout: () => void
   initAuth: () => void
+  updateProfile: (data: Partial<Pick<User, 'username' | 'email' | 'avatar_url'>>) => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
 }
 
 function loadStoredAuth(): { user: User | null; token: string | null } {
@@ -77,5 +79,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     set({ token: null, user: null, isAuthenticated: false, error: null })
+  },
+
+  async updateProfile(data) {
+    const updated = await authApi.updateMe(data)
+    localStorage.setItem('auth_user', JSON.stringify(updated))
+    set({ user: updated })
+  },
+
+  async changePassword(currentPassword, newPassword) {
+    await authApi.changePassword(currentPassword, newPassword)
   },
 }))

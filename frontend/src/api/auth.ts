@@ -5,6 +5,8 @@ export interface User {
   username: string
   email: string
   is_active: boolean
+  is_admin: boolean
+  avatar_url: string | null
   created_at: string
 }
 
@@ -28,5 +30,14 @@ export const authApi = {
   async me(): Promise<User> {
     const res = await client.get<User>('/auth/me')
     return res.data
+  },
+
+  async updateMe(data: Partial<Pick<User, 'username' | 'email' | 'avatar_url'>>): Promise<User> {
+    const res = await client.patch<User>('/auth/me', data)
+    return res.data
+  },
+
+  async changePassword(current_password: string, new_password: string): Promise<void> {
+    await client.post('/auth/me/change-password', { current_password, new_password })
   },
 }

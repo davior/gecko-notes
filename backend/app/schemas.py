@@ -196,10 +196,32 @@ class UserRead(BaseModel):
     username: str
     email: str
     is_active: bool
+    is_admin: bool
+    avatar_url: Optional[str]
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AdminUserUpdate(BaseModel):
+    is_active: Optional[bool] = None
+    is_admin: Optional[bool] = None
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str
 
 
 class Token(BaseModel):
