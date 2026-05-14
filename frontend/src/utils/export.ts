@@ -185,17 +185,28 @@ export async function exportToPDF(note: Note): Promise<void> {
   container.innerHTML = contentHTML
   document.body.appendChild(container)
 
+  // Replace img src with data URLs so html2canvas can render cross-origin images
   await Promise.all(
-    Array.from(container.querySelectorAll('img')).map(
-      (img) =>
-        new Promise<void>((resolve) => {
-          if ((img as HTMLImageElement).complete) resolve()
-          else {
-            ;(img as HTMLImageElement).onload = () => resolve()
-            ;(img as HTMLImageElement).onerror = () => resolve()
-          }
+    Array.from(container.querySelectorAll('img')).map(async (imgEl) => {
+      const img = imgEl as HTMLImageElement
+      try {
+        const resp = await fetch(img.src)
+        const blob = await resp.blob()
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = reject
+          reader.readAsDataURL(blob)
         })
-    )
+        img.src = dataUrl
+        await new Promise<void>((resolve) => {
+          if (img.complete) resolve()
+          else { img.onload = () => resolve(); img.onerror = () => resolve() }
+        })
+      } catch {
+        // keep original src if fetch fails
+      }
+    })
   )
 
   try {
