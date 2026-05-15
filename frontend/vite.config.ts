@@ -8,6 +8,24 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    // Ensure only one copy of each ProseMirror package ends up in the bundle.
+    // Without this, Rollup includes duplicates and schema instanceof checks break.
+    dedupe: [
+      'prosemirror-model',
+      'prosemirror-state',
+      'prosemirror-view',
+      'prosemirror-transform',
+      'prosemirror-schema-list',
+      'prosemirror-commands',
+      'prosemirror-keymap',
+      'prosemirror-history',
+      'prosemirror-inputrules',
+      'prosemirror-tables',
+      'prosemirror-dropcursor',
+      'prosemirror-gapcursor',
+      '@tiptap/core',
+      '@tiptap/pm',
+    ],
   },
   build: {
     outDir: 'dist',
