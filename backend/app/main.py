@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gecko Notes API", version="1.0.0", lifespan=lifespan)
 
-app.add_middleware(ProxyHeadersMiddleware, trusted="*")
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGIN", "*").split(",") if o.strip()]
 
