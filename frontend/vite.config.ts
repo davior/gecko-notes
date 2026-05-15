@@ -30,6 +30,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      // BlockNote/TipTap declare sideEffects:['*.css'] which lets Rollup
+      // tree-shake their JS. That removes schema registrations and causes
+      // ProseMirror's renderSpec to receive invalid arrays at runtime.
+      treeshake: {
+        moduleSideEffects: (id) =>
+          id.includes('@blocknote') ||
+          id.includes('@tiptap') ||
+          id.includes('prosemirror'),
+      },
+    },
   },
   server: {
     port: 5173,
