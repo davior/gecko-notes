@@ -264,7 +264,7 @@ export async function exportToWord(note: Note): Promise<void> {
         try {
           const { data, width, height } = await fetchImageData(url)
           return new Paragraph({
-            children: [new ImageRun({ data, transformation: { width, height } })],
+            children: [new ImageRun({ data, type: 'png', transformation: { width, height } })],
           })
         } catch {
           return new Paragraph({ children: [new TextRun({ text: '[Image]', italics: true })] })
