@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from jose import JWTError
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.database import init_db, get_session, engine
 from app.seed import run_seed
@@ -34,6 +35,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Gecko Notes API", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(ProxyHeadersMiddleware, trusted="*")
 
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGIN", "*").split(",") if o.strip()]
 

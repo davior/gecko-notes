@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Component } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
@@ -28,10 +29,20 @@ function formatDate(dateStr: string): string {
 
 function parseNoteContent(content: string): PartialBlock[] {
   try {
-    const blocks = JSON.parse(content) as PartialBlock[]
-    return blocks.length > 0 ? blocks : EMPTY_DOCUMENT
+    const blocks = JSON.parse(content)
+    return Array.isArray(blocks) && blocks.length > 0 ? blocks as PartialBlock[] : EMPTY_DOCUMENT
   } catch {
     return EMPTY_DOCUMENT
+  }
+}
+
+class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  render() {
+    if (this.state.hasError)
+      return <div className="p-8 text-gray-500 text-sm">This note could not be rendered. The content may be corrupted.</div>
+    return this.props.children
   }
 }
 
@@ -316,7 +327,7 @@ export default function EditorView() {
     if (!editor) return
     const blocks = await editor.tryParseMarkdownToBlocks(text)
     editor.insertBlocks(
-      blocks.length > 0 ? blocks : [{ type: 'paragraph', content: text }],
+      blocks.length > 0 ? blocks : [{ type: 'paragraph', content: [{ type: 'text', text, styles: {} }] }],
       editor.getTextCursorPosition().block,
       'after',
     )
@@ -425,11 +436,13 @@ export default function EditorView() {
             </svg>
           </div>
         ) : (
-          <BlockNoteView
-            editor={editor}
-            onChange={scheduleAutosave}
-            theme={theme}
-          />
+          <EditorErrorBoundary>
+            <BlockNoteView
+              editor={editor}
+              onChange={scheduleAutosave}
+              theme={theme}
+            />
+          </EditorErrorBoundary>
         )}
       </div>
 
