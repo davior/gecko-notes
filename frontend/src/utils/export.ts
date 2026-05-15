@@ -3,13 +3,17 @@ import type { Note } from '@/api/notes'
 type DocxParagraph = InstanceType<(typeof import('docx'))['Paragraph']>
 type DocxTextRun = InstanceType<(typeof import('docx'))['TextRun']>
 
-// ─── Helper: extract plain text from BlockNote JSON ───────────────────────────
+// ─── Helper: extract plain text (images become [Image] references) ────────────
 
 function extractPlainText(contentStr: string): string {
   try {
     const blocks = JSON.parse(contentStr)
     const texts: string[] = []
     function processBlock(block: Record<string, unknown>) {
+      if (block.type === 'image') {
+        texts.push('[Image]')
+        return
+      }
       const content = block.content
       if (Array.isArray(content)) {
         for (const item of content) {
@@ -40,11 +44,54 @@ function extractPlainText(contentStr: string): string {
   }
 }
 
-// ─── Helper: render note to HTML string ──────────────────────────────────────
+// ─── Helper: render note to HTML string (with images) ────────────────────────
 
 function noteToHTML(note: Note): string {
-  const plainText = extractPlainText(note.content)
-  const lines = plainText.split('\n').map((line) => `<p>${escapeHtml(line)}</p>`).join('')
+  let bodyContent = ''
+  try {
+    const blocks = JSON.parse(note.content) as Record<string, unknown>[]
+    const parts: string[] = []
+
+    function processBlock(block: Record<string, unknown>) {
+      if (block.type === 'image') {
+        const props = block.props as Record<string, unknown> | undefined
+        const url = props?.url as string | undefined
+        if (url) {
+          parts.push(`<figure style="margin:16px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`)
+        }
+        return
+      }
+      const content = block.content
+      const texts: string[] = []
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          if (typeof item === 'object' && item !== null) {
+            const typedItem = item as Record<string, unknown>
+            if (typedItem.type === 'text' && typeof typedItem.text === 'string') {
+              texts.push(escapeHtml(typedItem.text))
+            }
+          }
+        }
+      }
+      parts.push(`<p>${texts.join('')}</p>`)
+      const children = block.children
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (typeof child === 'object' && child !== null) {
+            processBlock(child as Record<string, unknown>)
+          }
+        }
+      }
+    }
+
+    for (const block of blocks) {
+      processBlock(block)
+    }
+    bodyContent = parts.join('')
+  } catch {
+    bodyContent = note.content.split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
+  }
+
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -55,11 +102,13 @@ function noteToHTML(note: Note): string {
   body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }
   h1 { font-size: 2em; margin-bottom: 0.5em; }
   p { line-height: 1.6; margin: 0.5em 0; }
+  figure { margin: 16px 0; }
+  img { max-width: 100%; height: auto; }
 </style>
 </head>
 <body>
   <h1>${escapeHtml(note.title)}</h1>
-  <div class="content">${lines}</div>
+  <div class="content">${bodyContent}</div>
 </body>
 </html>`
 }
@@ -72,6 +121,32 @@ function escapeHtml(str: string): string {
     .replace(/"/g, '&quot;')
 }
 
+// ─── Helper: fetch image as ArrayBuffer with display dimensions ───────────────
+
+async function fetchImageData(url: string): Promise<{ data: ArrayBuffer; width: number; height: number }> {
+  const response = await fetch(url)
+  const blob = await response.blob()
+  const arrayBuffer = await blob.arrayBuffer()
+  const objectUrl = URL.createObjectURL(blob)
+  const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const maxWidth = 600
+      let w = img.naturalWidth
+      let h = img.naturalHeight
+      if (w > maxWidth) {
+        h = Math.round((h * maxWidth) / w)
+        w = maxWidth
+      }
+      resolve({ width: w, height: h })
+    }
+    img.onerror = reject
+    img.src = objectUrl
+  })
+  URL.revokeObjectURL(objectUrl)
+  return { data: arrayBuffer, ...dims }
+}
+
 // ─── Export: PDF ──────────────────────────────────────────────────────────────
 
 export async function exportToPDF(note: Note): Promise<void> {
@@ -81,8 +156,58 @@ export async function exportToPDF(note: Note): Promise<void> {
   const container = document.createElement('div')
   container.style.cssText =
     'position:fixed;left:-9999px;top:0;width:794px;background:white;padding:40px;font-family:Georgia,serif;color:#111;'
-  container.innerHTML = `<h1 style="font-size:28px;margin-bottom:16px">${escapeHtml(note.title)}</h1><div style="line-height:1.6">${extractPlainText(note.content).split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')}</div>`
+
+  let contentHTML = `<h1 style="font-size:28px;margin-bottom:16px">${escapeHtml(note.title)}</h1><div style="line-height:1.6">`
+  try {
+    const blocks = JSON.parse(note.content) as Record<string, unknown>[]
+    function buildBlockHTML(block: Record<string, unknown>): string {
+      if (block.type === 'image') {
+        const props = block.props as Record<string, unknown> | undefined
+        const url = props?.url as string | undefined
+        if (url) {
+          return `<figure style="margin:8px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`
+        }
+        return ''
+      }
+      const content = block.content as Array<{ type: string; text: string }> | undefined
+      const text = Array.isArray(content)
+        ? content.filter((i) => i.type === 'text').map((i) => escapeHtml(i.text)).join('')
+        : ''
+      const children = block.children as Record<string, unknown>[] | undefined
+      const childrenHTML = Array.isArray(children) ? children.map(buildBlockHTML).join('') : ''
+      return `<p>${text}</p>${childrenHTML}`
+    }
+    contentHTML += blocks.map(buildBlockHTML).join('')
+  } catch {
+    contentHTML += extractPlainText(note.content).split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
+  }
+  contentHTML += '</div>'
+  container.innerHTML = contentHTML
   document.body.appendChild(container)
+
+  // Replace img src with data URLs so html2canvas can render cross-origin images
+  await Promise.all(
+    Array.from(container.querySelectorAll('img')).map(async (imgEl) => {
+      const img = imgEl as HTMLImageElement
+      try {
+        const resp = await fetch(img.src)
+        const blob = await resp.blob()
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = reject
+          reader.readAsDataURL(blob)
+        })
+        img.src = dataUrl
+        await new Promise<void>((resolve) => {
+          if (img.complete) resolve()
+          else { img.onload = () => resolve(); img.onerror = () => resolve() }
+        })
+      } catch {
+        // keep original src if fetch fails
+      }
+    })
+  )
 
   try {
     const canvas = await html2canvas(container, { scale: 2 })
@@ -115,7 +240,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 // ─── Export: Word (.docx) ─────────────────────────────────────────────────────
 
 export async function exportToWord(note: Note): Promise<void> {
-  const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import('docx')
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun } = await import('docx')
 
   const paragraphs: DocxParagraph[] = [
     new Paragraph({
@@ -131,7 +256,23 @@ export async function exportToWord(note: Note): Promise<void> {
     blocks = []
   }
 
-  function blockToParagraph(block: Record<string, unknown>): DocxParagraph {
+  async function blockToParagraph(block: Record<string, unknown>): Promise<DocxParagraph> {
+    if (block.type === 'image') {
+      const props = block.props as Record<string, unknown> | undefined
+      const url = props?.url as string | undefined
+      if (url) {
+        try {
+          const { data, width, height } = await fetchImageData(url)
+          return new Paragraph({
+            children: [new ImageRun({ data, transformation: { width, height } })],
+          })
+        } catch {
+          return new Paragraph({ children: [new TextRun({ text: '[Image]', italics: true })] })
+        }
+      }
+      return new Paragraph({ children: [] })
+    }
+
     const blockType = block.type as string
     const content = block.content as Array<{ type: string; text: string; styles?: Record<string, boolean> }> | undefined
     const runs: DocxTextRun[] = []
@@ -163,11 +304,11 @@ export async function exportToWord(note: Note): Promise<void> {
   }
 
   for (const block of blocks) {
-    paragraphs.push(blockToParagraph(block))
+    paragraphs.push(await blockToParagraph(block))
     const children = block.children as Record<string, unknown>[] | undefined
     if (Array.isArray(children)) {
       for (const child of children) {
-        paragraphs.push(blockToParagraph(child))
+        paragraphs.push(await blockToParagraph(child))
       }
     }
   }
