@@ -19,6 +19,7 @@ export interface Note {
   category_id: string
   tags: string[]
   is_pinned: boolean
+  summary?: string | null
   created_at: string
   modified_at: string
 }
@@ -36,6 +37,7 @@ export interface NoteUpdate {
   category_id?: string
   tags?: string[]
   is_pinned?: boolean
+  summary?: string | null
 }
 
 export interface ListNotesParams {

@@ -1,7 +1,9 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useState } from 'react'
 import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
+import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 import CategoryManager from '@/components/settings/CategoryManager'
 import AIProviderManager from '@/components/settings/AIProviderManager'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
@@ -20,7 +22,9 @@ const baseTabs = [
 export default function SettingsView() {
   const navigate = useNavigate()
   const { tab = 'categories' } = useParams<{ tab: string }>()
-  const { defaultSortOrder, updateAppSettings, aiTemperature, aiPrefill } = useSettingsStore()
+  const { defaultSortOrder, updateAppSettings, aiTemperature, aiPrefill, summaryPrompt } = useSettingsStore()
+  const [localSummaryPrompt, setLocalSummaryPrompt] = useState<string | null>(null)
+  const displaySummaryPrompt = localSummaryPrompt ?? summaryPrompt
   const user = useAuthStore((s) => s.user)
 
   const tabs = user?.is_admin
@@ -120,6 +124,37 @@ export default function SettingsView() {
                       <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
                         Responses will begin: <em className="text-gray-600 dark:text-gray-300">&ldquo;{aiPrefill}&rdquo;</em>
                       </p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Summary Prompt</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                    Instructions given to the AI when generating a note summary. The default prompt produces dense, factual summaries optimised for RAG retrieval.
+                  </p>
+                  <div className="card p-4 space-y-3">
+                    <textarea
+                      className="input min-h-[160px] resize-y font-mono text-xs"
+                      value={displaySummaryPrompt}
+                      onChange={(e) => setLocalSummaryPrompt(e.target.value)}
+                      onBlur={() => {
+                        if (localSummaryPrompt !== null) {
+                          void updateAppSettings({ summary_prompt: localSummaryPrompt || DEFAULT_SUMMARY_PROMPT })
+                          setLocalSummaryPrompt(null)
+                        }
+                      }}
+                    />
+                    {displaySummaryPrompt !== DEFAULT_SUMMARY_PROMPT && (
+                      <button
+                        className="text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 underline"
+                        onClick={() => {
+                          setLocalSummaryPrompt(null)
+                          void updateAppSettings({ summary_prompt: DEFAULT_SUMMARY_PROMPT })
+                        }}
+                      >
+                        Reset to default
+                      </button>
                     )}
                   </div>
                 </div>

@@ -30,6 +30,7 @@ class Note(SQLModel, table=True):
     category_id: str = Field(foreign_key="category.id")
     tags: str = Field(default='[]')  # JSON array serialised as string
     is_pinned: bool = Field(default=False)
+    summary: Optional[str] = None
     created_at: datetime
     modified_at: datetime
 

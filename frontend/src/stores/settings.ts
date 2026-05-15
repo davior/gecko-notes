@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { settingsApi, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate } from '@/api/settings'
-import { createAIService, type AIService } from '@/services/ai'
+import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
   appSettings: Record<string, unknown>
@@ -14,6 +14,7 @@ interface SettingsState {
   activeSystemPrompt: SystemPrompt | null
   aiTemperature: number
   aiPrefill: string
+  summaryPrompt: string
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -57,6 +58,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeSystemPrompt: null,
   aiTemperature: 0.8,
   aiPrefill: '',
+  summaryPrompt: DEFAULT_SUMMARY_PROMPT,
 
   async loadSettings() {
     set({ loading: true })
@@ -76,6 +78,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         activeSystemPrompt: deriveActiveSystemPrompt(prompts.data),
         aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
+        summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
       })
     } finally {
       set({ loading: false })
@@ -89,6 +92,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
       aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
       aiPrefill: (updated['ai_prefill'] as string) ?? '',
+      summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
     })
   },
 
