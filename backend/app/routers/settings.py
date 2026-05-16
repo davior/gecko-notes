@@ -2,12 +2,12 @@ import json
 import uuid
 import httpx
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import AIProvider, AppSetting, SystemPrompt
+from app.models import AIProvider, AppSetting, UserSetting, SystemPrompt
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
     DataResponse, ListResponse, SettingsUpdate,
@@ -17,11 +17,16 @@ from app.schemas import (
 router = APIRouter()
 
 
-# ─── App Settings ────────────────────────────────────────────────────────────
+def _get_user_id(request: Request) -> str:
+    return request.state.user_id
+
+
+# ─── App Settings (per-user) ──────────────────────────────────────────────────
 
 @router.get("", response_model=Dict[str, Any])
-def get_settings(session: Session = Depends(get_session)):
-    rows = session.exec(select(AppSetting)).all()
+def get_settings(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    rows = session.exec(select(UserSetting).where(UserSetting.user_id == user_id)).all()
     result = {}
     for row in rows:
         try:
@@ -32,18 +37,21 @@ def get_settings(session: Session = Depends(get_session)):
 
 
 @router.put("", response_model=Dict[str, Any])
-def update_settings(payload: SettingsUpdate, session: Session = Depends(get_session)):
+def update_settings(payload: SettingsUpdate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     for key, value in payload.settings.items():
-        existing = session.get(AppSetting, key)
+        existing = session.exec(
+            select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == key)
+        ).first()
         serialised = json.dumps(value)
         if existing:
             existing.value = serialised
             session.add(existing)
         else:
-            session.add(AppSetting(key=key, value=serialised))
+            session.add(UserSetting(user_id=user_id, key=key, value=serialised))
     session.commit()
 
-    rows = session.exec(select(AppSetting)).all()
+    rows = session.exec(select(UserSetting).where(UserSetting.user_id == user_id)).all()
     result = {}
     for row in rows:
         try:
@@ -53,11 +61,12 @@ def update_settings(payload: SettingsUpdate, session: Session = Depends(get_sess
     return result
 
 
-# ─── AI Providers ─────────────────────────────────────────────────────────────
+# ─── AI Providers (per-user) ──────────────────────────────────────────────────
 
 @router.get("/ai-providers", response_model=ListResponse[AIProviderRead])
-def list_ai_providers(session: Session = Depends(get_session)):
-    providers = session.exec(select(AIProvider)).all()
+def list_ai_providers(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    providers = session.exec(select(AIProvider).where(AIProvider.user_id == user_id)).all()
     return ListResponse(
         data=[AIProviderRead.model_validate(p) for p in providers],
         total=len(providers),
@@ -67,7 +76,8 @@ def list_ai_providers(session: Session = Depends(get_session)):
 
 
 @router.post("/ai-providers", response_model=DataResponse[AIProviderRead], status_code=201)
-def create_ai_provider(payload: AIProviderCreate, session: Session = Depends(get_session)):
+def create_ai_provider(payload: AIProviderCreate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     provider = AIProvider(
         id=str(uuid.uuid4()),
         name=payload.name,
@@ -77,10 +87,10 @@ def create_ai_provider(payload: AIProviderCreate, session: Session = Depends(get
         model=payload.model,
         enabled=payload.enabled,
         is_active=payload.is_active,
+        user_id=user_id,
     )
     if payload.is_active:
-        # Deactivate all others
-        others = session.exec(select(AIProvider)).all()
+        others = session.exec(select(AIProvider).where(AIProvider.user_id == user_id)).all()
         for o in others:
             o.is_active = False
             session.add(o)
@@ -94,10 +104,12 @@ def create_ai_provider(payload: AIProviderCreate, session: Session = Depends(get
 def update_ai_provider(
     provider_id: str,
     payload: AIProviderUpdate,
+    request: Request,
     session: Session = Depends(get_session),
 ):
+    user_id = _get_user_id(request)
     provider = session.get(AIProvider, provider_id)
-    if not provider:
+    if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
     for field in ["name", "provider_type", "api_key", "base_url", "model", "enabled", "is_active"]:
@@ -106,7 +118,7 @@ def update_ai_provider(
             setattr(provider, field, val)
 
     if payload.is_active:
-        others = session.exec(select(AIProvider)).all()
+        others = session.exec(select(AIProvider).where(AIProvider.user_id == user_id)).all()
         for o in others:
             if o.id != provider_id:
                 o.is_active = False
@@ -119,21 +131,23 @@ def update_ai_provider(
 
 
 @router.delete("/ai-providers/{provider_id}", status_code=204)
-def delete_ai_provider(provider_id: str, session: Session = Depends(get_session)):
+def delete_ai_provider(provider_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     provider = session.get(AIProvider, provider_id)
-    if not provider:
+    if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     session.delete(provider)
     session.commit()
 
 
 @router.post("/ai-providers/{provider_id}/activate", response_model=DataResponse[AIProviderRead])
-def activate_ai_provider(provider_id: str, session: Session = Depends(get_session)):
+def activate_ai_provider(provider_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     provider = session.get(AIProvider, provider_id)
-    if not provider:
+    if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
-    all_providers = session.exec(select(AIProvider)).all()
+    all_providers = session.exec(select(AIProvider).where(AIProvider.user_id == user_id)).all()
     for p in all_providers:
         p.is_active = p.id == provider_id
         session.add(p)
@@ -163,7 +177,6 @@ async def test_ai_provider(payload: AIProviderTest):
                     },
                 )
             if response.status_code in (200, 400):
-                # 400 may mean bad request but the key is valid
                 return {"success": True, "message": "Connection successful"}
             return {"success": False, "message": f"HTTP {response.status_code}"}
 
@@ -203,11 +216,12 @@ async def test_ai_provider(payload: AIProviderTest):
         return {"success": False, "message": str(e)}
 
 
-# ─── System Prompts ───────────────────────────────────────────────────────────
+# ─── System Prompts (per-user) ────────────────────────────────────────────────
 
 @router.get("/system-prompts", response_model=ListResponse[SystemPromptRead])
-def list_system_prompts(session: Session = Depends(get_session)):
-    prompts = session.exec(select(SystemPrompt)).all()
+def list_system_prompts(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    prompts = session.exec(select(SystemPrompt).where(SystemPrompt.user_id == user_id)).all()
     return ListResponse(
         data=[SystemPromptRead.model_validate(p) for p in prompts],
         total=len(prompts),
@@ -217,9 +231,10 @@ def list_system_prompts(session: Session = Depends(get_session)):
 
 
 @router.post("/system-prompts", response_model=DataResponse[SystemPromptRead], status_code=201)
-def create_system_prompt(payload: SystemPromptCreate, session: Session = Depends(get_session)):
+def create_system_prompt(payload: SystemPromptCreate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     if payload.is_active:
-        for p in session.exec(select(SystemPrompt)).all():
+        for p in session.exec(select(SystemPrompt).where(SystemPrompt.user_id == user_id)).all():
             p.is_active = False
             session.add(p)
     prompt = SystemPrompt(
@@ -228,6 +243,7 @@ def create_system_prompt(payload: SystemPromptCreate, session: Session = Depends
         content=payload.content,
         is_active=payload.is_active,
         sort_order=payload.sort_order,
+        user_id=user_id,
     )
     session.add(prompt)
     session.commit()
@@ -236,12 +252,13 @@ def create_system_prompt(payload: SystemPromptCreate, session: Session = Depends
 
 
 @router.put("/system-prompts/{prompt_id}", response_model=DataResponse[SystemPromptRead])
-def update_system_prompt(prompt_id: str, payload: SystemPromptUpdate, session: Session = Depends(get_session)):
+def update_system_prompt(prompt_id: str, payload: SystemPromptUpdate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     prompt = session.get(SystemPrompt, prompt_id)
-    if not prompt:
+    if not prompt or prompt.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
     if payload.is_active:
-        for p in session.exec(select(SystemPrompt)).all():
+        for p in session.exec(select(SystemPrompt).where(SystemPrompt.user_id == user_id)).all():
             if p.id != prompt_id:
                 p.is_active = False
                 session.add(p)
@@ -256,20 +273,22 @@ def update_system_prompt(prompt_id: str, payload: SystemPromptUpdate, session: S
 
 
 @router.delete("/system-prompts/{prompt_id}", status_code=204)
-def delete_system_prompt(prompt_id: str, session: Session = Depends(get_session)):
+def delete_system_prompt(prompt_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     prompt = session.get(SystemPrompt, prompt_id)
-    if not prompt:
+    if not prompt or prompt.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
     session.delete(prompt)
     session.commit()
 
 
 @router.post("/system-prompts/{prompt_id}/activate", response_model=DataResponse[SystemPromptRead])
-def activate_system_prompt(prompt_id: str, session: Session = Depends(get_session)):
+def activate_system_prompt(prompt_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     prompt = session.get(SystemPrompt, prompt_id)
-    if not prompt:
+    if not prompt or prompt.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "System prompt not found"})
-    for p in session.exec(select(SystemPrompt)).all():
+    for p in session.exec(select(SystemPrompt).where(SystemPrompt.user_id == user_id)).all():
         p.is_active = p.id == prompt_id
         session.add(p)
     session.commit()
@@ -290,9 +309,10 @@ class AnthropicProxyRequest(BaseModel):
 
 
 @router.post("/ai-providers/proxy/anthropic")
-async def proxy_anthropic(payload: AnthropicProxyRequest, session: Session = Depends(get_session)):
+async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
     provider = session.get(AIProvider, payload.provider_id)
-    if not provider:
+    if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if provider.provider_type != "anthropic":
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})

@@ -44,9 +44,16 @@ class AIProvider(SQLModel, table=True):
     model: str
     enabled: bool = True
     is_active: bool = False
+    user_id: Optional[str] = Field(default=None, index=True)
 
 
 class AppSetting(SQLModel, table=True):
+    key: str = Field(primary_key=True)
+    value: str  # JSON-serialised value
+
+
+class UserSetting(SQLModel, table=True):
+    user_id: str = Field(primary_key=True)
     key: str = Field(primary_key=True)
     value: str  # JSON-serialised value
 
@@ -57,3 +64,4 @@ class SystemPrompt(SQLModel, table=True):
     content: str
     is_active: bool = Field(default=False)
     sort_order: int = Field(default=0)
+    user_id: Optional[str] = Field(default=None, index=True)

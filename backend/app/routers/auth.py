@@ -7,6 +7,7 @@ from app.database import get_session
 from app.models import User
 from app.schemas import UserCreate, UserLogin, UserRead, Token, UserUpdate, PasswordChange
 from app.auth import hash_password, verify_password, create_access_token
+from app.seed import seed_user_settings
 
 router = APIRouter()
 
@@ -40,6 +41,7 @@ def register(payload: UserCreate, session: Session = Depends(get_session)):
     session.add(user)
     session.commit()
     session.refresh(user)
+    seed_user_settings(session, user.id)
     return UserRead.model_validate(user)
 
 

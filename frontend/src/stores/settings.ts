@@ -29,6 +29,7 @@ interface SettingsState {
   updateSystemPrompt: (id: string, payload: SystemPromptUpdate) => Promise<SystemPrompt>
   deleteSystemPrompt: (id: string) => Promise<void>
   activateSystemPrompt: (id: string) => Promise<SystemPrompt>
+  reset: () => void
 }
 
 function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
@@ -192,5 +193,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       return { systemPrompts: prompts, activeSystemPrompt: deriveActiveSystemPrompt(prompts) }
     })
     return response.data
+  },
+
+  reset() {
+    set({
+      appSettings: {},
+      aiProviders: [],
+      aiService: null,
+      loading: false,
+      activeProvider: null,
+      defaultSortOrder: 'modified_at',
+      systemPrompts: [],
+      activeSystemPrompt: null,
+      aiTemperature: 0.8,
+      aiPrefill: '',
+      summaryPrompt: DEFAULT_SUMMARY_PROMPT,
+      // theme is intentionally not reset — it is device-level, stored in localStorage
+    })
   },
 }))
