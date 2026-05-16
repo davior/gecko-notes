@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { authApi, type User } from '@/api/auth'
+import { useSettingsStore } from '@/stores/settings'
+import { useNotesStore } from '@/stores/notes'
 
 interface AuthState {
   user: User | null
@@ -49,6 +51,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.setItem('auth_token', access_token)
       localStorage.setItem('auth_user', JSON.stringify(user))
       set({ token: access_token, user, isAuthenticated: true })
+      await useSettingsStore.getState().loadSettings()
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
@@ -79,6 +82,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     set({ token: null, user: null, isAuthenticated: false, error: null })
+    useSettingsStore.getState().reset()
+    useNotesStore.getState().reset()
   },
 
   async updateProfile(data) {

@@ -1,6 +1,6 @@
 import uuid
 from sqlmodel import Session, select
-from app.models import Category, AppSetting
+from app.models import Category, AppSetting, UserSetting
 
 DEFAULT_CATEGORIES = [
     {"label": "Article", "emoji": "📝", "color": "#3B82F6"},
@@ -13,6 +13,13 @@ DEFAULT_CATEGORIES = [
 
 DEFAULT_SETTINGS = {
     "default_sort_order": '"modified_at"',
+}
+
+DEFAULT_USER_SETTINGS = {
+    "default_sort_order": '"modified_at"',
+    "ai_temperature": "0.8",
+    "ai_prefill": '""',
+    "summary_prompt": '""',
 }
 
 
@@ -40,6 +47,16 @@ def seed_settings(session: Session):
         if not existing:
             setting = AppSetting(key=key, value=value)
             session.add(setting)
+    session.commit()
+
+
+def seed_user_settings(session: Session, user_id: str):
+    for key, value in DEFAULT_USER_SETTINGS.items():
+        existing = session.exec(
+            select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == key)
+        ).first()
+        if not existing:
+            session.add(UserSetting(user_id=user_id, key=key, value=value))
     session.commit()
 
 
