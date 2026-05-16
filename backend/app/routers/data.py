@@ -300,17 +300,13 @@ def import_apply(
     imported_notes = 0
 
     for cat in data.get("categories", []):
-        existing_category = db.get(Category, cat["id"])
-        if not existing_category:
-            existing_category = db.exec(
-                select(Category).where(
-                    Category.label == cat["label"],
-                    Category.emoji == cat["emoji"],
-                    Category.color == cat["color"],
-                    Category.is_default == cat.get("is_default", False),
-                    Category.sort_order == cat.get("sort_order", 0),
-                )
-            ).first()
+        existing_category = db.exec(
+            select(Category).where(
+                Category.label == cat["label"],
+                Category.emoji == cat["emoji"],
+                Category.color == cat["color"],
+            )
+        ).first()
 
         if not existing_category:
             db.add(
@@ -319,7 +315,7 @@ def import_apply(
                     label=cat["label"],
                     emoji=cat["emoji"],
                     color=cat["color"],
-                    is_default=cat.get("is_default", False),
+                    is_default=False,
                     sort_order=cat.get("sort_order", 0),
                 )
             )

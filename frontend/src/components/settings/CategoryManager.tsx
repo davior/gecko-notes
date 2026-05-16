@@ -48,8 +48,13 @@ export default function CategoryManager() {
 
   async function handleDelete(id: string) {
     if (!confirm('Delete this category?')) return
-    try { await deleteCategory(id) }
-    catch { showError('Cannot delete default categories') }
+    try {
+      await deleteCategory(id)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: { message?: string } } } })
+        ?.response?.data?.detail
+      showError(detail?.message ?? 'Failed to delete category')
+    }
   }
 
   function FormFields({ form, onChange }: { form: FormData; onChange: (f: FormData) => void }) {
