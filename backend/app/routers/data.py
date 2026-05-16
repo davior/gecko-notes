@@ -300,7 +300,19 @@ def import_apply(
     imported_notes = 0
 
     for cat in data.get("categories", []):
-        if not db.get(Category, cat["id"]):
+        existing_category = db.get(Category, cat["id"])
+        if not existing_category:
+            existing_category = db.exec(
+                select(Category).where(
+                    Category.label == cat["label"],
+                    Category.emoji == cat["emoji"],
+                    Category.color == cat["color"],
+                    Category.is_default == cat.get("is_default", False),
+                    Category.sort_order == cat.get("sort_order", 0),
+                )
+            ).first()
+
+        if not existing_category:
             db.add(
                 Category(
                     id=cat["id"],

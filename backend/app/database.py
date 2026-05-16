@@ -124,6 +124,55 @@ def _run_migrations():
                 conn.commit()
         except Exception:
             pass
+        # Collapse exact duplicate categories created by seed + import flows.
+        try:
+            duplicate_groups = conn.execute(text("""
+                SELECT
+                    label,
+                    emoji,
+                    color,
+                    is_default,
+                    sort_order,
+                    COUNT(*) AS total
+                FROM category
+                GROUP BY label, emoji, color, is_default, sort_order
+                HAVING COUNT(*) > 1
+            """)).fetchall()
+
+            for group in duplicate_groups:
+                duplicates = conn.execute(text("""
+                    SELECT id
+                    FROM category
+                    WHERE label = :label
+                      AND emoji = :emoji
+                      AND color = :color
+                      AND is_default = :is_default
+                      AND sort_order = :sort_order
+                    ORDER BY id
+                """), {
+                    "label": group[0],
+                    "emoji": group[1],
+                    "color": group[2],
+                    "is_default": group[3],
+                    "sort_order": group[4],
+                }).fetchall()
+                keep_id = duplicates[0][0]
+                duplicate_ids = [row[0] for row in duplicates[1:]]
+
+                for duplicate_id in duplicate_ids:
+                    conn.execute(text("""
+                        UPDATE note
+                        SET category_id = :keep_id
+                        WHERE category_id = :duplicate_id
+                    """), {"keep_id": keep_id, "duplicate_id": duplicate_id})
+                    conn.execute(text("""
+                        DELETE FROM category
+                        WHERE id = :duplicate_id
+                    """), {"duplicate_id": duplicate_id})
+
+            conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():
