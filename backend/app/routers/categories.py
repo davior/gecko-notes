@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import Category
+from app.models import Category, Note
 from app.schemas import (
     CategoryCreate, CategoryUpdate, CategoryRead,
     DataResponse, ListResponse
@@ -74,5 +74,10 @@ def delete_category(category_id: str, session: Session = Depends(get_session)):
             status_code=400,
             detail={"code": "cannot_delete_default", "message": "Default categories cannot be deleted"},
         )
+    default_cat = session.exec(select(Category).where(Category.is_default == True)).first()
+    if default_cat:
+        for note in session.exec(select(Note).where(Note.category_id == category_id)).all():
+            note.category_id = default_cat.id
+            session.add(note)
     session.delete(category)
     session.commit()
