@@ -1,7 +1,6 @@
 import io
 import json
 import os
-import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -31,72 +30,35 @@ import_sessions: dict = {}
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _extract_image_urls(content: str) -> list[str]:
-    """Return all image URLs referenced in BlockNote JSON content."""
-    try:
-        blocks = json.loads(content)
-        urls: list[str] = []
-
-        def _walk(block_list: list) -> None:
-            for block in block_list:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "image":
-                    url = block.get("props", {}).get("url", "")
-                    if url:
-                        urls.append(url)
-                _walk(block.get("children", []))
-
-        _walk(blocks)
-        return urls
-    except Exception:
+def _get_media_files(user_id: str) -> list[tuple[str, int]]:
+    """Return a sorted list of (filename, byte_size) for the user's own media dir."""
+    user_dir = os.path.join(MEDIA_DIR, user_id)
+    if not os.path.exists(user_dir):
         return []
-
-
-def _get_referenced_media(db: Session) -> list[tuple[str, str, int]]:
-    """Return a deduplicated, sorted list of (zip_entry, fs_path, size).
-
-    Scans every note for image URLs of the form …/media/{user_id}/{filename},
-    resolves them on disk, and deduplicates by filename.  This captures media
-    uploaded by any user, not just the exporting user.
-    """
-    notes = db.exec(select(Note)).all()
-    seen: set[str] = set()
-    result: list[tuple[str, str, int]] = []
-
-    for note in notes:
-        for url in _extract_image_urls(note.content):
-            m = re.search(r"/media/([^/]+)/([^/?#\s]+)", url)
-            if not m:
-                continue
-            note_user_id, filename = m.group(1), m.group(2)
-            if filename in seen:
-                continue
-            fs_path = os.path.join(MEDIA_DIR, note_user_id, filename)
-            if os.path.isfile(fs_path):
-                seen.add(filename)
-                result.append((f"media/{filename}", fs_path, os.path.getsize(fs_path)))
-
-    return sorted(result)
+    result = []
+    for name in sorted(os.listdir(user_dir)):
+        path = os.path.join(user_dir, name)
+        if os.path.isfile(path):
+            result.append((name, os.path.getsize(path)))
+    return result
 
 
 def _compute_parts(
-    media_files: list[tuple[str, str, int]], data_json_size: int
-) -> list[list[tuple[str, str, int]]]:
+    media_files: list[tuple[str, int]], data_json_size: int
+) -> list[list[tuple[str, int]]]:
     """Assign media files to parts respecting PART_SIZE_LIMIT.
 
     Part 0 already contains data.json (data_json_size bytes).
-    Each item is (zip_entry, fs_path, size).
+    Each item is (filename, size).
     """
-    parts: list[list[tuple[str, str, int]]] = [[]]
+    parts: list[list[tuple[str, int]]] = [[]]
     current_size = data_json_size
 
-    for item in media_files:
-        size = item[2]
+    for filename, size in media_files:
         if parts[-1] and current_size + size > PART_SIZE_LIMIT:
             parts.append([])
             current_size = 0
-        parts[-1].append(item)
+        parts[-1].append((filename, size))
         current_size += size
 
     return parts
@@ -177,19 +139,26 @@ def _remap_media_urls(content: str, url_mapping: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 @router.get("/export/manifest")
-def export_manifest(db: Session = Depends(get_session)):
+def export_manifest(request: Request, db: Session = Depends(get_session)):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     data_json = _build_data_json(db)
-    media_files = _get_referenced_media(db)
+    media_files = _get_media_files(user_id)
     parts = _compute_parts(media_files, len(data_json))
 
     return DataResponse(data={"total_parts": len(parts)})
 
 
 @router.get("/export/part/{part_num}")
-def export_part(part_num: int, db: Session = Depends(get_session)):
+def export_part(part_num: int, request: Request, db: Session = Depends(get_session)):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     data_json = _build_data_json(db)
-    media_files = _get_referenced_media(db)
+    media_files = _get_media_files(user_id)
     parts = _compute_parts(media_files, len(data_json))
 
     if part_num < 0 or part_num >= len(parts):
@@ -202,9 +171,10 @@ def export_part(part_num: int, db: Session = Depends(get_session)):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if part_num == 0:
             zf.writestr("data.json", data_json)
-        for zip_entry, fs_path, _ in parts[part_num]:
+        for filename, _ in parts[part_num]:
+            fs_path = os.path.join(MEDIA_DIR, user_id, filename)
             if os.path.isfile(fs_path):
-                zf.write(fs_path, zip_entry)
+                zf.write(fs_path, f"media/{filename}")
     buf.seek(0)
 
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
