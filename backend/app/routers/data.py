@@ -315,7 +315,7 @@ def import_apply(
                     label=cat["label"],
                     emoji=cat["emoji"],
                     color=cat["color"],
-                    is_default=cat.get("is_default", False),
+                    is_default=False,
                     sort_order=cat.get("sort_order", 0),
                 )
             )
