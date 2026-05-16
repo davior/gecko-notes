@@ -342,6 +342,7 @@ def import_apply(
                     summary=note.get("summary"),
                     created_at=created_at,
                     modified_at=modified_at,
+                    user_id=user_id,
                 )
             )
             imported_notes += 1
