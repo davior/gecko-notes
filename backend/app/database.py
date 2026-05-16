@@ -103,6 +103,23 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Per-user notes migration
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN user_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            admin = conn.execute(text(
+                'SELECT id FROM "user" WHERE is_admin = 1 ORDER BY created_at LIMIT 1'
+            )).fetchone()
+            if admin:
+                conn.execute(text(
+                    "UPDATE note SET user_id = :uid WHERE user_id IS NULL"
+                ), {"uid": admin[0]})
+                conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():

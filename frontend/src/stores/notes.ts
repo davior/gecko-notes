@@ -41,6 +41,7 @@ interface NotesState {
   pinNote: (id: string) => Promise<Note>
   deleteNote: (id: string) => Promise<void>
   clearCurrentNote: () => void
+  reset: () => void
 }
 
 export const useNotesStore = create<NotesState>((set, get) => ({
@@ -141,5 +142,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
   clearCurrentNote() {
     set({ currentNote: null })
+  },
+
+  reset() {
+    set({ notes: [], currentNote: null, total: 0, loading: false, hasMore: true })
   },
 }))

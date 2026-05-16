@@ -33,6 +33,7 @@ class Note(SQLModel, table=True):
     summary: Optional[str] = None
     created_at: datetime
     modified_at: datetime
+    user_id: Optional[str] = Field(default=None, index=True)
 
 
 class AIProvider(SQLModel, table=True):
