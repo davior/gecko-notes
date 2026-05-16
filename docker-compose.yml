@@ -8,7 +8,8 @@ services:
     environment:
       - DATABASE_URL=sqlite:////app/data/db/notes.db
       - MEDIA_DIR=/app/data/media
-      - APP_SECRET_TOKEN=${APP_SECRET_TOKEN:-}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
     expose:
       - "8000"
     healthcheck:
