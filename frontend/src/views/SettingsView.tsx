@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -9,6 +9,7 @@ import AIProviderManager from '@/components/settings/AIProviderManager'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
 import UserManager from '@/components/settings/UserManager'
 import ProfileSettings from '@/components/settings/ProfileSettings'
+import DataManager from '@/components/settings/DataManager'
 import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
@@ -17,6 +18,7 @@ const baseTabs = [
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
   { to: '/settings/general', label: 'General', icon: SlidersHorizontal, key: 'general' },
+  { to: '/settings/data', label: 'Data', icon: HardDriveDownload, key: 'data' },
 ]
 
 export default function SettingsView() {
@@ -163,6 +165,7 @@ export default function SettingsView() {
 
             {tab === 'profile' && <ProfileSettings />}
             {tab === 'users' && <UserManager />}
+            {tab === 'data' && <DataManager />}
 
             {tab === 'general' && (
               <div>

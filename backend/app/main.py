@@ -12,6 +12,7 @@ from app.seed import run_seed
 from app.routers import notes, categories, media, settings
 from app.routers import auth as auth_router
 from app.routers import users as users_router
+from app.routers import data as data_router
 from app.auth import decode_token
 from sqlmodel import Session
 
@@ -81,6 +82,7 @@ app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
+app.include_router(data_router.router, prefix="/api/data", tags=["data"])
 
 os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
