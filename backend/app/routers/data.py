@@ -67,9 +67,9 @@ def _compute_parts(
     return parts
 
 
-def _build_data_json(db: Session) -> bytes:
-    """Serialise all notes and categories to a JSON byte string."""
-    notes = db.exec(select(Note)).all()
+def _build_data_json(db: Session, user_id: str) -> bytes:
+    """Serialise the current user's notes and all categories to a JSON byte string."""
+    notes = db.exec(select(Note).where(Note.user_id == user_id)).all()
     categories = db.exec(select(Category)).all()
 
     def _tags(note: Note) -> list:
@@ -147,7 +147,7 @@ def export_manifest(request: Request, db: Session = Depends(get_session)):
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    data_json = _build_data_json(db)
+    data_json = _build_data_json(db, user_id)
     media_files = _get_media_files(user_id)
     parts = _compute_parts(media_files, len(data_json))
 
@@ -160,7 +160,7 @@ def export_part(part_num: int, request: Request, db: Session = Depends(get_sessi
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    data_json = _build_data_json(db)
+    data_json = _build_data_json(db, user_id)
     media_files = _get_media_files(user_id)
     parts = _compute_parts(media_files, len(data_json))
 
@@ -322,30 +322,36 @@ def import_apply(
             imported_categories += 1
 
     for note in data.get("notes", []):
-        if not db.get(Note, note["id"]):
-            try:
-                created_at = datetime.fromisoformat(note["created_at"])
-                modified_at = datetime.fromisoformat(note["modified_at"])
-            except Exception:
-                now = datetime.now(timezone.utc)
-                created_at = now
-                modified_at = now
+        existing = db.get(Note, note["id"])
+        # Skip only if this exact note already belongs to the importing user
+        if existing and existing.user_id == user_id:
+            continue
+        try:
+            created_at = datetime.fromisoformat(note["created_at"])
+            modified_at = datetime.fromisoformat(note["modified_at"])
+        except Exception:
+            now = datetime.now(timezone.utc)
+            created_at = now
+            modified_at = now
 
-            db.add(
-                Note(
-                    id=note["id"],
-                    title=note["title"],
-                    content=_remap_media_urls(note["content"], url_mapping),
-                    category_id=note["category_id"],
-                    tags=json.dumps(note.get("tags", [])),
-                    is_pinned=note.get("is_pinned", False),
-                    summary=note.get("summary"),
-                    created_at=created_at,
-                    modified_at=modified_at,
-                    user_id=user_id,
-                )
+        # If the ID is taken by another user's note, mint a new one
+        note_id = note["id"] if not existing else str(uuid.uuid4())
+
+        db.add(
+            Note(
+                id=note_id,
+                title=note["title"],
+                content=_remap_media_urls(note["content"], url_mapping),
+                category_id=note["category_id"],
+                tags=json.dumps(note.get("tags", [])),
+                is_pinned=note.get("is_pinned", False),
+                summary=note.get("summary"),
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
             )
-            imported_notes += 1
+        )
+        imported_notes += 1
 
     db.commit()
 
