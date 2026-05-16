@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select, func
 
 from app.database import get_session
+from app.limiter import limiter
 from app.models import User
 from app.schemas import UserCreate, UserLogin, UserRead, Token, UserUpdate, PasswordChange
 from app.auth import hash_password, verify_password, create_access_token
@@ -46,7 +47,8 @@ def register(payload: UserCreate, session: Session = Depends(get_session)):
 
 
 @router.post("/login", response_model=Token)
-def login(payload: UserLogin, session: Session = Depends(get_session)):
+@limiter.limit("5/minute")
+def login(request: Request, payload: UserLogin, session: Session = Depends(get_session)):
     user = session.exec(select(User).where(User.username == payload.username)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")

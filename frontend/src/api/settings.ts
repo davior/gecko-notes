@@ -54,6 +54,7 @@ export interface AIProviderUpdate {
 }
 
 export interface AIProviderTest {
+  provider_id?: string
   provider_type: 'anthropic' | 'openai' | 'ollama' | 'custom'
   api_key?: string
   base_url?: string | null

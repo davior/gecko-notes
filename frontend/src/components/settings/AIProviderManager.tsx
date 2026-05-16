@@ -42,7 +42,7 @@ export default function AIProviderManager() {
 
   function startEdit(p: AIProvider) {
     setEditingId(p.id)
-    setForm({ name: p.name, provider_type: p.provider_type, api_key: p.api_key, base_url: p.base_url ?? '', model: p.model, enabled: p.enabled })
+    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, enabled: p.enabled })
     setTestResult(null); setShowForm(true)
   }
 
@@ -61,7 +61,14 @@ export default function AIProviderManager() {
   async function testConnection() {
     setTesting(true); setTestResult(null)
     try {
-      const result = await settingsApi.testAIProvider({ provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model })
+      const payload: Parameters<typeof settingsApi.testAIProvider>[0] = {
+        provider_type: form.provider_type,
+        api_key: form.api_key,
+        base_url: form.base_url || null,
+        model: form.model,
+      }
+      if (editingId) payload.provider_id = editingId
+      const result = await settingsApi.testAIProvider(payload)
       setTestResult(result)
     } catch { setTestResult({ success: false, message: 'Connection failed' }) }
     finally { setTesting(false) }
@@ -109,12 +116,12 @@ export default function AIProviderManager() {
               <div>
                 <label className="label">API Key</label>
                 <div className="relative">
-                  <input value={f.api_key} onChange={(e) => setF({ api_key: e.target.value })} type={showKey ? 'text' : 'password'} className="input pr-10" placeholder="sk-..." />
+                  <input value={f.api_key} onChange={(e) => setF({ api_key: e.target.value })} type={showKey ? 'text' : 'password'} className="input pr-10" placeholder={editingId ? 'Leave blank to keep existing key' : 'sk-...'} />
                   <button className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600" onClick={() => setShowKey((v) => !v)}>
                     {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
-                <p className="text-xs text-gray-400 mt-1">Stored locally on this device only.</p>
+                <p className="text-xs text-gray-400 mt-1">Stored encrypted on the server.</p>
               </div>
             )}
             {['ollama', 'custom'].includes(f.provider_type) && (

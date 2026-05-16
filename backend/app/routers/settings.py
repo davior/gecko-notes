@@ -1,4 +1,6 @@
+import ipaddress
 import json
+import urllib.parse
 import uuid
 import httpx
 from typing import Any, Dict, List, Optional
@@ -6,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session
 from app.models import AIProvider, AppSetting, UserSetting, SystemPrompt
 from app.schemas import (
@@ -22,6 +25,35 @@ def _get_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user_id
+
+
+def _require_safe_external_url(url: str) -> None:
+    """Reject URLs that could be used for SSRF against internal services."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_url", "message": "Base URL must use https://"},
+        )
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_url", "message": "Base URL has no valid hostname"},
+        )
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if not addr.is_global:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "ssrf_blocked", "message": "Base URL must point to a public host"},
+            )
+    except ValueError:
+        if hostname == "localhost":
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "ssrf_blocked", "message": "Base URL must point to a public host"},
+            )
 
 
 # ─── App Settings (per-user) ──────────────────────────────────────────────────
@@ -81,11 +113,13 @@ def list_ai_providers(request: Request, session: Session = Depends(get_session))
 @router.post("/ai-providers", response_model=DataResponse[AIProviderRead], status_code=201)
 def create_ai_provider(payload: AIProviderCreate, request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
+    if payload.provider_type in ("openai", "custom") and payload.base_url:
+        _require_safe_external_url(payload.base_url)
     provider = AIProvider(
         id=str(uuid.uuid4()),
         name=payload.name,
         provider_type=payload.provider_type,
-        api_key=payload.api_key,
+        api_key=encrypt_api_key(payload.api_key) if payload.api_key else "",
         base_url=payload.base_url,
         model=payload.model,
         enabled=payload.enabled,
@@ -115,10 +149,14 @@ def update_ai_provider(
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
-    for field in ["name", "provider_type", "api_key", "base_url", "model", "enabled", "is_active"]:
+    for field in ["name", "provider_type", "base_url", "model", "enabled", "is_active"]:
         val = getattr(payload, field, None)
         if val is not None:
             setattr(provider, field, val)
+    if payload.api_key:
+        if payload.provider_type in ("openai", "custom") and payload.base_url:
+            _require_safe_external_url(payload.base_url)
+        provider.api_key = encrypt_api_key(payload.api_key)
 
     if payload.is_active:
         others = session.exec(select(AIProvider).where(AIProvider.user_id == user_id)).all()
@@ -161,15 +199,34 @@ def activate_ai_provider(provider_id: str, request: Request, session: Session = 
 
 
 @router.post("/ai-providers/test", response_model=Dict[str, Any])
-async def test_ai_provider(payload: AIProviderTest):
-    """Test connection to an AI provider by sending a minimal request."""
+async def test_ai_provider(
+    payload: AIProviderTest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Test connection to an AI provider. Requires authentication."""
+    user_id = _get_user_id(request)
+
+    # Resolve the API key: prefer the stored (encrypted) key when a provider_id is given
+    api_key = payload.api_key
+    base_url = payload.base_url
+    if payload.provider_id:
+        provider = session.get(AIProvider, payload.provider_id)
+        if not provider or provider.user_id != user_id:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not_found", "message": "AI provider not found"},
+            )
+        api_key = decrypt_api_key(provider.api_key)
+        base_url = base_url or provider.base_url
+
     try:
         if payload.provider_type == "anthropic":
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
-                        "x-api-key": payload.api_key,
+                        "x-api-key": api_key,
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
                     },
@@ -184,13 +241,13 @@ async def test_ai_provider(payload: AIProviderTest):
             return {"success": False, "message": f"HTTP {response.status_code}"}
 
         elif payload.provider_type in ("openai", "custom"):
-            base = payload.base_url or "https://api.openai.com"
-            base = base.rstrip("/")
+            base = (base_url or "https://api.openai.com").rstrip("/")
+            _require_safe_external_url(base)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     f"{base}/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {payload.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "content-type": "application/json",
                     },
                     json={
@@ -204,8 +261,7 @@ async def test_ai_provider(payload: AIProviderTest):
             return {"success": False, "message": f"HTTP {response.status_code}"}
 
         elif payload.provider_type == "ollama":
-            base = payload.base_url or "http://localhost:11434"
-            base = base.rstrip("/")
+            base = (base_url or "http://localhost:11434").rstrip("/")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{base}/api/tags")
             if response.status_code == 200:
@@ -215,6 +271,8 @@ async def test_ai_provider(payload: AIProviderTest):
         else:
             return {"success": False, "message": "Unknown provider type"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -299,7 +357,7 @@ def activate_system_prompt(prompt_id: str, request: Request, session: Session = 
     return DataResponse(data=SystemPromptRead.model_validate(prompt))
 
 
-# ─── Anthropic Proxy ──────────────────────────────────────────────────────────
+# ─── AI Provider Proxies ─────────────────────────────────────────────────────
 
 class AnthropicProxyRequest(BaseModel):
     provider_id: str
@@ -338,10 +396,98 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": provider.api_key,
+                "x-api-key": decrypt_api_key(provider.api_key),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
+            json=body,
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
+
+
+class OpenAIProxyRequest(BaseModel):
+    provider_id: str
+    model: str
+    max_tokens: int
+    messages: List[Dict[str, Any]]
+    temperature: Optional[float] = None
+
+
+@router.post("/ai-providers/proxy/openai")
+async def proxy_openai(
+    payload: OpenAIProxyRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type not in ("openai", "custom"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
+
+    base = (provider.base_url or "https://api.openai.com").rstrip("/")
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "max_tokens": payload.max_tokens,
+        "messages": payload.messages,
+    }
+    if payload.temperature is not None:
+        body["temperature"] = payload.temperature
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{base}/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
+
+
+class OllamaProxyRequest(BaseModel):
+    provider_id: str
+    model: str
+    messages: List[Dict[str, Any]]
+    temperature: Optional[float] = None
+
+
+@router.post("/ai-providers/proxy/ollama")
+async def proxy_ollama(
+    payload: OllamaProxyRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type != "ollama":
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Ollama type"})
+
+    base = (provider.base_url or "http://localhost:11434").rstrip("/")
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "messages": payload.messages,
+        "stream": False,
+    }
+    if payload.temperature is not None:
+        body["options"] = {"temperature": payload.temperature}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{base}/api/chat",
+            headers={"content-type": "application/json"},
             json=body,
         )
 

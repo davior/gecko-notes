@@ -36,7 +36,7 @@ Return only the summary text, no preamble or explanation.`
 // ─── Anthropic Provider ───────────────────────────────────────────────────────
 
 class AnthropicProvider implements AIService {
-  constructor(private config: { id: string; apiKey: string; model: string }) {}
+  constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill } = options
@@ -107,11 +107,7 @@ class AnthropicProvider implements AIService {
 // ─── OpenAI / Custom OpenAI-compatible Provider ───────────────────────────────
 
 class OpenAIProvider implements AIService {
-  private baseUrl: string
-
-  constructor(private config: { apiKey: string; model: string; baseUrl?: string | null }) {
-    this.baseUrl = (config.baseUrl ?? 'https://api.openai.com').replace(/\/$/, '')
-  }
+  constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill } = options
@@ -121,28 +117,15 @@ class OpenAIProvider implements AIService {
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {
+      provider_id: this.config.id,
       model: this.config.model,
       max_tokens: 2048,
       messages,
     }
     if (temperature !== undefined) body.temperature = temperature
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`OpenAI API error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    const text = data.choices?.[0]?.message?.content ?? ''
+    const response = await client.post('/settings/ai-providers/proxy/openai', body)
+    const text = response.data?.choices?.[0]?.message?.content ?? ''
     return prefill ? prefill + text : text
   }
 
@@ -194,11 +177,7 @@ class OpenAIProvider implements AIService {
 // ─── Ollama Provider ──────────────────────────────────────────────────────────
 
 class OllamaProvider implements AIService {
-  private baseUrl: string
-
-  constructor(private config: { model: string; baseUrl?: string | null }) {
-    this.baseUrl = (config.baseUrl ?? 'http://localhost:11434').replace(/\/$/, '')
-  }
+  constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill } = options
@@ -208,25 +187,14 @@ class OllamaProvider implements AIService {
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {
+      provider_id: this.config.id,
       model: this.config.model,
       messages,
-      stream: false,
     }
-    if (temperature !== undefined) body.options = { temperature }
+    if (temperature !== undefined) body.temperature = temperature
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Ollama error: ${response.status} ${err}`)
-    }
-
-    const data = await response.json()
-    const text = data.message?.content ?? ''
+    const response = await client.post('/settings/ai-providers/proxy/ollama', body)
+    const text = response.data?.message?.content ?? ''
     return prefill ? prefill + text : text
   }
 
@@ -258,8 +226,8 @@ class OllamaProvider implements AIService {
 
   async testConnection(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`)
-      return response.ok
+      await this.complete('Hi')
+      return true
     } catch {
       return false
     }
@@ -273,25 +241,18 @@ export function createAIService(provider: AIProvider): AIService {
     case 'anthropic':
       return new AnthropicProvider({
         id: provider.id,
-        apiKey: provider.api_key,
         model: provider.model,
       })
     case 'openai':
+    case 'custom':
       return new OpenAIProvider({
-        apiKey: provider.api_key,
+        id: provider.id,
         model: provider.model,
-        baseUrl: provider.base_url,
       })
     case 'ollama':
       return new OllamaProvider({
+        id: provider.id,
         model: provider.model,
-        baseUrl: provider.base_url,
-      })
-    case 'custom':
-      return new OpenAIProvider({
-        apiKey: provider.api_key,
-        model: provider.model,
-        baseUrl: provider.base_url,
       })
     default:
       throw new Error(`Unknown provider type: ${provider.provider_type}`)
