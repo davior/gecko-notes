@@ -1,6 +1,6 @@
 from typing import Optional, Any, List, Generic, TypeVar
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 T = TypeVar("T")
 
@@ -125,17 +125,23 @@ class AIProviderRead(BaseModel):
     id: str
     name: str
     provider_type: str
-    api_key: str
+    api_key: str = ""
     base_url: Optional[str]
     model: str
     enabled: bool
     is_active: bool
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _redact(cls, v: Any) -> str:
+        return ""
 
     class Config:
         from_attributes = True
 
 
 class AIProviderTest(BaseModel):
+    provider_id: Optional[str] = None
     provider_type: str
     api_key: str = ''
     base_url: Optional[str] = None

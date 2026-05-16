@@ -12,6 +12,23 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
 MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
+ALLOWED_EXTENSIONS = frozenset({
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".tiff", ".ico", ".heic", ".heif",
+    # Video
+    ".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".flv",
+    # Audio
+    ".mp3", ".ogg", ".wav", ".m4a", ".flac", ".aac", ".opus", ".wma",
+    # Documents
+    ".pdf", ".txt", ".md", ".rtf", ".csv",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp",
+    # Archives
+    ".zip", ".tar", ".gz",
+    # Data / config (plain text)
+    ".json", ".xml", ".yaml", ".yml", ".toml",
+})
+
 
 def get_user_media_dir(user_id: str) -> str:
     path = os.path.join(MEDIA_DIR, user_id)
@@ -30,6 +47,12 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     ext = ""
     if file.filename and "." in file.filename:
         ext = "." + file.filename.rsplit(".", 1)[-1].lower()
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_file_type", "message": f"File type '{ext or 'unknown'}' is not allowed"},
+        )
 
     filename = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join(user_dir, filename)

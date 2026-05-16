@@ -28,6 +28,18 @@ PART_SIZE_LIMIT = 48 * 1024 * 1024  # 48 MB – comfortably under the 50 MB ngin
 # Resets on server restart, which is acceptable for a personal notes app.
 import_sessions: dict = {}
 
+SESSION_TTL_SECONDS = 3600
+
+
+def _purge_expired_sessions() -> None:
+    now = datetime.now(timezone.utc)
+    expired = [
+        sid for sid, sess in import_sessions.items()
+        if (now - sess["created_at"]).total_seconds() > SESSION_TTL_SECONDS
+    ]
+    for sid in expired:
+        del import_sessions[sid]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -208,6 +220,8 @@ async def import_upload(
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    _purge_expired_sessions()
 
     if not session_id:
         session_id = str(uuid.uuid4())
