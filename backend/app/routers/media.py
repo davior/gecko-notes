@@ -13,10 +13,20 @@ DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
 MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
 ALLOWED_EXTENSIONS = frozenset({
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".tiff",
-    ".pdf",
-    ".mp4", ".webm", ".mov", ".avi",
-    ".mp3", ".ogg", ".wav", ".m4a", ".flac",
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".tiff", ".ico", ".heic", ".heif",
+    # Video
+    ".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".flv",
+    # Audio
+    ".mp3", ".ogg", ".wav", ".m4a", ".flac", ".aac", ".opus", ".wma",
+    # Documents
+    ".pdf", ".txt", ".md", ".rtf", ".csv",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp",
+    # Archives
+    ".zip", ".tar", ".gz",
+    # Data / config (plain text)
+    ".json", ".xml", ".yaml", ".yml", ".toml",
 })
 
 
