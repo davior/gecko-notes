@@ -16,7 +16,10 @@ router = APIRouter()
 
 
 def _get_user_id(request: Request) -> str:
-    return request.state.user_id
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user_id
 
 
 def extract_first_image(content_str: str) -> Optional[str]:
