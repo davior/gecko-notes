@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,11 +13,14 @@ from app.seed import run_seed
 from app.routers import notes, categories, media, settings
 from app.routers import auth as auth_router
 from app.routers import users as users_router
+from app.routers import data as data_router
 from app.auth import decode_token
 from sqlmodel import Session
 
 
-MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
+MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
 
@@ -81,6 +85,7 @@ app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
+app.include_router(data_router.router, prefix="/api/data", tags=["data"])
 
 os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")

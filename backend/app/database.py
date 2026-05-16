@@ -1,9 +1,13 @@
 import os
 import uuid as _uuid
+from pathlib import Path
 from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import text
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./notes.db")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DB_PATH = REPO_ROOT / "data" / "db" / "notes.db"
+
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
 
 engine = create_engine(
     DATABASE_URL,
@@ -123,6 +127,9 @@ def _run_migrations():
 
 
 def init_db():
+    if DATABASE_URL.startswith("sqlite:///"):
+        db_path = Path(DATABASE_URL.removeprefix("sqlite:///"))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
     _run_migrations()
 

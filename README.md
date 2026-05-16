@@ -101,6 +101,9 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
+Local backend runs and Docker Compose both use the same persistent paths by default:
+`./data/db/notes.db` and `./data/media/`.
+
 ### Frontend (Vue 3 + Vite)
 
 ```bash
