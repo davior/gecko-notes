@@ -221,7 +221,11 @@ __marimo__/
 backend/data/media/
 .codex
 backend/notes.db
+backend/notes.db-shm
+backend/notes.db-wal
+backend/notes.db-journal
 backend/package-lock.json
 frontend/node_modules/
 frontend/dist/
-data/db/notes.db
+data/db/
+data/media/

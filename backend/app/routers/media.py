@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
@@ -7,7 +8,9 @@ from app.schemas import MediaUploadResponse, DataResponse
 
 router = APIRouter()
 
-MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
+MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
 
 def get_user_media_dir(user_id: str) -> str:

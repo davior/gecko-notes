@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from pathlib import Path
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -18,7 +19,9 @@ from app.schemas import DataResponse
 
 router = APIRouter()
 
-MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
+MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 PART_SIZE_LIMIT = 48 * 1024 * 1024  # 48 MB – comfortably under the 50 MB nginx limit
 
 # In-memory import sessions (maps session_id -> session dict).

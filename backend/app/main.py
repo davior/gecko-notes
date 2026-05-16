@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,9 @@ from app.auth import decode_token
 from sqlmodel import Session
 
 
-MEDIA_DIR = os.getenv("MEDIA_DIR", "./data/media")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
+MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
 
