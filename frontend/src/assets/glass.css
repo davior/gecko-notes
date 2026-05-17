@@ -36,6 +36,26 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
 }
 
+/* BlockNote editor text colour — ensure it matches the glass mode even if
+   Mantine's internal theme doesn't fully propagate through the glass layer */
+[data-glass="light"] .editor-area .bn-editor .bn-block-content,
+[data-glass="light"] .editor-area .bn-editor p,
+[data-glass="light"] .editor-area .bn-editor h1,
+[data-glass="light"] .editor-area .bn-editor h2,
+[data-glass="light"] .editor-area .bn-editor h3,
+[data-glass="light"] .editor-area .bn-editor li {
+  color: #1a1a2e !important;
+}
+
+[data-glass="dark"] .editor-area .bn-editor .bn-block-content,
+[data-glass="dark"] .editor-area .bn-editor p,
+[data-glass="dark"] .editor-area .bn-editor h1,
+[data-glass="dark"] .editor-area .bn-editor h2,
+[data-glass="dark"] .editor-area .bn-editor h3,
+[data-glass="dark"] .editor-area .bn-editor li {
+  color: #f1f5f9 !important;
+}
+
 /* Editor area — glass background with increased opacity for readability.
    The multiplier (2.5×) ensures text is comfortably legible while still
    allowing the theme background to show through. Capped at 0.88 so even

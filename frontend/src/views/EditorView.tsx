@@ -361,6 +361,10 @@ export default function EditorView() {
   }
 
   const theme = useSettingsStore((s) => s.theme)
+  const themes = useSettingsStore((s) => s.themes)
+  const activeThemeId = useSettingsStore((s) => s.activeThemeId)
+  const activeGlassTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
+  const editorTheme: 'light' | 'dark' = activeGlassTheme ? activeGlassTheme.mode : theme
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
@@ -495,7 +499,7 @@ export default function EditorView() {
             <BlockNoteView
               editor={editor}
               onChange={scheduleAutosave}
-              theme={theme}
+              theme={editorTheme}
             />
           </EditorErrorBoundary>
         )}
