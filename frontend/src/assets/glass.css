@@ -4,6 +4,14 @@
   background: transparent !important;
 }
 
+/* Full-screen view containers and scroll areas must be transparent so the
+   fixed #theme-bg layer behind them is visible */
+[data-glass] .h-screen,
+[data-glass] .min-h-screen,
+[data-glass] main {
+  background: transparent !important;
+}
+
 /* Cards / panels */
 [data-glass] .card {
   background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;

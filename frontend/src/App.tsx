@@ -49,7 +49,7 @@ export default function App() {
           background: 'var(--theme-bg, transparent)',
           backgroundSize: 'var(--theme-bg-size, cover)',
           backgroundPosition: 'center',
-          filter: 'blur(var(--theme-bg-blur, 0px))',
+          filter: 'var(--theme-bg-filter, none)',
         }}
       />
       <Routes>

@@ -62,7 +62,7 @@ function applyThemeToDom(theme: Theme | null) {
     root.removeAttribute('data-glass')
     root.classList.remove('dark')
     ;[
-      '--theme-bg', '--theme-bg-size', '--theme-bg-blur',
+      '--theme-bg', '--theme-bg-size', '--theme-bg-filter',
       '--glass-opacity', '--glass-blur', '--glass-rgb',
       '--shadow-size', '--shadow-blur', '--shadow-color',
     ].forEach((v) => root.style.removeProperty(v))
@@ -80,7 +80,7 @@ function applyThemeToDom(theme: Theme | null) {
 
   root.style.setProperty('--theme-bg', bg)
   root.style.setProperty('--theme-bg-size', bgSize)
-  root.style.setProperty('--theme-bg-blur', `${theme.bg_blur}px`)
+  root.style.setProperty('--theme-bg-filter', theme.bg_blur > 0 ? `blur(${theme.bg_blur}px)` : 'none')
   root.style.setProperty('--glass-opacity', String(theme.glass_opacity))
   root.style.setProperty('--glass-blur', `${theme.glass_blur}px`)
   root.style.setProperty('--glass-rgb', theme.mode === 'dark' ? '0,0,0' : '255,255,255')
