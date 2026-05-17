@@ -36,6 +36,17 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
 }
 
+/* Pills — category filter chips, tag chips, sort/view toggle pills.
+   Targets rounded-full + border (excludes FAB which has no border,
+   and primary buttons which use rounded-lg). */
+[data-glass] .rounded-full.border {
+  background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
+  box-shadow: 0 calc(var(--shadow-size) * 0.5) calc(var(--shadow-blur) * 0.5) var(--shadow-color);
+}
+
 /* Inputs */
 [data-glass] .input {
   background: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 0.8)) !important;
