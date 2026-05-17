@@ -39,16 +39,18 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
         className="relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-lg transition-shadow duration-150"
         onClick={() => onClick(note.id)}
       >
-        {/* Background image */}
+        {/* Background image — fixed blur independent of any active theme */}
         {hasImage && (
           <div
-            className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${note.first_image_url})` }}
+            className="absolute inset-0 bg-cover bg-center note-card-bg-image"
+            style={{ backgroundImage: `url(${note.first_image_url})`, filter: 'blur(3px)', transform: 'scale(1.05)' }}
           />
         )}
-        {/* Wash overlay — lightening in light mode, darkening in dark mode */}
+        {/* Wash overlay — lightening in light mode, darkening in dark mode.
+            note-card-img-wash opts out of glass backdrop-filter so the image
+            blur stays static and is not compounded by the theme glass blur. */}
         <div
-          className={`absolute inset-0 ${hasImage ? 'bg-white/40 dark:bg-black/50' : 'bg-white dark:bg-gray-800'}`}
+          className={`absolute inset-0 note-card-img-wash ${hasImage ? 'bg-white/40 dark:bg-black/50' : 'bg-white dark:bg-gray-800'}`}
         />
 
         {/* Category color accent when no image */}

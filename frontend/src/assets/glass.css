@@ -81,12 +81,19 @@
 }
 
 /* Dropdowns and floating panels */
-[data-glass] [class*="bg-white"],
-[data-glass] [class*="dark:bg-gray-800"],
-[data-glass] [class*="dark:bg-gray-900"] {
+[data-glass] [class*="bg-white"]:not(.note-card-img-wash),
+[data-glass] [class*="dark:bg-gray-800"]:not(.note-card-img-wash),
+[data-glass] [class*="dark:bg-gray-900"]:not(.note-card-img-wash) {
   background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
   backdrop-filter: blur(var(--glass-blur)) !important;
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+}
+
+/* Card image overlay must never get backdrop-filter — the image has its own
+   static blur and compounding the theme's glass blur would make it unreadable */
+[data-glass] .note-card-img-wash {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 /* ── Light mode text & shadows ─────────────────────────────────────────────── */
