@@ -36,7 +36,7 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
     const hasImage = Boolean(note.first_image_url)
     return (
       <div
-        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-lg transition-shadow duration-150 ${
+        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
           hasImage
             ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
@@ -134,7 +134,7 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
   // List view
   return (
     <div
-      className="card cursor-pointer hover:shadow-md transition-shadow duration-150 flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
+      className="card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />

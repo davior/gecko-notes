@@ -21,6 +21,10 @@
   box-shadow: 0 var(--shadow-size) var(--shadow-blur) var(--shadow-color) !important;
 }
 
+[data-glass] .card:hover {
+  box-shadow: 0 calc(var(--shadow-size) * 2) calc(var(--shadow-blur) * 1.5) var(--shadow-color) !important;
+}
+
 /* Secondary buttons */
 [data-glass] .btn-secondary {
   background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
@@ -28,6 +32,12 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
   border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
   box-shadow: 0 calc(var(--shadow-size) * 0.5) calc(var(--shadow-blur) * 0.5) var(--shadow-color) !important;
+}
+
+[data-glass] .btn-secondary:hover,
+[data-glass] .btn-primary:hover,
+[data-glass] .btn-danger:hover {
+  box-shadow: 0 var(--shadow-size) var(--shadow-blur) var(--shadow-color) !important;
 }
 
 /* Ghost buttons */
