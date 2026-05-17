@@ -209,7 +209,7 @@ function noteToHTML(note: Note): string {
 <meta charset="UTF-8">
 <title>${escapeHtml(note.title)}</title>
 <style>
-  body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }
+  body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; box-sizing: border-box; }
   h1 { font-size: 2em; margin-bottom: 0.25em; }
   h2 { font-size: 1.5em; margin: 1em 0 0.4em; }
   h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
@@ -273,7 +273,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 
   const container = document.createElement('div')
   container.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:794px;background:white;padding:40px;font-family:Georgia,serif;color:#111;'
+    'position:fixed;left:-9999px;top:0;width:714px;background:white;padding:0;font-family:Georgia,serif;color:#111;'
 
   const parser = new DOMParser()
   const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
@@ -311,20 +311,19 @@ export async function exportToPDF(note: Note): Promise<void> {
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
-    const imgWidth = pageWidth
-    const imgHeight = (canvas.height * pageWidth) / canvas.width
+    const margin = 25 // 25 mm standard margins on all sides
+    const contentWidth = pageWidth - 2 * margin
+    const contentHeight = pageHeight - 2 * margin
+    const scaledImgHeight = (canvas.height * contentWidth) / canvas.width
 
-    let yOffset = 0
-    let heightLeft = imgHeight
-
-    pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
-    heightLeft -= pageHeight
+    let heightLeft = scaledImgHeight
+    let page = 0
 
     while (heightLeft > 0) {
-      yOffset -= pageHeight
-      pdf.addPage()
-      pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight)
-      heightLeft -= pageHeight
+      if (page > 0) pdf.addPage()
+      pdf.addImage(imgData, 'PNG', margin, margin - page * contentHeight, contentWidth, scaledImgHeight)
+      heightLeft -= contentHeight
+      page++
     }
 
     pdf.save(`${note.title || 'note'}.pdf`)
@@ -490,7 +489,14 @@ export async function exportToWord(note: Note): Promise<void> {
 
   const doc = new Document({
     numbering: { config: [{ reference: 'gecko-ordered-list', levels: orderedListLevels }] },
-    sections: [{ children: paragraphs }],
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }, // 1 inch on all sides
+        },
+      },
+      children: paragraphs,
+    }],
   })
 
   const blob = await Packer.toBlob(doc)
