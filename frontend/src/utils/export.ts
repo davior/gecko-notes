@@ -322,6 +322,10 @@ export async function exportToPDF(note: Note): Promise<void> {
     while (heightLeft > 0) {
       if (page > 0) pdf.addPage()
       pdf.addImage(imgData, 'PNG', margin.side, margin.top - page * contentHeight, contentWidth, scaledImgHeight)
+      // Mask top and bottom margins to prevent image content bleeding across page boundaries
+      pdf.setFillColor(255, 255, 255)
+      pdf.rect(0, 0, pageWidth, margin.top, 'F')
+      pdf.rect(0, pageHeight - margin.top, pageWidth, margin.top, 'F')
       heightLeft -= contentHeight
       page++
     }
