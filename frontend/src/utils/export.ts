@@ -273,7 +273,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 
   const container = document.createElement('div')
   container.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:714px;background:white;padding:0;font-family:Georgia,serif;color:#111;'
+    'position:fixed;left:-9999px;top:0;width:658px;background:white;padding:0;font-family:Georgia,serif;color:#111;'
 
   const parser = new DOMParser()
   const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
@@ -311,9 +311,9 @@ export async function exportToPDF(note: Note): Promise<void> {
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
-    const margin = 25 // 25 mm standard margins on all sides
-    const contentWidth = pageWidth - 2 * margin
-    const contentHeight = pageHeight - 2 * margin
+    const margin = { top: 15, side: 18 } // mm
+    const contentWidth = pageWidth - 2 * margin.side
+    const contentHeight = pageHeight - 2 * margin.top
     const scaledImgHeight = (canvas.height * contentWidth) / canvas.width
 
     let heightLeft = scaledImgHeight
@@ -321,7 +321,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 
     while (heightLeft > 0) {
       if (page > 0) pdf.addPage()
-      pdf.addImage(imgData, 'PNG', margin, margin - page * contentHeight, contentWidth, scaledImgHeight)
+      pdf.addImage(imgData, 'PNG', margin.side, margin.top - page * contentHeight, contentWidth, scaledImgHeight)
       heightLeft -= contentHeight
       page++
     }
@@ -492,7 +492,7 @@ export async function exportToWord(note: Note): Promise<void> {
     sections: [{
       properties: {
         page: {
-          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }, // 1 inch on all sides
+          margin: { top: 850, right: 1021, bottom: 850, left: 1021 }, // 15mm top/bottom, 18mm left/right
         },
       },
       children: paragraphs,
