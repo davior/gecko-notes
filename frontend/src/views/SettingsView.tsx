@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -10,11 +10,13 @@ import SystemPromptManager from '@/components/settings/SystemPromptManager'
 import UserManager from '@/components/settings/UserManager'
 import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
+import ThemeManager from '@/components/settings/ThemeManager'
 import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
   { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
   { to: '/settings/categories', label: 'Categories', icon: Tag, key: 'categories' },
+  { to: '/settings/themes', label: 'Themes', icon: Palette, key: 'themes' },
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
   { to: '/settings/general', label: 'General', icon: SlidersHorizontal, key: 'general' },
@@ -66,6 +68,7 @@ export default function SettingsView() {
         <main className="flex-1 overflow-y-auto p-6">
           <div className="max-w-2xl mx-auto">
             {tab === 'categories' && <CategoryManager />}
+            {tab === 'themes' && <ThemeManager />}
             {tab === 'ai-providers' && <AIProviderManager />}
 
             {tab === 'ai-settings' && (

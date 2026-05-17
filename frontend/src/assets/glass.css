@@ -1,0 +1,99 @@
+/* Glass theme overrides — activated only when [data-glass] is set on <html> */
+
+[data-glass] body {
+  background: transparent !important;
+}
+
+/* Cards / panels */
+[data-glass] .card {
+  background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
+  box-shadow: 0 var(--shadow-size) var(--shadow-blur) var(--shadow-color) !important;
+}
+
+/* Secondary buttons */
+[data-glass] .btn-secondary {
+  background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
+  box-shadow: 0 calc(var(--shadow-size) * 0.5) calc(var(--shadow-blur) * 0.5) var(--shadow-color) !important;
+}
+
+/* Ghost buttons */
+[data-glass] .btn-ghost {
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+}
+
+/* Inputs */
+[data-glass] .input {
+  background: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 0.8)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
+}
+
+/* Page structural elements */
+[data-glass] header,
+[data-glass] aside {
+  background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
+}
+
+/* Dropdowns and floating panels */
+[data-glass] [class*="bg-white"],
+[data-glass] [class*="dark:bg-gray-800"],
+[data-glass] [class*="dark:bg-gray-900"] {
+  background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+}
+
+/* ── Light mode text & shadows ─────────────────────────────────────────────── */
+
+[data-glass="light"] {
+  color-scheme: light;
+  --text-shadow: 0 1px 2px rgba(255, 255, 255, 0.7);
+}
+
+[data-glass="light"] body {
+  color: #1a1a2e;
+}
+
+[data-glass="light"] h1,
+[data-glass="light"] h2,
+[data-glass="light"] h3,
+[data-glass="light"] h4,
+[data-glass="light"] p,
+[data-glass="light"] span:not([class*="bg-"]),
+[data-glass="light"] li,
+[data-glass="light"] label {
+  text-shadow: var(--text-shadow);
+}
+
+/* ── Dark mode text & shadows ──────────────────────────────────────────────── */
+
+[data-glass="dark"] {
+  color-scheme: dark;
+  --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 6px rgba(0, 0, 0, 0.45);
+}
+
+[data-glass="dark"] body {
+  color: #f1f5f9;
+}
+
+[data-glass="dark"] h1,
+[data-glass="dark"] h2,
+[data-glass="dark"] h3,
+[data-glass="dark"] h4,
+[data-glass="dark"] p,
+[data-glass="dark"] span:not([class*="bg-"]),
+[data-glass="dark"] li,
+[data-glass="dark"] label {
+  text-shadow: var(--text-shadow);
+}

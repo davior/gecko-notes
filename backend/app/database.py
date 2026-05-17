@@ -175,12 +175,19 @@ def _run_migrations():
             pass
 
 
+def _seed_after_migrations():
+    from app.seed import seed_global_themes
+    with Session(engine) as session:
+        seed_global_themes(session)
+
+
 def init_db():
     if DATABASE_URL.startswith("sqlite:///"):
         db_path = Path(DATABASE_URL.removeprefix("sqlite:///"))
         db_path.parent.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
     _run_migrations()
+    _seed_after_migrations()
 
 
 def get_session():
