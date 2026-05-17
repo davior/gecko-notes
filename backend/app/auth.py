@@ -2,9 +2,16 @@ import base64
 import hashlib
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+except ImportError:
+    pass
 
 _WEAK_DEFAULT = "gecko-notes-secret-change-in-production"
 SECRET_KEY = os.getenv("JWT_SECRET_KEY") or _WEAK_DEFAULT
