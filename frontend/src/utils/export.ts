@@ -306,7 +306,7 @@ export async function exportToPDF(note: Note): Promise<void> {
   )
 
   try {
-    const canvas = await html2canvas(container, { scale: 2 })
+    const canvas = await html2canvas(container, { scale: 1.5 })
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
@@ -363,7 +363,7 @@ export async function exportToPDF(note: Note): Promise<void> {
       slice.getContext('2d')!.drawImage(canvas, 0, sliceStart, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
 
       const sliceHeightMm = (sliceHeightPx / canvas.width) * contentWidth
-      pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin.side, margin.top, contentWidth, sliceHeightMm)
+      pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', margin.side, margin.top, contentWidth, sliceHeightMm)
     }
 
     pdf.save(`${note.title || 'note'}.pdf`)
