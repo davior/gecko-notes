@@ -307,27 +307,63 @@ export async function exportToPDF(note: Note): Promise<void> {
 
   try {
     const canvas = await html2canvas(container, { scale: 2 })
-    const imgData = canvas.toDataURL('image/png')
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
     const margin = { top: 15, side: 18 } // mm
     const contentWidth = pageWidth - 2 * margin.side
     const contentHeight = pageHeight - 2 * margin.top
-    const scaledImgHeight = (canvas.height * contentWidth) / canvas.width
 
-    let heightLeft = scaledImgHeight
-    let page = 0
+    // Canvas pixels per mm of content width
+    const pxPerMm = canvas.width / contentWidth
+    const contentHeightPx = Math.round(contentHeight * pxPerMm)
 
-    while (heightLeft > 0) {
-      if (page > 0) pdf.addPage()
-      pdf.addImage(imgData, 'PNG', margin.side, margin.top - page * contentHeight, contentWidth, scaledImgHeight)
-      // Mask top and bottom margins to prevent image content bleeding across page boundaries
-      pdf.setFillColor(255, 255, 255)
-      pdf.rect(0, 0, pageWidth, margin.top, 'F')
-      pdf.rect(0, pageHeight - margin.top, pageWidth, margin.top, 'F')
-      heightLeft -= contentHeight
-      page++
+    // Scan pixel rows to find whitespace gaps for page breaks
+    const ctx2d = canvas.getContext('2d')!
+    const { data: pixels } = ctx2d.getImageData(0, 0, canvas.width, canvas.height)
+
+    function isRowWhite(y: number): boolean {
+      if (y < 0 || y >= canvas.height) return true
+      const base = y * canvas.width * 4
+      for (let x = 0; x < canvas.width; x++) {
+        const i = base + x * 4
+        if (pixels[i + 3] < 10) continue // transparent counts as white
+        if (pixels[i] < 245 || pixels[i + 1] < 245 || pixels[i + 2] < 245) return false
+      }
+      return true
+    }
+
+    function findBreak(targetY: number): number {
+      // Prefer scanning upward so the page never overflows
+      for (let dy = 0; dy <= 80; dy++) {
+        if (isRowWhite(targetY - dy)) return targetY - dy
+      }
+      return targetY
+    }
+
+    // Determine slice start positions, snapping each break to a whitespace row
+    const starts: number[] = [0]
+    let next = contentHeightPx
+    while (next < canvas.height) {
+      const breakY = findBreak(next)
+      starts.push(breakY)
+      next = breakY + contentHeightPx
+    }
+
+    // Render each slice as its own cropped image
+    for (let p = 0; p < starts.length; p++) {
+      if (p > 0) pdf.addPage()
+      const sliceStart = starts[p]
+      const sliceEnd = p + 1 < starts.length ? starts[p + 1] : canvas.height
+      const sliceHeightPx = sliceEnd - sliceStart
+
+      const slice = document.createElement('canvas')
+      slice.width = canvas.width
+      slice.height = sliceHeightPx
+      slice.getContext('2d')!.drawImage(canvas, 0, sliceStart, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
+
+      const sliceHeightMm = (sliceHeightPx / canvas.width) * contentWidth
+      pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin.side, margin.top, contentWidth, sliceHeightMm)
     }
 
     pdf.save(`${note.title || 'note'}.pdf`)
