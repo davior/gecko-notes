@@ -36,22 +36,26 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
     const hasImage = Boolean(note.first_image_url)
     return (
       <div
-        className="relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-lg transition-shadow duration-150"
+        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-lg transition-shadow duration-150 ${
+          hasImage
+            ? 'border border-gray-200 dark:border-gray-700'
+            : 'card'
+        }`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
         {hasImage && (
           <div
-            className="absolute inset-0 bg-cover bg-center note-card-bg-image"
+            className="absolute inset-0 bg-cover bg-center"
             style={{ backgroundImage: `url(${note.first_image_url})`, filter: 'blur(3px)', transform: 'scale(1.05)' }}
           />
         )}
-        {/* Wash overlay — lightening in light mode, darkening in dark mode.
-            note-card-img-wash opts out of glass backdrop-filter so the image
-            blur stays static and is not compounded by the theme glass blur. */}
-        <div
-          className={`absolute inset-0 note-card-img-wash ${hasImage ? 'bg-white/40 dark:bg-black/50' : 'bg-white dark:bg-gray-800'}`}
-        />
+        {/* Wash overlay for image cards only — note-card-img-wash suppresses
+            backdrop-filter so the static image blur is not compounded by the
+            theme glass blur. No-image cards use .card on the outer div instead. */}
+        {hasImage && (
+          <div className="absolute inset-0 note-card-img-wash bg-white/40 dark:bg-black/50" />
+        )}
 
         {/* Category color accent when no image */}
         {!hasImage && (
