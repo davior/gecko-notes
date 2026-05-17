@@ -209,7 +209,7 @@ function noteToHTML(note: Note): string {
 <meta charset="UTF-8">
 <title>${escapeHtml(note.title)}</title>
 <style>
-  body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }
+  body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; box-sizing: border-box; }
   h1 { font-size: 2em; margin-bottom: 0.25em; }
   h2 { font-size: 1.5em; margin: 1em 0 0.4em; }
   h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
@@ -273,7 +273,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 
   const container = document.createElement('div')
   container.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:794px;background:white;padding:40px;font-family:Georgia,serif;color:#111;'
+    'position:fixed;left:-9999px;top:0;width:658px;background:white;padding:0;font-family:Georgia,serif;color:#111;'
 
   const parser = new DOMParser()
   const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
@@ -307,24 +307,63 @@ export async function exportToPDF(note: Note): Promise<void> {
 
   try {
     const canvas = await html2canvas(container, { scale: 2 })
-    const imgData = canvas.toDataURL('image/png')
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
-    const imgWidth = pageWidth
-    const imgHeight = (canvas.height * pageWidth) / canvas.width
+    const margin = { top: 15, side: 18 } // mm
+    const contentWidth = pageWidth - 2 * margin.side
+    const contentHeight = pageHeight - 2 * margin.top
 
-    let yOffset = 0
-    let heightLeft = imgHeight
+    // Canvas pixels per mm of content width
+    const pxPerMm = canvas.width / contentWidth
+    const contentHeightPx = Math.round(contentHeight * pxPerMm)
 
-    pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
-    heightLeft -= pageHeight
+    // Scan pixel rows to find whitespace gaps for page breaks
+    const ctx2d = canvas.getContext('2d')!
+    const { data: pixels } = ctx2d.getImageData(0, 0, canvas.width, canvas.height)
 
-    while (heightLeft > 0) {
-      yOffset -= pageHeight
-      pdf.addPage()
-      pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight)
-      heightLeft -= pageHeight
+    function isRowWhite(y: number): boolean {
+      if (y < 0 || y >= canvas.height) return true
+      const base = y * canvas.width * 4
+      for (let x = 0; x < canvas.width; x++) {
+        const i = base + x * 4
+        if (pixels[i + 3] < 10) continue // transparent counts as white
+        if (pixels[i] < 245 || pixels[i + 1] < 245 || pixels[i + 2] < 245) return false
+      }
+      return true
+    }
+
+    function findBreak(targetY: number): number {
+      // Prefer scanning upward so the page never overflows
+      for (let dy = 0; dy <= 80; dy++) {
+        if (isRowWhite(targetY - dy)) return targetY - dy
+      }
+      return targetY
+    }
+
+    // Determine slice start positions, snapping each break to a whitespace row
+    const starts: number[] = [0]
+    let next = contentHeightPx
+    while (next < canvas.height) {
+      const breakY = findBreak(next)
+      starts.push(breakY)
+      next = breakY + contentHeightPx
+    }
+
+    // Render each slice as its own cropped image
+    for (let p = 0; p < starts.length; p++) {
+      if (p > 0) pdf.addPage()
+      const sliceStart = starts[p]
+      const sliceEnd = p + 1 < starts.length ? starts[p + 1] : canvas.height
+      const sliceHeightPx = sliceEnd - sliceStart
+
+      const slice = document.createElement('canvas')
+      slice.width = canvas.width
+      slice.height = sliceHeightPx
+      slice.getContext('2d')!.drawImage(canvas, 0, sliceStart, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
+
+      const sliceHeightMm = (sliceHeightPx / canvas.width) * contentWidth
+      pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin.side, margin.top, contentWidth, sliceHeightMm)
     }
 
     pdf.save(`${note.title || 'note'}.pdf`)
@@ -490,7 +529,14 @@ export async function exportToWord(note: Note): Promise<void> {
 
   const doc = new Document({
     numbering: { config: [{ reference: 'gecko-ordered-list', levels: orderedListLevels }] },
-    sections: [{ children: paragraphs }],
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 850, right: 1021, bottom: 850, left: 1021 }, // 15mm top/bottom, 18mm left/right
+        },
+      },
+      children: paragraphs,
+    }],
   })
 
   const blob = await Packer.toBlob(doc)
