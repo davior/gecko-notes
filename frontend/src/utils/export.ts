@@ -44,50 +44,160 @@ function extractPlainText(contentStr: string): string {
   }
 }
 
-// ─── Helper: render note to HTML string (with images) ────────────────────────
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function formatDate(isoStr: string): string {
+  try {
+    return new Date(isoStr).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  } catch {
+    return isoStr
+  }
+}
+
+// ─── Helper: render inline content with full style support ───────────────────
+
+function buildInlineContent(content: unknown[]): string {
+  if (!Array.isArray(content)) return ''
+  const parts: string[] = []
+  for (const item of content) {
+    if (typeof item !== 'object' || item === null) continue
+    const typed = item as Record<string, unknown>
+    if (typed.type === 'link') {
+      const href = escapeHtml((typed.href as string) ?? '')
+      const inner = buildInlineContent((typed.content as unknown[]) ?? [])
+      parts.push(`<a href="${href}">${inner}</a>`)
+    } else if (typed.type === 'text') {
+      let text = escapeHtml((typed.text as string) ?? '')
+      const styles = typed.styles as Record<string, unknown> | undefined
+      if (styles?.code) text = `<code>${text}</code>`
+      if (styles?.bold) text = `<strong>${text}</strong>`
+      if (styles?.italic) text = `<em>${text}</em>`
+      if (styles?.underline) text = `<u>${text}</u>`
+      if (styles?.strikethrough) text = `<s>${text}</s>`
+      parts.push(text)
+    }
+  }
+  return parts.join('')
+}
+
+// ─── Helper: convert blocks array to HTML with correct element types ──────────
+
+function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) return ''
+  const parts: string[] = []
+  let i = 0
+  while (i < blocks.length) {
+    const block = blocks[i]
+    const type = block.type as string
+    const content = block.content as unknown[] | undefined
+    const children = block.children as Record<string, unknown>[] | undefined
+    const props = block.props as Record<string, unknown> | undefined
+
+    if (type === 'bulletListItem') {
+      const items: string[] = []
+      while (i < blocks.length && blocks[i].type === 'bulletListItem') {
+        const b = blocks[i]
+        const bc = b.content as unknown[] | undefined
+        const bch = b.children as Record<string, unknown>[] | undefined
+        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
+        i++
+      }
+      parts.push(`<ul>${items.join('')}</ul>`)
+      continue
+    }
+
+    if (type === 'numberedListItem') {
+      const items: string[] = []
+      while (i < blocks.length && blocks[i].type === 'numberedListItem') {
+        const b = blocks[i]
+        const bc = b.content as unknown[] | undefined
+        const bch = b.children as Record<string, unknown>[] | undefined
+        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
+        i++
+      }
+      parts.push(`<ol>${items.join('')}</ol>`)
+      continue
+    }
+
+    if (type === 'checkListItem') {
+      const items: string[] = []
+      while (i < blocks.length && blocks[i].type === 'checkListItem') {
+        const b = blocks[i]
+        const bc = b.content as unknown[] | undefined
+        const bch = b.children as Record<string, unknown>[] | undefined
+        const bp = b.props as Record<string, unknown> | undefined
+        const checked = bp?.checked === true
+        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        items.push(`<li>${checked ? '&#9745;' : '&#9744;'} ${buildInlineContent(bc ?? [])}${nested}</li>`)
+        i++
+      }
+      parts.push(`<ul class="checklist">${items.join('')}</ul>`)
+      continue
+    }
+
+    if (type === 'image') {
+      const url = props?.url as string | undefined
+      if (url) {
+        parts.push(`<figure style="margin:16px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`)
+      }
+      i++
+      continue
+    }
+
+    if (type === 'heading') {
+      const level = (props?.level as number) ?? 1
+      const tag = `h${Math.min(Math.max(level, 1), 6)}`
+      const nested = Array.isArray(children) && children.length > 0 ? buildBlocksHTML(children) : ''
+      parts.push(`<${tag}>${buildInlineContent(content ?? [])}</${tag}>${nested}`)
+      i++
+      continue
+    }
+
+    if (type === 'codeBlock') {
+      const lang = escapeHtml((props?.language as string) ?? '')
+      const langAttr = lang ? ` class="language-${lang}"` : ''
+      parts.push(`<pre><code${langAttr}>${buildInlineContent(content ?? [])}</code></pre>`)
+      i++
+      continue
+    }
+
+    // paragraph and any unknown block types
+    const nested = Array.isArray(children) && children.length > 0 ? buildBlocksHTML(children) : ''
+    parts.push(`<p>${buildInlineContent(content ?? [])}</p>${nested}`)
+    i++
+  }
+  return parts.join('')
+}
+
+// ─── Helper: metadata section HTML ───────────────────────────────────────────
+
+function buildMetadataHTML(note: Note): string {
+  const lines: string[] = []
+  lines.push(`<p class="meta-dates">Created: <span>${formatDate(note.created_at)}</span>&nbsp;&nbsp;·&nbsp;&nbsp;Modified: <span>${formatDate(note.modified_at)}</span></p>`)
+  if (note.tags.length > 0) {
+    lines.push(`<p class="meta-tags">Tags: ${note.tags.map(escapeHtml).join(', ')}</p>`)
+  }
+  if (note.summary?.trim()) {
+    lines.push(`<p class="meta-summary"><em>Summary:</em> ${escapeHtml(note.summary)}</p>`)
+  }
+  return `<div class="metadata">${lines.join('\n')}</div>`
+}
+
+// ─── Helper: render note to full HTML document ────────────────────────────────
 
 function noteToHTML(note: Note): string {
   let bodyContent = ''
   try {
     const blocks = JSON.parse(note.content) as Record<string, unknown>[]
-    const parts: string[] = []
-
-    function processBlock(block: Record<string, unknown>) {
-      if (block.type === 'image') {
-        const props = block.props as Record<string, unknown> | undefined
-        const url = props?.url as string | undefined
-        if (url) {
-          parts.push(`<figure style="margin:16px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`)
-        }
-        return
-      }
-      const content = block.content
-      const texts: string[] = []
-      if (Array.isArray(content)) {
-        for (const item of content) {
-          if (typeof item === 'object' && item !== null) {
-            const typedItem = item as Record<string, unknown>
-            if (typedItem.type === 'text' && typeof typedItem.text === 'string') {
-              texts.push(escapeHtml(typedItem.text))
-            }
-          }
-        }
-      }
-      parts.push(`<p>${texts.join('')}</p>`)
-      const children = block.children
-      if (Array.isArray(children)) {
-        for (const child of children) {
-          if (typeof child === 'object' && child !== null) {
-            processBlock(child as Record<string, unknown>)
-          }
-        }
-      }
-    }
-
-    for (const block of blocks) {
-      processBlock(block)
-    }
-    bodyContent = parts.join('')
+    bodyContent = buildBlocksHTML(blocks)
   } catch {
     bodyContent = note.content.split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
   }
@@ -100,25 +210,33 @@ function noteToHTML(note: Note): string {
 <title>${escapeHtml(note.title)}</title>
 <style>
   body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }
-  h1 { font-size: 2em; margin-bottom: 0.5em; }
+  h1 { font-size: 2em; margin-bottom: 0.25em; }
+  h2 { font-size: 1.5em; margin: 1em 0 0.4em; }
+  h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
   p { line-height: 1.6; margin: 0.5em 0; }
+  ul, ol { margin: 0.5em 0 0.5em 1.5em; padding: 0; line-height: 1.6; }
+  ul.checklist { list-style: none; margin-left: 0; padding-left: 0; }
+  li { margin: 0.25em 0; }
+  pre { background: #f5f5f5; border-radius: 4px; padding: 12px 16px; overflow-x: auto; margin: 0.75em 0; }
+  code { font-family: 'Courier New', Courier, monospace; font-size: 0.9em; background: #f5f5f5; padding: 0.1em 0.3em; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  strong { font-weight: bold; }
+  em { font-style: italic; }
+  u { text-decoration: underline; }
+  s { text-decoration: line-through; }
+  a { color: #2563eb; text-decoration: underline; }
   figure { margin: 16px 0; }
   img { max-width: 100%; height: auto; }
+  .metadata { border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; padding: 8px 0; margin: 0.5em 0 1.5em; color: #6b7280; font-size: 0.85em; font-family: system-ui, sans-serif; }
+  .metadata p { margin: 2px 0; line-height: 1.5; }
 </style>
 </head>
 <body>
   <h1>${escapeHtml(note.title)}</h1>
+  ${buildMetadataHTML(note)}
   <div class="content">${bodyContent}</div>
 </body>
 </html>`
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 // ─── Helper: fetch image as ArrayBuffer with display dimensions ───────────────
@@ -157,32 +275,10 @@ export async function exportToPDF(note: Note): Promise<void> {
   container.style.cssText =
     'position:fixed;left:-9999px;top:0;width:794px;background:white;padding:40px;font-family:Georgia,serif;color:#111;'
 
-  let contentHTML = `<h1 style="font-size:28px;margin-bottom:16px">${escapeHtml(note.title)}</h1><div style="line-height:1.6">`
-  try {
-    const blocks = JSON.parse(note.content) as Record<string, unknown>[]
-    function buildBlockHTML(block: Record<string, unknown>): string {
-      if (block.type === 'image') {
-        const props = block.props as Record<string, unknown> | undefined
-        const url = props?.url as string | undefined
-        if (url) {
-          return `<figure style="margin:8px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`
-        }
-        return ''
-      }
-      const content = block.content as Array<{ type: string; text: string }> | undefined
-      const text = Array.isArray(content)
-        ? content.filter((i) => i.type === 'text').map((i) => escapeHtml(i.text)).join('')
-        : ''
-      const children = block.children as Record<string, unknown>[] | undefined
-      const childrenHTML = Array.isArray(children) ? children.map(buildBlockHTML).join('') : ''
-      return `<p>${text}</p>${childrenHTML}`
-    }
-    contentHTML += blocks.map(buildBlockHTML).join('')
-  } catch {
-    contentHTML += extractPlainText(note.content).split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
-  }
-  contentHTML += '</div>'
-  container.innerHTML = contentHTML
+  const parser = new DOMParser()
+  const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
+  const styleContent = parsedDoc.head.querySelector('style')?.textContent ?? ''
+  container.innerHTML = `<style>${styleContent}</style>${parsedDoc.body.innerHTML}`
   document.body.appendChild(container)
 
   // Replace img src with data URLs so html2canvas can render cross-origin images
@@ -240,14 +336,82 @@ export async function exportToPDF(note: Note): Promise<void> {
 // ─── Export: Word (.docx) ─────────────────────────────────────────────────────
 
 export async function exportToWord(note: Note): Promise<void> {
-  const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun } = await import('docx')
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun, UnderlineType, AlignmentType } =
+    await import('docx')
+
+  const orderedListLevels = [0, 1, 2].map((level) => ({
+    level,
+    format: 'decimal' as const,
+    text: `%${level + 1}.`,
+    alignment: AlignmentType.LEFT,
+    style: {
+      paragraph: { indent: { left: 720 * (level + 1), hanging: 360 } },
+    },
+  }))
+
+  function buildWordRuns(
+    content: Array<Record<string, unknown>>
+  ): DocxTextRun[] {
+    if (!Array.isArray(content)) return []
+    const runs: DocxTextRun[] = []
+    for (const item of content) {
+      if (item.type === 'link') {
+        const inner = buildWordRuns((item.content as Array<Record<string, unknown>>) ?? [])
+        for (const r of inner) {
+          // Annotate link text with blue color and underline
+          runs.push(
+            new TextRun({
+              ...(r as Record<string, unknown>),
+              color: '2563EB',
+              underline: { type: UnderlineType.SINGLE },
+            })
+          )
+        }
+      } else if (item.type === 'text') {
+        const styles = item.styles as Record<string, unknown> | undefined
+        runs.push(
+          new TextRun({
+            text: (item.text as string) ?? '',
+            bold: !!(styles?.bold),
+            italics: !!(styles?.italic),
+            underline: styles?.underline ? { type: UnderlineType.SINGLE } : undefined,
+            strike: !!(styles?.strikethrough),
+            font: styles?.code ? 'Courier New' : undefined,
+            size: styles?.code ? 18 : undefined,
+          })
+        )
+      }
+    }
+    return runs
+  }
 
   const paragraphs: DocxParagraph[] = [
+    new Paragraph({ text: note.title, heading: HeadingLevel.TITLE }),
     new Paragraph({
-      text: note.title,
-      heading: HeadingLevel.TITLE,
+      children: [
+        new TextRun({
+          text: `Created: ${formatDate(note.created_at)}    ·    Modified: ${formatDate(note.modified_at)}`,
+          color: '6B7280',
+          size: 18,
+        }),
+      ],
     }),
   ]
+  if (note.tags.length > 0) {
+    paragraphs.push(
+      new Paragraph({
+        children: [new TextRun({ text: `Tags: ${note.tags.join(', ')}`, color: '6B7280', size: 18 })],
+      })
+    )
+  }
+  if (note.summary?.trim()) {
+    paragraphs.push(
+      new Paragraph({
+        children: [new TextRun({ text: `Summary: ${note.summary}`, italics: true, color: '6B7280', size: 18 })],
+      })
+    )
+  }
+  paragraphs.push(new Paragraph({ children: [] }))
 
   let blocks: Record<string, unknown>[] = []
   try {
@@ -256,64 +420,76 @@ export async function exportToWord(note: Note): Promise<void> {
     blocks = []
   }
 
-  async function blockToParagraph(block: Record<string, unknown>): Promise<DocxParagraph> {
-    if (block.type === 'image') {
-      const props = block.props as Record<string, unknown> | undefined
+  async function blockToParagraphs(block: Record<string, unknown>, depth: number): Promise<DocxParagraph[]> {
+    const type = block.type as string
+    const content = (block.content as Array<Record<string, unknown>>) ?? []
+    const children = (block.children as Record<string, unknown>[]) ?? []
+    const props = block.props as Record<string, unknown> | undefined
+
+    if (type === 'image') {
       const url = props?.url as string | undefined
       if (url) {
         try {
           const { data, width, height } = await fetchImageData(url)
-          return new Paragraph({
-            children: [new ImageRun({ data, type: 'png', transformation: { width, height } })],
-          })
+          return [new Paragraph({ children: [new ImageRun({ data, type: 'png', transformation: { width, height } })] })]
         } catch {
-          return new Paragraph({ children: [new TextRun({ text: '[Image]', italics: true })] })
+          return [new Paragraph({ children: [new TextRun({ text: '[Image]', italics: true })] })]
         }
       }
-      return new Paragraph({ children: [] })
+      return [new Paragraph({ children: [] })]
     }
 
-    const blockType = block.type as string
-    const content = block.content as Array<{ type: string; text: string; styles?: Record<string, boolean> }> | undefined
-    const runs: DocxTextRun[] = []
-
-    if (Array.isArray(content)) {
-      for (const item of content) {
-        if (item.type === 'text') {
-          runs.push(
-            new TextRun({
-              text: item.text,
-              bold: item.styles?.bold ?? false,
-              italics: item.styles?.italic ?? false,
-            })
-          )
-        }
-      }
+    const runs = buildWordRuns(content)
+    let childParas: DocxParagraph[] = []
+    for (const child of children) {
+      childParas = childParas.concat(await blockToParagraphs(child as Record<string, unknown>, depth + 1))
     }
 
-    if (blockType === 'heading') {
-      const level = (block.props as Record<string, unknown>)?.level as number
+    if (type === 'heading') {
+      const level = (props?.level as number) ?? 1
       const heading =
+        level === 1 ? HeadingLevel.HEADING_1 :
         level === 2 ? HeadingLevel.HEADING_2 :
-        level === 3 ? HeadingLevel.HEADING_3 :
-        HeadingLevel.HEADING_1
-      return new Paragraph({ children: runs, heading })
+        HeadingLevel.HEADING_3
+      return [new Paragraph({ children: runs, heading }), ...childParas]
     }
 
-    return new Paragraph({ children: runs })
+    if (type === 'bulletListItem') {
+      return [new Paragraph({ children: runs, bullet: { level: depth } }), ...childParas]
+    }
+
+    if (type === 'numberedListItem') {
+      return [
+        new Paragraph({ children: runs, numbering: { reference: 'gecko-ordered-list', level: depth } }),
+        ...childParas,
+      ]
+    }
+
+    if (type === 'checkListItem') {
+      const checked = props?.checked === true
+      return [
+        new Paragraph({
+          children: [new TextRun({ text: checked ? '☑ ' : '☐ ' }), ...runs],
+        }),
+        ...childParas,
+      ]
+    }
+
+    if (type === 'codeBlock') {
+      const plainText = content.filter((i) => i.type === 'text').map((i) => (i.text as string) ?? '').join('')
+      return [new Paragraph({ children: [new TextRun({ text: plainText, font: 'Courier New', size: 18 })] })]
+    }
+
+    return [new Paragraph({ children: runs }), ...childParas]
   }
 
   for (const block of blocks) {
-    paragraphs.push(await blockToParagraph(block))
-    const children = block.children as Record<string, unknown>[] | undefined
-    if (Array.isArray(children)) {
-      for (const child of children) {
-        paragraphs.push(await blockToParagraph(child))
-      }
-    }
+    const paras = await blockToParagraphs(block, 0)
+    paragraphs.push(...paras)
   }
 
   const doc = new Document({
+    numbering: { config: [{ reference: 'gecko-ordered-list', levels: orderedListLevels }] },
     sections: [{ children: paragraphs }],
   })
 
@@ -323,11 +499,34 @@ export async function exportToWord(note: Note): Promise<void> {
 
 // ─── Export: Markdown ─────────────────────────────────────────────────────────
 
+function buildMarkdownFrontmatter(note: Note): string {
+  const escape = (s: string) => s.replace(/"/g, '\\"')
+  const lines = [
+    '---',
+    `title: "${escape(note.title)}"`,
+    `created: "${formatDate(note.created_at)}"`,
+    `modified: "${formatDate(note.modified_at)}"`,
+  ]
+  if (note.tags.length > 0) {
+    lines.push(`tags: [${note.tags.map((t) => `"${escape(t)}"`).join(', ')}]`)
+  }
+  if (note.summary?.trim()) {
+    lines.push(`summary: "${escape(note.summary)}"`)
+  }
+  lines.push('---')
+  return lines.join('\n')
+}
+
 export async function exportToMarkdown(note: Note): Promise<void> {
   const TurndownService = (await import('turndown')).default
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
-  const html = noteToHTML(note)
-  const md = `# ${note.title}\n\n${td.turndown(html)}`
+
+  let blocks: Record<string, unknown>[] = []
+  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+
+  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${buildBlocksHTML(blocks)}`
+  const frontmatter = buildMarkdownFrontmatter(note)
+  const md = `${frontmatter}\n\n${td.turndown(bodyHTML)}`
   downloadText(md, `${note.title || 'note'}.md`, 'text/markdown')
 }
 
