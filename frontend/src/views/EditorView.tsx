@@ -482,7 +482,7 @@ export default function EditorView() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
+      <div className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
         {!loaded ? (
           <div className="flex items-center justify-center h-full">
             <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown, Moon, Sun, LayoutList, LayoutGrid, X, Copy } from 'lucide-react'
+import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
 import AIBar from '@/components/AIBar'
 import UserAvatar from '@/components/UserAvatar'
+import ThemePicker from '@/components/ThemePicker'
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
@@ -20,8 +21,6 @@ export default function ListView() {
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const categories = useCategoriesStore((s) => s.categories)
   const defaultSortOrder = useSettingsStore((s) => s.defaultSortOrder)
-  const theme = useSettingsStore((s) => s.theme)
-  const toggleTheme = useSettingsStore((s) => s.toggleTheme)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null)
@@ -109,9 +108,7 @@ export default function ListView() {
             Gecko Notes
           </h1>
           <div className="flex-1" />
-          <button className="btn-ghost p-2" title="Toggle dark mode" onClick={toggleTheme}>
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
+          <ThemePicker />
           <Link to="/settings" className="btn-ghost p-2">
             <Settings className="w-5 h-5" />
           </Link>

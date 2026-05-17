@@ -36,6 +36,22 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
 }
 
+/* Editor area — glass background with increased opacity for readability.
+   The multiplier (2.5×) ensures text is comfortably legible while still
+   allowing the theme background to show through. Capped at 0.88 so even
+   high-opacity themes remain translucent. BlockNote's internal backgrounds
+   are cleared so this glass layer is what shows through the content. */
+[data-glass] .editor-area {
+  background: rgba(var(--glass-rgb), min(calc(var(--glass-opacity) * 2.5), 0.88)) !important;
+  backdrop-filter: blur(var(--glass-blur)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
+}
+
+[data-glass] .editor-area .bn-editor,
+[data-glass] .editor-area .bn-container {
+  background: transparent !important;
+}
+
 /* Pills — category filter chips, tag chips, sort/view toggle pills.
    Targets rounded-full + border (excludes FAB which has no border,
    and primary buttons which use rounded-lg). */
