@@ -1,7 +1,7 @@
+@import './glass.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@import './glass.css';
 
 @layer base {
   body {
