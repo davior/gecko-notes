@@ -174,6 +174,61 @@ class SystemPromptRead(BaseModel):
         from_attributes = True
 
 
+# Theme schemas
+class ThemeCreate(BaseModel):
+    name: str
+    is_global: bool = False
+    mode: str = "light"
+    bg_type: str = "flat"
+    bg_color1: str = "#f0f4ff"
+    bg_color2: Optional[str] = None
+    bg_image_url: Optional[str] = None
+    bg_image_mode: str = "fill"
+    bg_blur: float = 0.0
+    glass_opacity: float = 0.30
+    glass_blur: float = 12.0
+    shadow_size: float = 8.0
+    shadow_blur: float = 16.0
+
+
+class ThemeUpdate(BaseModel):
+    name: Optional[str] = None
+    is_global: Optional[bool] = None
+    mode: Optional[str] = None
+    bg_type: Optional[str] = None
+    bg_color1: Optional[str] = None
+    bg_color2: Optional[str] = None
+    bg_image_url: Optional[str] = None
+    bg_image_mode: Optional[str] = None
+    bg_blur: Optional[float] = None
+    glass_opacity: Optional[float] = None
+    glass_blur: Optional[float] = None
+    shadow_size: Optional[float] = None
+    shadow_blur: Optional[float] = None
+
+
+class ThemeRead(BaseModel):
+    id: str
+    name: str
+    user_id: Optional[str]
+    is_global: bool
+    mode: str
+    bg_type: str
+    bg_color1: str
+    bg_color2: Optional[str]
+    bg_image_url: Optional[str]
+    bg_image_mode: str
+    bg_blur: float
+    glass_opacity: float
+    glass_blur: float
+    shadow_size: float
+    shadow_blur: float
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # Settings schemas
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]

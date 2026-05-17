@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate } from '@/api/settings'
+import { settingsApi, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -15,6 +15,8 @@ interface SettingsState {
   aiTemperature: number
   aiPrefill: string
   summaryPrompt: string
+  themes: Theme[]
+  activeThemeId: string | null
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -29,6 +31,13 @@ interface SettingsState {
   updateSystemPrompt: (id: string, payload: SystemPromptUpdate) => Promise<SystemPrompt>
   deleteSystemPrompt: (id: string) => Promise<void>
   activateSystemPrompt: (id: string) => Promise<SystemPrompt>
+  loadThemes: () => Promise<void>
+  createTheme: (payload: ThemeCreate) => Promise<Theme>
+  updateTheme: (id: string, payload: ThemeUpdate) => Promise<Theme>
+  deleteTheme: (id: string) => Promise<void>
+  activateTheme: (id: string) => Promise<Theme>
+  deactivateTheme: () => Promise<void>
+  applyTheme: (theme: Theme | null) => void
   reset: () => void
 }
 
@@ -47,6 +56,46 @@ function deriveAIService(providers: AIProvider[]): AIService | null {
   return active ? createAIService(active) : null
 }
 
+function applyThemeToDom(theme: Theme | null) {
+  const root = document.documentElement
+  if (!theme) {
+    root.removeAttribute('data-glass')
+    root.classList.remove('dark')
+    ;[
+      '--theme-bg', '--theme-bg-size', '--theme-bg-filter',
+      '--glass-opacity', '--glass-blur', '--glass-rgb',
+      '--shadow-size', '--shadow-blur', '--shadow-color',
+    ].forEach((v) => root.style.removeProperty(v))
+    return
+  }
+
+  // Background
+  let bg = theme.bg_color1
+  if (theme.bg_type === 'gradient' && theme.bg_color2) {
+    bg = `linear-gradient(135deg, ${theme.bg_color1}, ${theme.bg_color2})`
+  } else if (theme.bg_type === 'image' && theme.bg_image_url) {
+    bg = `url(${theme.bg_image_url})`
+  }
+  const bgSize = theme.bg_image_mode === 'repeat' ? 'auto' : theme.bg_image_mode === 'stretch' ? '100% 100%' : 'cover'
+
+  root.style.setProperty('--theme-bg', bg)
+  root.style.setProperty('--theme-bg-size', bgSize)
+  root.style.setProperty('--theme-bg-filter', theme.bg_blur > 0 ? `blur(${theme.bg_blur}px)` : 'none')
+  root.style.setProperty('--glass-opacity', String(theme.glass_opacity))
+  root.style.setProperty('--glass-blur', `${theme.glass_blur}px`)
+  root.style.setProperty('--glass-rgb', theme.mode === 'dark' ? '0,0,0' : '255,255,255')
+  root.style.setProperty('--shadow-size', `${theme.shadow_size}px`)
+  root.style.setProperty('--shadow-blur', `${theme.shadow_blur}px`)
+  root.style.setProperty('--shadow-color', theme.mode === 'dark' ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.25)')
+
+  root.setAttribute('data-glass', theme.mode)
+  if (theme.mode === 'dark') {
+    root.classList.add('dark')
+  } else {
+    root.classList.remove('dark')
+  }
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   appSettings: {},
   aiProviders: [],
@@ -60,15 +109,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   aiTemperature: 0.8,
   aiPrefill: '',
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
+  themes: [],
+  activeThemeId: null,
 
   async loadSettings() {
     set({ loading: true })
     try {
-      const [settings, providers, prompts] = await Promise.all([
+      const [settings, providers, prompts, themesResp] = await Promise.all([
         settingsApi.getAll(),
         settingsApi.listAIProviders(),
         settingsApi.listSystemPrompts(),
+        settingsApi.listThemes(),
       ])
+      const activeThemeId = (settings['active_theme_id'] as string) ?? null
+      const activeTheme = activeThemeId ? themesResp.data.find((t) => t.id === activeThemeId) ?? null : null
+      applyThemeToDom(activeTheme)
       set({
         appSettings: settings,
         aiProviders: providers.data,
@@ -80,6 +135,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
+        themes: themesResp.data,
+        activeThemeId,
       })
     } finally {
       set({ loading: false })
@@ -195,7 +252,49 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     return response.data
   },
 
+  async loadThemes() {
+    const response = await settingsApi.listThemes()
+    set({ themes: response.data })
+  },
+
+  async createTheme(payload) {
+    const response = await settingsApi.createTheme(payload)
+    set((s) => ({ themes: [...s.themes, response.data] }))
+    return response.data
+  },
+
+  async updateTheme(id, payload) {
+    const response = await settingsApi.updateTheme(id, payload)
+    set((s) => ({ themes: s.themes.map((t) => (t.id === id ? response.data : t)) }))
+    const { activeThemeId } = get()
+    if (activeThemeId === id) applyThemeToDom(response.data)
+    return response.data
+  },
+
+  async deleteTheme(id) {
+    await settingsApi.deleteTheme(id)
+    set((s) => ({ themes: s.themes.filter((t) => t.id !== id) }))
+  },
+
+  async activateTheme(id) {
+    const response = await settingsApi.activateTheme(id)
+    set({ activeThemeId: id })
+    applyThemeToDom(response.data)
+    return response.data
+  },
+
+  async deactivateTheme() {
+    await settingsApi.deactivateTheme()
+    set({ activeThemeId: null })
+    applyThemeToDom(null)
+  },
+
+  applyTheme(theme) {
+    applyThemeToDom(theme)
+  },
+
   reset() {
+    applyThemeToDom(null)
     set({
       appSettings: {},
       aiProviders: [],
@@ -208,6 +307,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       aiTemperature: 0.8,
       aiPrefill: '',
       summaryPrompt: DEFAULT_SUMMARY_PROMPT,
+      themes: [],
+      activeThemeId: null,
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

@@ -39,6 +39,19 @@ export default function App() {
 
   return (
     <div id="app-root" className="h-screen flex flex-col overflow-hidden">
+      <div
+        id="theme-bg"
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: -1,
+          background: 'var(--theme-bg, transparent)',
+          backgroundSize: 'var(--theme-bg-size, cover)',
+          backgroundPosition: 'center',
+          filter: 'var(--theme-bg-filter, none)',
+        }}
+      />
       <Routes>
         <Route path="/login" element={isAuthenticated ? <Navigate to="/notes" replace /> : <LoginView />} />
         <Route path="/" element={<Navigate to="/notes" replace />} />

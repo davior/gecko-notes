@@ -36,20 +36,26 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
     const hasImage = Boolean(note.first_image_url)
     return (
       <div
-        className="relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-lg transition-shadow duration-150"
+        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
+          hasImage
+            ? 'border border-gray-200 dark:border-gray-700'
+            : 'card'
+        }`}
         onClick={() => onClick(note.id)}
       >
-        {/* Background image */}
+        {/* Background image — fixed blur independent of any active theme */}
         {hasImage && (
           <div
             className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${note.first_image_url})` }}
+            style={{ backgroundImage: `url(${note.first_image_url})`, filter: 'blur(3px)', transform: 'scale(1.05)' }}
           />
         )}
-        {/* Wash overlay — lightening in light mode, darkening in dark mode */}
-        <div
-          className={`absolute inset-0 ${hasImage ? 'bg-white/40 dark:bg-black/50' : 'bg-white dark:bg-gray-800'}`}
-        />
+        {/* Wash overlay for image cards only — note-card-img-wash suppresses
+            backdrop-filter so the static image blur is not compounded by the
+            theme glass blur. No-image cards use .card on the outer div instead. */}
+        {hasImage && (
+          <div className="absolute inset-0 note-card-img-wash bg-white/40 dark:bg-black/50" />
+        )}
 
         {/* Category color accent when no image */}
         {!hasImage && (
@@ -128,7 +134,7 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
   // List view
   return (
     <div
-      className="card cursor-pointer hover:shadow-md transition-shadow duration-150 flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
+      className="card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />

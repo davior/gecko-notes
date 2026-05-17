@@ -361,6 +361,10 @@ export default function EditorView() {
   }
 
   const theme = useSettingsStore((s) => s.theme)
+  const themes = useSettingsStore((s) => s.themes)
+  const activeThemeId = useSettingsStore((s) => s.activeThemeId)
+  const activeGlassTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
+  const editorTheme: 'light' | 'dark' = activeGlassTheme ? activeGlassTheme.mode : theme
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
@@ -482,7 +486,7 @@ export default function EditorView() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
+      <div className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
         {!loaded ? (
           <div className="flex items-center justify-center h-full">
             <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
@@ -495,7 +499,7 @@ export default function EditorView() {
             <BlockNoteView
               editor={editor}
               onChange={scheduleAutosave}
-              theme={theme}
+              theme={editorTheme}
             />
           </EditorErrorBoundary>
         )}

@@ -66,3 +66,22 @@ class SystemPrompt(SQLModel, table=True):
     is_active: bool = Field(default=False)
     sort_order: int = Field(default=0)
     user_id: Optional[str] = Field(default=None, index=True)
+
+
+class Theme(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    name: str
+    user_id: Optional[str] = Field(default=None, index=True)  # null = global theme
+    is_global: bool = Field(default=False)
+    mode: str = Field(default="light")           # "light" | "dark"
+    bg_type: str = Field(default="flat")          # "flat" | "gradient" | "image"
+    bg_color1: str = Field(default="#f0f4ff")
+    bg_color2: Optional[str] = None               # gradient second color
+    bg_image_url: Optional[str] = None
+    bg_image_mode: str = Field(default="fill")    # "repeat" | "stretch" | "fill"
+    bg_blur: float = Field(default=0.0)
+    glass_opacity: float = Field(default=0.30)
+    glass_blur: float = Field(default=12.0)
+    shadow_size: float = Field(default=8.0)
+    shadow_blur: float = Field(default=16.0)
+    created_at: datetime = Field(default_factory=datetime.utcnow)

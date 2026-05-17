@@ -61,6 +61,57 @@ export interface AIProviderTest {
   model: string
 }
 
+export interface Theme {
+  id: string
+  name: string
+  user_id: string | null
+  is_global: boolean
+  mode: 'light' | 'dark'
+  bg_type: 'flat' | 'gradient' | 'image'
+  bg_color1: string
+  bg_color2: string | null
+  bg_image_url: string | null
+  bg_image_mode: 'repeat' | 'stretch' | 'fill'
+  bg_blur: number
+  glass_opacity: number
+  glass_blur: number
+  shadow_size: number
+  shadow_blur: number
+  created_at: string
+}
+
+export interface ThemeCreate {
+  name: string
+  is_global?: boolean
+  mode?: 'light' | 'dark'
+  bg_type?: 'flat' | 'gradient' | 'image'
+  bg_color1?: string
+  bg_color2?: string | null
+  bg_image_url?: string | null
+  bg_image_mode?: 'repeat' | 'stretch' | 'fill'
+  bg_blur?: number
+  glass_opacity?: number
+  glass_blur?: number
+  shadow_size?: number
+  shadow_blur?: number
+}
+
+export interface ThemeUpdate {
+  name?: string
+  is_global?: boolean
+  mode?: 'light' | 'dark'
+  bg_type?: 'flat' | 'gradient' | 'image'
+  bg_color1?: string
+  bg_color2?: string | null
+  bg_image_url?: string | null
+  bg_image_mode?: 'repeat' | 'stretch' | 'fill'
+  bg_blur?: number
+  glass_opacity?: number
+  glass_blur?: number
+  shadow_size?: number
+  shadow_blur?: number
+}
+
 export const settingsApi = {
   getAll(): Promise<Record<string, unknown>> {
     return client.get('/settings').then((r) => r.data)
@@ -117,5 +168,29 @@ export const settingsApi = {
 
   activateSystemPrompt(id: string): Promise<{ data: SystemPrompt }> {
     return client.post(`/settings/system-prompts/${id}/activate`).then((r) => r.data)
+  },
+
+  listThemes(): Promise<{ data: Theme[]; total: number; limit: number; offset: number }> {
+    return client.get('/settings/themes').then((r) => r.data)
+  },
+
+  createTheme(payload: ThemeCreate): Promise<{ data: Theme }> {
+    return client.post('/settings/themes', payload).then((r) => r.data)
+  },
+
+  updateTheme(id: string, payload: ThemeUpdate): Promise<{ data: Theme }> {
+    return client.put(`/settings/themes/${id}`, payload).then((r) => r.data)
+  },
+
+  deleteTheme(id: string): Promise<void> {
+    return client.delete(`/settings/themes/${id}`).then(() => undefined)
+  },
+
+  activateTheme(id: string): Promise<{ data: Theme }> {
+    return client.post(`/settings/themes/${id}/activate`).then((r) => r.data)
+  },
+
+  deactivateTheme(): Promise<void> {
+    return client.delete('/settings/themes/activate').then(() => undefined)
   },
 }

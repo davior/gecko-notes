@@ -10,11 +10,12 @@ from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session
-from app.models import AIProvider, AppSetting, UserSetting, SystemPrompt
+from app.models import AIProvider, AppSetting, User, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
     DataResponse, ListResponse, SettingsUpdate,
     SystemPromptCreate, SystemPromptUpdate, SystemPromptRead,
+    ThemeCreate, ThemeUpdate, ThemeRead,
 )
 
 router = APIRouter()
@@ -495,3 +496,131 @@ async def proxy_ollama(
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
     return response.json()
+
+
+# ─── Themes ───────────────────────────────────────────────────────────────────
+
+def _is_admin(request: Request, session: Session) -> bool:
+    user_id = _get_user_id(request)
+    user = session.get(User, user_id)
+    return bool(user and user.is_admin)
+
+
+@router.get("/themes", response_model=ListResponse[ThemeRead])
+def list_themes(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    global_themes = session.exec(select(Theme).where(Theme.is_global == True)).all()
+    personal_themes = session.exec(select(Theme).where(Theme.user_id == user_id, Theme.is_global == False)).all()
+    all_themes = list(global_themes) + list(personal_themes)
+    return ListResponse(
+        data=[ThemeRead.model_validate(t) for t in all_themes],
+        total=len(all_themes),
+        limit=len(all_themes),
+        offset=0,
+    )
+
+
+@router.post("/themes", response_model=DataResponse[ThemeRead], status_code=201)
+def create_theme(payload: ThemeCreate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    is_global = payload.is_global and _is_admin(request, session)
+    theme = Theme(
+        id=str(uuid.uuid4()),
+        name=payload.name,
+        user_id=None if is_global else user_id,
+        is_global=is_global,
+        mode=payload.mode,
+        bg_type=payload.bg_type,
+        bg_color1=payload.bg_color1,
+        bg_color2=payload.bg_color2,
+        bg_image_url=payload.bg_image_url,
+        bg_image_mode=payload.bg_image_mode,
+        bg_blur=payload.bg_blur,
+        glass_opacity=payload.glass_opacity,
+        glass_blur=payload.glass_blur,
+        shadow_size=payload.shadow_size,
+        shadow_blur=payload.shadow_blur,
+    )
+    session.add(theme)
+    session.commit()
+    session.refresh(theme)
+    return DataResponse(data=ThemeRead.model_validate(theme))
+
+
+@router.put("/themes/{theme_id}", response_model=DataResponse[ThemeRead])
+def update_theme(theme_id: str, payload: ThemeUpdate, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    theme = session.get(Theme, theme_id)
+    if not theme:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+    is_admin = _is_admin(request, session)
+    if theme.is_global and not is_admin:
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Only admins can edit global themes"})
+    if not theme.is_global and theme.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+
+    for field in ["name", "mode", "bg_type", "bg_color1", "bg_color2", "bg_image_url",
+                  "bg_image_mode", "bg_blur", "glass_opacity", "glass_blur", "shadow_size", "shadow_blur"]:
+        val = getattr(payload, field, None)
+        if val is not None:
+            setattr(theme, field, val)
+
+    if payload.is_global is not None and is_admin:
+        theme.is_global = payload.is_global
+        if payload.is_global:
+            theme.user_id = None
+        elif theme.user_id is None:
+            theme.user_id = user_id
+
+    session.add(theme)
+    session.commit()
+    session.refresh(theme)
+    return DataResponse(data=ThemeRead.model_validate(theme))
+
+
+@router.delete("/themes/{theme_id}", status_code=204)
+def delete_theme(theme_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    theme = session.get(Theme, theme_id)
+    if not theme:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+    is_admin = _is_admin(request, session)
+    if theme.is_global and not is_admin:
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Only admins can delete global themes"})
+    if not theme.is_global and theme.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+    session.delete(theme)
+    session.commit()
+
+
+@router.post("/themes/{theme_id}/activate", response_model=DataResponse[ThemeRead])
+def activate_theme(theme_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    theme = session.get(Theme, theme_id)
+    if not theme:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+    if not theme.is_global and theme.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Theme not found"})
+
+    existing = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == "active_theme_id")
+    ).first()
+    serialised = json.dumps(theme_id)
+    if existing:
+        existing.value = serialised
+        session.add(existing)
+    else:
+        session.add(UserSetting(user_id=user_id, key="active_theme_id", value=serialised))
+    session.commit()
+    return DataResponse(data=ThemeRead.model_validate(theme))
+
+
+@router.delete("/themes/{theme_id}/activate", status_code=204)
+def deactivate_theme(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    existing = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == "active_theme_id")
+    ).first()
+    if existing:
+        session.delete(existing)
+        session.commit()
