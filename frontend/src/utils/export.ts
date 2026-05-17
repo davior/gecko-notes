@@ -395,16 +395,21 @@ export async function exportToWord(note: Note): Promise<void> {
     const runs: DocxTextRun[] = []
     for (const item of content) {
       if (item.type === 'link') {
-        const inner = buildWordRuns((item.content as Array<Record<string, unknown>>) ?? [])
-        for (const r of inner) {
-          // Annotate link text with blue color and underline
-          runs.push(
-            new TextRun({
-              ...(r as Record<string, unknown>),
-              color: '2563EB',
-              underline: { type: UnderlineType.SINGLE },
-            })
-          )
+        const linkContent = (item.content as Array<Record<string, unknown>>) ?? []
+        for (const child of linkContent) {
+          if (child.type === 'text') {
+            const styles = child.styles as Record<string, unknown> | undefined
+            runs.push(
+              new TextRun({
+                text: (child.text as string) ?? '',
+                bold: !!(styles?.bold),
+                italics: !!(styles?.italic),
+                strike: !!(styles?.strikethrough),
+                color: '2563EB',
+                underline: { type: UnderlineType.SINGLE },
+              })
+            )
+          }
         }
       } else if (item.type === 'text') {
         const styles = item.styles as Record<string, unknown> | undefined
