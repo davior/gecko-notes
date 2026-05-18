@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, Component } from 'react'
+import ReactMarkdown from 'react-markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2 } from 'lucide-react'
@@ -149,7 +150,7 @@ export default function EditorView() {
         setCategoryId(data.category_id)
         setTags([...data.tags])
         setSummary(data.summary ?? '')
-        setSummaryOpen(Boolean(data.summary))
+        setSummaryOpen(false)
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         setLoaded(true)
       }
@@ -454,8 +455,19 @@ export default function EditorView() {
                 <span className="text-gray-400">{summaryOpen ? '▲' : '▼'}</span>
               </button>
               {summaryOpen && (
-                <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed whitespace-pre-wrap">
-                  {summary}
+                <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed">
+                  <ReactMarkdown
+                    components={{
+                      strong: ({ children }) => <strong className="font-semibold text-gray-800 dark:text-gray-100">{children}</strong>,
+                      em: ({ children }) => <em className="italic">{children}</em>,
+                      ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+                      p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                      code: ({ children }) => <code className="bg-gray-100 dark:bg-gray-800 rounded px-1 font-mono text-xs">{children}</code>,
+                    }}
+                  >
+                    {summary}
+                  </ReactMarkdown>
                 </div>
               )}
             </div>

@@ -47,22 +47,24 @@
 }
 
 /* BlockNote editor text colour — ensure it matches the glass mode even if
-   Mantine's internal theme doesn't fully propagate through the glass layer */
-[data-glass="light"] .editor-area .bn-editor .bn-block-content,
-[data-glass="light"] .editor-area .bn-editor p,
-[data-glass="light"] .editor-area .bn-editor h1,
-[data-glass="light"] .editor-area .bn-editor h2,
-[data-glass="light"] .editor-area .bn-editor h3,
-[data-glass="light"] .editor-area .bn-editor li {
+   Mantine's internal theme doesn't fully propagate through the glass layer.
+   Scoped to blocks without an explicit data-text-color so user-applied
+   block-level and inline colours take precedence. */
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) .bn-block-content,
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) p,
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) h1,
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) h2,
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) h3,
+[data-glass="light"] .editor-area .bn-editor .bn-block:not([data-text-color]) li {
   color: #1a1a2e !important;
 }
 
-[data-glass="dark"] .editor-area .bn-editor .bn-block-content,
-[data-glass="dark"] .editor-area .bn-editor p,
-[data-glass="dark"] .editor-area .bn-editor h1,
-[data-glass="dark"] .editor-area .bn-editor h2,
-[data-glass="dark"] .editor-area .bn-editor h3,
-[data-glass="dark"] .editor-area .bn-editor li {
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) .bn-block-content,
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) p,
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) h1,
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) h2,
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) h3,
+[data-glass="dark"] .editor-area .bn-editor .bn-block:not([data-text-color]) li {
   color: #f1f5f9 !important;
 }
 

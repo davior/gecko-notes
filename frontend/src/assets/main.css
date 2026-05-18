@@ -50,6 +50,7 @@
 /* BlockNote editor overrides */
 .bn-editor {
   font-family: 'Inter', system-ui, sans-serif !important;
+  margin-top: 2px;
 }
 
 .bn-container {
