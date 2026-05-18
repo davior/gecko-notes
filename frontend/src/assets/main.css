@@ -50,13 +50,11 @@
 /* BlockNote editor overrides */
 .bn-editor {
   font-family: 'Inter', system-ui, sans-serif !important;
+  margin-top: 2px;
 }
 
 .bn-container {
   min-height: 100%;
-  border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
 }
 
 /* Scrollbar styling */
