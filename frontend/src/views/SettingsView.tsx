@@ -12,6 +12,7 @@ import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
 import UserAvatar from '@/components/UserAvatar'
+import AIProviderPicker from '@/components/AIProviderPicker'
 
 const baseTabs = [
   { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
@@ -43,6 +44,7 @@ export default function SettingsView() {
         </button>
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
         <div className="flex-1" />
+        <AIProviderPicker />
         <UserAvatar />
       </header>
 
