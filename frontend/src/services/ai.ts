@@ -22,6 +22,13 @@ const TAG_GENERATION_PROMPT = `You are a tagging assistant. Analyse the followin
 Content:
 {note_content}`
 
+function parseTagsFromAI(raw: string): string[] {
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+  const parsed = JSON.parse(cleaned)
+  if (!Array.isArray(parsed)) throw new Error('not an array')
+  return parsed.map(String)
+}
+
 export const DEFAULT_SUMMARY_PROMPT = `You are a knowledge indexing assistant. Create a dense, factual summary of the following note optimised for use in a Retrieval-Augmented Generation (RAG) system.
 
 Requirements:
@@ -63,7 +70,7 @@ class AnthropicProvider implements AIService {
     const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
     const result = await this.complete(prompt)
     try {
-      return JSON.parse(result)
+      return parseTagsFromAI(result)
     } catch {
       return []
     }
@@ -133,7 +140,7 @@ class OpenAIProvider implements AIService {
     const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
     const result = await this.complete(prompt)
     try {
-      return JSON.parse(result)
+      return parseTagsFromAI(result)
     } catch {
       return []
     }
@@ -202,7 +209,7 @@ class OllamaProvider implements AIService {
     const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
     const result = await this.complete(prompt)
     try {
-      return JSON.parse(result)
+      return parseTagsFromAI(result)
     } catch {
       return []
     }
