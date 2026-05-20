@@ -97,7 +97,10 @@ export default function UserAvatar() {
           <div className="overflow-y-auto max-h-[70vh]">
             {/* Theme section */}
             <div className="p-1 border-b border-gray-100 dark:border-gray-700">
-              <p className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Theme</p>
+              <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">Theme</span>
+                <button className="text-xs text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 transition-colors" onClick={() => { navigate('/settings/themes'); setOpen(false) }}>Manage</button>
+              </div>
               <button
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left ${
                   !activeThemeId
@@ -156,7 +159,10 @@ export default function UserAvatar() {
 
             {/* AI Provider section */}
             <div className="p-1 border-b border-gray-100 dark:border-gray-700">
-              <p className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">AI Provider</p>
+              <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">AI Provider</span>
+                <button className="text-xs text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 transition-colors" onClick={() => { navigate('/settings/ai-providers'); setOpen(false) }}>Manage</button>
+              </div>
               {enabledProviders.length === 0 ? (
                 <p className="px-3 py-2 text-sm text-gray-400 dark:text-gray-500">No providers configured.</p>
               ) : (
