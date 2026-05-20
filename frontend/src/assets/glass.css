@@ -95,6 +95,21 @@
   box-shadow: 0 calc(var(--shadow-size) * 0.5) calc(var(--shadow-blur) * 0.5) var(--shadow-color);
 }
 
+[data-glass] .rounded-full.border:hover {
+  background: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.6)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 2.2)) !important;
+}
+
+/* Selected "All" pill — keep dark/light fill, just suppress shadow */
+[data-glass] .rounded-full.border.shadow-none {
+  box-shadow: none !important;
+}
+
+/* Selected category pills — inline outline handles indicator; keep color fill */
+[data-glass] .rounded-full.border[style*="outline"] {
+  box-shadow: none !important;
+}
+
 /* Inputs */
 [data-glass] .input {
   background: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 0.8)) !important;

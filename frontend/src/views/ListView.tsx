@@ -126,7 +126,11 @@ export default function ListView() {
 
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
           <button
-            className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors ${activeCategoryId === null ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
+            className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-all ${
+              activeCategoryId === null
+                ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900 ring-2 ring-offset-1 ring-gray-600 dark:ring-gray-400 shadow-none'
+                : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400'
+            }`}
             onClick={() => setActiveCategoryId(null)}
           >
             All
@@ -134,8 +138,16 @@ export default function ListView() {
           {categories.map((cat) => (
             <button
               key={cat.id}
-              className="text-xs px-3 py-1.5 rounded-full border shrink-0 transition-colors dark:border-gray-600 dark:text-gray-300 dark:bg-gray-700"
-              style={activeCategoryId === cat.id ? { backgroundColor: cat.color, borderColor: cat.color, color: 'white' } : {}}
+              className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-all dark:border-gray-600 dark:text-gray-300 dark:bg-gray-700 ${
+                activeCategoryId === cat.id
+                  ? 'shadow-none'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+              }`}
+              style={
+                activeCategoryId === cat.id
+                  ? { backgroundColor: cat.color, borderColor: cat.color, color: 'white', outline: `2px solid ${cat.color}`, outlineOffset: '2px' }
+                  : {}
+              }
               onClick={() => setActiveCategoryId((id) => id === cat.id ? null : cat.id)}
             >
               {cat.emoji} {cat.label}
@@ -143,14 +155,14 @@ export default function ListView() {
           ))}
           <div className="flex-1" />
           <button
-            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 shrink-0 flex items-center gap-1 transition-colors"
+            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all"
             onClick={toggleSort}
           >
             <ArrowUpDown className="w-3 h-3" />
             {sortOrder === 'modified_at' ? 'Modified' : 'Created'}
           </button>
           <button
-            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 shrink-0 flex items-center gap-1 transition-colors"
+            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all"
             title={viewMode === 'list' ? 'Switch to card view' : 'Switch to list view'}
             onClick={toggleView}
           >
