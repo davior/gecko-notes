@@ -86,13 +86,26 @@
 
 /* Pills — category filter chips, tag chips, sort/view toggle pills.
    Targets rounded-full + border (excludes FAB which has no border,
-   and primary buttons which use rounded-lg). */
-[data-glass] .rounded-full.border {
+   and primary buttons which use rounded-lg).
+   Exclude selected pills (.shadow-none = "All", [style*="outline"] = category)
+   so their color fills are not overridden by the glass background. */
+[data-glass] .rounded-full.border:not(.shadow-none):not([style*="outline"]) {
   background: rgba(var(--glass-rgb), var(--glass-opacity)) !important;
   backdrop-filter: blur(var(--glass-blur)) !important;
   -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
   border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.5)) !important;
   box-shadow: 0 calc(var(--shadow-size) * 0.5) calc(var(--shadow-blur) * 0.5) var(--shadow-color);
+}
+
+[data-glass] .rounded-full.border:not(.shadow-none):not([style*="outline"]):hover {
+  background: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 1.6)) !important;
+  border-color: rgba(var(--glass-rgb), calc(var(--glass-opacity) * 2.2)) !important;
+}
+
+/* Selected pills — suppress shadow so ring/outline isn't buried */
+[data-glass] .rounded-full.border.shadow-none,
+[data-glass] .rounded-full.border[style*="outline"] {
+  box-shadow: none !important;
 }
 
 /* Inputs */
