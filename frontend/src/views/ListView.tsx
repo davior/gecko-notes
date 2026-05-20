@@ -4,7 +4,6 @@ import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy } 
 import NoteCard from '@/components/NoteCard'
 import AIBar from '@/components/AIBar'
 import UserAvatar from '@/components/UserAvatar'
-import ThemePicker from '@/components/ThemePicker'
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
@@ -108,7 +107,6 @@ export default function ListView() {
             Gecko Notes
           </h1>
           <div className="flex-1" />
-          <ThemePicker />
           <Link to="/settings" className="btn-ghost p-2">
             <Settings className="w-5 h-5" />
           </Link>
