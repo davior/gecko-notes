@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -12,7 +12,6 @@ import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
 import UserAvatar from '@/components/UserAvatar'
-import AIProviderPicker from '@/components/AIProviderPicker'
 
 const baseTabs = [
   { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
@@ -44,7 +43,9 @@ export default function SettingsView() {
         </button>
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
         <div className="flex-1" />
-        <AIProviderPicker />
+        <Link to="/settings" className="btn-ghost p-2" title="Settings">
+          <Settings className="w-5 h-5" />
+        </Link>
         <UserAvatar />
       </header>
 

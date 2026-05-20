@@ -4,8 +4,6 @@ import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, Settings } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
-import ThemePicker from '@/components/ThemePicker'
-import AIProviderPicker from '@/components/AIProviderPicker'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -390,8 +388,6 @@ export default function EditorView() {
           >
             <Trash2 className="w-4 h-4" />
           </button>
-          <AIProviderPicker />
-          <ThemePicker />
           <Link to="/settings" className="btn-ghost p-2" title="Settings">
             <Settings className="w-5 h-5" />
           </Link>
