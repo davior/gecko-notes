@@ -138,15 +138,15 @@ export default function AIConversationPanel({
 
   if (!isOpen) {
     return (
-      <div className="shrink-0 flex xl:flex-col items-center justify-center no-print">
+      <div className="shrink-0 flex sm:flex-col items-center justify-center no-print">
         <button
           onClick={onToggle}
-          className="xl:h-full w-full xl:w-9 flex xl:flex-col items-center justify-center gap-2 px-3 xl:px-0 py-2 xl:py-0 border-t xl:border-t-0 xl:border-l border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-500 text-gray-400 transition-colors"
+          className="sm:h-full w-full sm:w-9 flex sm:flex-col items-center justify-center gap-2 px-3 sm:px-0 py-2 sm:py-0 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-500 text-gray-400 transition-colors"
           title="Open AI Chat"
         >
           <Sparkles className="w-4 h-4" />
-          <span className="text-xs xl:hidden">AI Chat</span>
-          <span className="hidden xl:block text-xs font-medium tracking-widest" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+          <span className="text-xs sm:hidden">AI Chat</span>
+          <span className="hidden sm:block text-xs font-medium tracking-widest" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
             AI Chat
           </span>
         </button>
@@ -155,7 +155,7 @@ export default function AIConversationPanel({
   }
 
   return (
-    <div className="flex flex-col w-full xl:w-96 shrink-0 border-t xl:border-t-0 xl:border-l border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 max-h-96 xl:max-h-none no-print">
+    <div className="flex flex-col w-full sm:w-80 xl:w-96 shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 max-h-72 sm:max-h-none no-print">
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700">
         <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
