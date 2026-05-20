@@ -20,6 +20,7 @@ export interface Note {
   tags: string[]
   is_pinned: boolean
   summary?: string | null
+  conversation?: string | null
   created_at: string
   modified_at: string
 }
@@ -38,6 +39,7 @@ export interface NoteUpdate {
   tags?: string[]
   is_pinned?: boolean
   summary?: string | null
+  conversation?: string | null
 }
 
 export interface ListNotesParams {

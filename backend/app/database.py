@@ -124,6 +124,11 @@ def _run_migrations():
                 conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN conversation TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Collapse exact duplicate categories created by seed + import flows.
         try:
             duplicate_groups = conn.execute(text("""
