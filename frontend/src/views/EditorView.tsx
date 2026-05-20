@@ -14,7 +14,7 @@ import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
-import AIBar from '@/components/AIBar'
+import AIConversationPanel, { type ConversationMessage } from '@/components/AIConversationPanel'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -23,6 +23,11 @@ import { mediaApi } from '@/api/media'
 import type { Note } from '@/api/notes'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
+
+function parseConversation(raw: string | null | undefined): ConversationMessage[] {
+  if (!raw) return []
+  try { const p = JSON.parse(raw); return Array.isArray(p) ? p : [] } catch { return [] }
+}
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -70,7 +75,10 @@ export default function EditorView() {
   const [generatingSummary, setGeneratingSummary] = useState(false)
   const [summary, setSummary] = useState<string>('')
   const [summaryOpen, setSummaryOpen] = useState(false)
-  const [selectedText, setSelectedText] = useState('')
+  const [conversation, setConversation] = useState<ConversationMessage[]>([])
+  const [panelOpen, setPanelOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('ai-panel-open') !== 'false' } catch { return true }
+  })
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -81,6 +89,7 @@ export default function EditorView() {
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
   const defaultCategoryId = categoriesStore.categories[0]?.id ?? ''
+  const conversationRef = useRef<string>('[]')
   const latestTitle = useRef(title)
   const latestCategoryId = useRef(categoryId)
   const latestTags = useRef(tags)
@@ -96,31 +105,16 @@ export default function EditorView() {
     },
   })
 
+  useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])
+  useEffect(() => {
+    try { localStorage.setItem('ai-panel-open', String(panelOpen)) } catch { /* noop */ }
+  }, [panelOpen])
   useEffect(() => { latestTitle.current = title }, [title])
   useEffect(() => { latestCategoryId.current = categoryId }, [categoryId])
   useEffect(() => { latestTags.current = tags }, [tags])
   useEffect(() => { latestDefaultCategoryId.current = defaultCategoryId }, [defaultCategoryId])
   useEffect(() => { latestIsNew.current = isNew }, [isNew])
   useEffect(() => { latestNoteId.current = noteId }, [noteId])
-
-  // Track selected text in the editor
-  useEffect(() => {
-    if (!editor) return
-    const updateSelection = () => {
-      try {
-        const text = editor.getSelectedText?.() ?? ''
-        setSelectedText(text)
-      } catch {
-        setSelectedText('')
-      }
-    }
-    // BlockNote exposes the underlying tiptap editor for selection events
-    const tiptap = (editor as unknown as { _tiptapEditor?: { on: (event: string, cb: () => void) => void; off: (event: string, cb: () => void) => void } })._tiptapEditor
-    if (tiptap) {
-      tiptap.on('selectionUpdate', updateSelection)
-      return () => tiptap.off('selectionUpdate', updateSelection)
-    }
-  }, [editor])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
@@ -151,6 +145,8 @@ export default function EditorView() {
         setTags([...data.tags])
         setSummary(data.summary ?? '')
         setSummaryOpen(false)
+        setConversation(parseConversation(data.conversation))
+        conversationRef.current = data.conversation ?? '[]'
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         setLoaded(true)
       }
@@ -190,6 +186,7 @@ export default function EditorView() {
       content,
       category_id: latestCategoryId.current || latestDefaultCategoryId.current,
       tags: latestTags.current,
+      conversation: conversationRef.current,
     }
     try {
       if (latestIsNew.current && !createdNoteId.current) {
@@ -351,6 +348,12 @@ export default function EditorView() {
     setTimeout(() => setToastMessage(''), 3000)
   }
 
+  function handleConversationChange(messages: ConversationMessage[]) {
+    setConversation(messages)
+    conversationRef.current = JSON.stringify(messages)
+    scheduleAutosave()
+  }
+
   async function insertAIText(text: string) {
     if (!editor) return
     const blocks = await editor.tryParseMarkdownToBlocks(text)
@@ -395,149 +398,156 @@ export default function EditorView() {
         </div>
       </header>
 
-      {loaded && (
-        <div className="shrink-0 px-6 pt-4 pb-2 no-print">
-          <textarea
-            ref={titleRef}
-            value={title}
-            placeholder="Untitled"
-            rows={1}
-            className="w-full text-3xl font-bold text-gray-900 dark:text-gray-100 resize-none border-0 outline-none focus:ring-0 bg-transparent placeholder-gray-300 dark:placeholder-gray-600 leading-tight overflow-hidden print-content"
-            onChange={(e) => { setTitle(e.target.value); autoResizeTitle(e.target) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (document.querySelector('[contenteditable]') as HTMLElement)?.focus() } }}
-          />
-
-          <div className="flex flex-wrap items-center gap-2 mt-3">
-            {defaultCategoryId ? (
-              <CategoryPicker value={categoryId} onChange={setCategoryId} />
-            ) : (
-              <div className="text-xs text-gray-400">Loading categories...</div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-1">
-              {tags.map((tag) => (
-                <TagChip key={tag} tag={tag} removable onRemove={removeTag} />
-              ))}
-              <input
-                value={newTagInput}
-                onChange={(e) => setNewTagInput(e.target.value)}
-                type="text"
-                placeholder="Add tag..."
-                className="text-xs px-2 py-0.5 border border-dashed border-gray-300 rounded-full focus:outline-none focus:border-blue-400 w-24"
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag() } }}
+      <div className="flex flex-1 min-h-0 flex-col xl:flex-row">
+        {/* Editor column */}
+        <div className="flex flex-col flex-1 min-w-0 min-h-0">
+          {loaded && (
+            <div className="shrink-0 px-6 pt-4 pb-2 no-print">
+              <textarea
+                ref={titleRef}
+                value={title}
+                placeholder="Untitled"
+                rows={1}
+                className="w-full text-3xl font-bold text-gray-900 dark:text-gray-100 resize-none border-0 outline-none focus:ring-0 bg-transparent placeholder-gray-300 dark:placeholder-gray-600 leading-tight overflow-hidden print-content"
+                onChange={(e) => { setTitle(e.target.value); autoResizeTitle(e.target) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (document.querySelector('[contenteditable]') as HTMLElement)?.focus() } }}
               />
-            </div>
 
-            <button
-              className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1"
-              disabled={generatingTags}
-              onClick={handleGenerateTags}
-            >
-              {generatingTags ? (
-                <>
-                  <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                  </svg>
-                  Generating...
-                </>
-              ) : '✦ Generate Tags'}
-            </button>
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                {defaultCategoryId ? (
+                  <CategoryPicker value={categoryId} onChange={setCategoryId} />
+                ) : (
+                  <div className="text-xs text-gray-400">Loading categories...</div>
+                )}
 
-            <button
-              className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-purple-50 hover:text-purple-600 hover:border-purple-200 transition-colors flex items-center gap-1"
-              disabled={generatingSummary}
-              onClick={handleGenerateSummary}
-            >
-              {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
-            </button>
-          </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {tags.map((tag) => (
+                    <TagChip key={tag} tag={tag} removable onRemove={removeTag} />
+                  ))}
+                  <input
+                    value={newTagInput}
+                    onChange={(e) => setNewTagInput(e.target.value)}
+                    type="text"
+                    placeholder="Add tag..."
+                    className="text-xs px-2 py-0.5 border border-dashed border-gray-300 rounded-full focus:outline-none focus:border-blue-400 w-24"
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag() } }}
+                  />
+                </div>
 
-          {summary && (
-            <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-              <button
-                className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                onClick={() => setSummaryOpen((o) => !o)}
-              >
-                <span className="flex items-center gap-1.5">
-                  <span className="text-purple-500">✦</span>
-                  AI Summary
-                </span>
-                <span className="text-gray-400">{summaryOpen ? '▲' : '▼'}</span>
-              </button>
-              {summaryOpen && (
-                <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed">
-                  <ReactMarkdown
-                    components={{
-                      strong: ({ children }) => <strong className="font-semibold text-gray-800 dark:text-gray-100">{children}</strong>,
-                      em: ({ children }) => <em className="italic">{children}</em>,
-                      ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
-                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
-                      p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-                      code: ({ children }) => <code className="bg-gray-100 dark:bg-gray-800 rounded px-1 font-mono text-xs">{children}</code>,
-                    }}
+                <button
+                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1"
+                  disabled={generatingTags}
+                  onClick={handleGenerateTags}
+                >
+                  {generatingTags ? (
+                    <>
+                      <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                      Generating...
+                    </>
+                  ) : '✦ Generate Tags'}
+                </button>
+
+                <button
+                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-purple-50 hover:text-purple-600 hover:border-purple-200 transition-colors flex items-center gap-1"
+                  disabled={generatingSummary}
+                  onClick={handleGenerateSummary}
+                >
+                  {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
+                </button>
+              </div>
+
+              {summary && (
+                <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                  <button
+                    className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    onClick={() => setSummaryOpen((o) => !o)}
                   >
-                    {summary}
-                  </ReactMarkdown>
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-purple-500">✦</span>
+                      AI Summary
+                    </span>
+                    <span className="text-gray-400">{summaryOpen ? '▲' : '▼'}</span>
+                  </button>
+                  {summaryOpen && (
+                    <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed">
+                      <ReactMarkdown
+                        components={{
+                          strong: ({ children }) => <strong className="font-semibold text-gray-800 dark:text-gray-100">{children}</strong>,
+                          em: ({ children }) => <em className="italic">{children}</em>,
+                          ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+                          p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                          code: ({ children }) => <code className="bg-gray-100 dark:bg-gray-800 rounded px-1 font-mono text-xs">{children}</code>,
+                        }}
+                      >
+                        {summary}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-4 mt-2 text-xs text-gray-400">
+                {note && <span>Created {formatDate(note.created_at)}</span>}
+                {note && <span>Modified {formatDate(note.modified_at)}</span>}
+              </div>
+
+              {suggestedTags.length > 0 && (
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-gray-400">Suggestions:</span>
+                  {suggestedTags.map((st) => (
+                    <button
+                      key={st}
+                      className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors"
+                      onClick={() => addSuggestedTag(st)}
+                    >
+                      + #{st}
+                    </button>
+                  ))}
+                  <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setSuggestedTags([])}>
+                    Dismiss
+                  </button>
                 </div>
               )}
             </div>
           )}
 
-          <div className="flex gap-4 mt-2 text-xs text-gray-400">
-            {note && <span>Created {formatDate(note.created_at)}</span>}
-            {note && <span>Modified {formatDate(note.modified_at)}</span>}
+          <div className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
+            {!loaded ? (
+              <div className="flex items-center justify-center h-full">
+                <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+              </div>
+            ) : (
+              <EditorErrorBoundary>
+                <BlockNoteView
+                  editor={editor}
+                  onChange={scheduleAutosave}
+                  theme={editorTheme}
+                />
+              </EditorErrorBoundary>
+            )}
           </div>
 
-          {suggestedTags.length > 0 && (
-            <div className="flex items-center gap-2 mt-2">
-              <span className="text-xs text-gray-400">Suggestions:</span>
-              {suggestedTags.map((st) => (
-                <button
-                  key={st}
-                  className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors"
-                  onClick={() => addSuggestedTag(st)}
-                >
-                  + #{st}
-                </button>
-              ))}
-              <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setSuggestedTags([])}>
-                Dismiss
-              </button>
-            </div>
-          )}
+          <div className="shrink-0 no-print px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900">
+            <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
+          </div>
         </div>
-      )}
 
-      <div className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
-        {!loaded ? (
-          <div className="flex items-center justify-center h-full">
-            <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
-          </div>
-        ) : (
-          <EditorErrorBoundary>
-            <BlockNoteView
-              editor={editor}
-              onChange={scheduleAutosave}
-              theme={editorTheme}
-            />
-          </EditorErrorBoundary>
-        )}
-      </div>
-
-      <div className="shrink-0 no-print">
-        <AIBar
+        {/* AI Conversation Panel */}
+        <AIConversationPanel
+          isOpen={panelOpen}
+          onToggle={() => setPanelOpen((o) => !o)}
           getNoteContext={() => currentNoteContent.current}
-          getSelectedText={() => selectedText}
-          onResult={insertAIText}
-          placeholder="Ask AI about this note…"
+          conversation={conversation}
+          onConversationChange={handleConversationChange}
+          onAddToNote={insertAIText}
         />
-        <div className="px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center gap-2">
-          <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
-        </div>
       </div>
 
       {toastMessage && (

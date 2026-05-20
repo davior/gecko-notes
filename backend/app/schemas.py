@@ -68,6 +68,7 @@ class NoteUpdate(BaseModel):
     tags: Optional[List[str]] = None
     is_pinned: Optional[bool] = None
     summary: Optional[str] = None
+    conversation: Optional[str] = None
 
 
 class NoteRead(BaseModel):
@@ -78,6 +79,7 @@ class NoteRead(BaseModel):
     tags: List[str]
     is_pinned: bool
     summary: Optional[str] = None
+    conversation: Optional[str] = None
     created_at: datetime
     modified_at: datetime
 

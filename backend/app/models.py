@@ -31,6 +31,7 @@ class Note(SQLModel, table=True):
     tags: str = Field(default='[]')  # JSON array serialised as string
     is_pinned: bool = Field(default=False)
     summary: Optional[str] = None
+    conversation: Optional[str] = None  # JSON array of ConversationMessage
     created_at: datetime
     modified_at: datetime
     user_id: Optional[str] = Field(default=None, index=True)
