@@ -398,7 +398,7 @@ export default function EditorView() {
         </div>
       </header>
 
-      <div className="flex flex-1 min-h-0 flex-col xl:flex-row">
+      <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
         {/* Editor column */}
         <div className="flex flex-col flex-1 min-w-0 min-h-0">
           {loaded && (
