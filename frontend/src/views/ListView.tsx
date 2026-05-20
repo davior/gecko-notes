@@ -124,11 +124,11 @@ export default function ListView() {
           />
         </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
           <button
             className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-all ${
               activeCategoryId === null
-                ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900 ring-2 ring-offset-1 ring-gray-600 dark:ring-gray-400 shadow-none'
+                ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900 ring-1 ring-offset-1 ring-gray-500 dark:ring-gray-400 shadow-none'
                 : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400'
             }`}
             onClick={() => setActiveCategoryId(null)}
@@ -145,7 +145,7 @@ export default function ListView() {
               }`}
               style={
                 activeCategoryId === cat.id
-                  ? { backgroundColor: cat.color, borderColor: cat.color, color: 'white', outline: `2px solid ${cat.color}`, outlineOffset: '2px' }
+                  ? { backgroundColor: cat.color, borderColor: cat.color, color: 'white', outline: `1.5px solid ${cat.color}`, outlineOffset: '2px' }
                   : {}
               }
               onClick={() => setActiveCategoryId((id) => id === cat.id ? null : cat.id)}
