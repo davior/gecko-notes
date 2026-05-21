@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -49,10 +49,38 @@ export default function AIConversationPanel({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 640 : false))
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem('ai-panel-width') || '320') } catch { return 320 }
+  })
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem('ai-panel-height') || '288') } catch { return 288 }
+  })
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const isMobileRef = useRef(isMobile)
+  const panelWidthRef = useRef(panelWidth)
+  const panelHeightRef = useRef(panelHeight)
+
+  useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
+  useEffect(() => { panelWidthRef.current = panelWidth }, [panelWidth])
+  useEffect(() => { panelHeightRef.current = panelHeight }, [panelHeight])
+
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 640)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-panel-width', String(panelWidth)) } catch { /* noop */ }
+  }, [panelWidth])
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-panel-height', String(panelHeight)) } catch { /* noop */ }
+  }, [panelHeight])
 
   useEffect(() => {
     if (isOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -71,6 +99,38 @@ export default function AIConversationPanel({
       editRef.current.style.height = `${editRef.current.scrollHeight}px`
     }
   }, [editText])
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startWidth = panelWidthRef.current
+    const startHeight = panelHeightRef.current
+
+    function onMouseMove(ev: MouseEvent) {
+      if (isMobileRef.current) {
+        const delta = startY - ev.clientY
+        const newHeight = Math.max(150, Math.min(600, startHeight + delta))
+        setPanelHeight(newHeight)
+      } else {
+        const delta = startX - ev.clientX
+        const newWidth = Math.max(200, Math.min(700, startWidth + delta))
+        setPanelWidth(newWidth)
+      }
+    }
+
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = isMobileRef.current ? 'ns-resize' : 'ew-resize'
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
 
   async function handleSend(userContent: string, priorMessages: ConversationMessage[]) {
     if (!userContent.trim() || !aiService || loading) return
@@ -111,7 +171,6 @@ export default function AIConversationPanel({
       onConversationChange([...withUser, assistantMsg])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An error occurred')
-      // Roll back to prior messages (remove the user message we optimistically added)
       onConversationChange(priorMessages)
     } finally {
       setLoading(false)
@@ -136,6 +195,10 @@ export default function AIConversationPanel({
     onConversationChange([])
   }
 
+  function handleDelete(idx: number) {
+    onConversationChange(conversation.slice(0, idx))
+  }
+
   if (!isOpen) {
     return (
       <div className="shrink-0 flex sm:flex-col items-center justify-center no-print">
@@ -154,8 +217,23 @@ export default function AIConversationPanel({
     )
   }
 
+  const containerStyle = isMobile ? { height: panelHeight } : { width: panelWidth }
+
   return (
-    <div className="flex flex-col w-full sm:w-80 xl:w-96 shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 max-h-72 sm:max-h-none no-print">
+    <div
+      className="relative flex flex-col shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 no-print"
+      style={containerStyle}
+    >
+      {/* Resize handle */}
+      <div
+        className={`absolute z-10 transition-colors hover:bg-blue-400/40 active:bg-blue-400/60 ${
+          isMobile
+            ? 'top-0 left-0 right-0 h-1.5 cursor-ns-resize'
+            : 'top-0 bottom-0 left-0 w-1.5 cursor-ew-resize'
+        }`}
+        onMouseDown={startResize}
+      />
+
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700">
         <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
@@ -234,13 +312,22 @@ export default function AIConversationPanel({
                   <div className="max-w-[85%] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words">
                     {msg.content}
                   </div>
-                  <button
-                    className="text-gray-300 hover:text-gray-500 dark:hover:text-gray-400 transition-colors p-0.5"
-                    title="Edit message"
-                    onClick={() => { setEditingId(msg.id); setEditText(msg.content) }}
-                  >
-                    <Pencil className="w-3 h-3" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      className="text-gray-300 hover:text-gray-500 dark:hover:text-gray-400 transition-colors p-0.5"
+                      title="Edit message"
+                      onClick={() => { setEditingId(msg.id); setEditText(msg.content) }}
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                    <button
+                      className="text-gray-300 hover:text-red-400 transition-colors p-0.5"
+                      title="Delete from here"
+                      onClick={() => handleDelete(idx)}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
                 </>
               )}
             </div>
@@ -277,6 +364,13 @@ export default function AIConversationPanel({
                   onClick={() => void onAddToNote(msg.content)}
                 >
                   <Plus className="w-3 h-3" />Add to note
+                </button>
+                <button
+                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-500 transition-colors px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20"
+                  title="Delete from here"
+                  onClick={() => handleDelete(idx)}
+                >
+                  <Trash2 className="w-3 h-3" />
                 </button>
               </div>
             </div>
