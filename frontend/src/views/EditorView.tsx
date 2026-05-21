@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, Settings } from 'lucide-react'
@@ -474,6 +475,7 @@ export default function EditorView() {
                   {summaryOpen && (
                     <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed">
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           strong: ({ children }) => <strong className="font-semibold text-gray-800 dark:text-gray-100">{children}</strong>,
                           em: ({ children }) => <em className="italic">{children}</em>,
@@ -481,6 +483,12 @@ export default function EditorView() {
                           ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
                           p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
                           code: ({ children }) => <code className="bg-gray-100 dark:bg-gray-800 rounded px-1 font-mono text-xs">{children}</code>,
+                          table: ({ children }) => <div className="overflow-x-auto my-2"><table className="min-w-full border-collapse text-xs">{children}</table></div>,
+                          thead: ({ children }) => <thead className="bg-gray-100 dark:bg-gray-700">{children}</thead>,
+                          tbody: ({ children }) => <tbody className="divide-y divide-gray-200 dark:divide-gray-600">{children}</tbody>,
+                          tr: ({ children }) => <tr className="even:bg-gray-50 dark:even:bg-gray-750">{children}</tr>,
+                          th: ({ children }) => <th className="px-2 py-1 text-left font-semibold border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-gray-100">{children}</th>,
+                          td: ({ children }) => <td className="px-2 py-1 border border-gray-300 dark:border-gray-600">{children}</td>,
                         }}
                       >
                         {summary}
