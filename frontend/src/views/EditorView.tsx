@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, Mic, MicOff } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
@@ -22,6 +22,7 @@ import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
 import type { Note } from '@/api/notes'
+import { useDictation } from '@/hooks/useDictation'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -106,6 +107,18 @@ export default function EditorView() {
     },
   })
 
+  const insertDictatedText = useCallback((text: string) => {
+    if (!editor || !text.trim()) return
+    const cursorBlock = editor.getTextCursorPosition().block
+    editor.insertBlocks(
+      [{ type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }],
+      cursorBlock,
+      'after',
+    )
+  }, [editor])
+
+  const dictation = useDictation(insertDictatedText)
+
   useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])
   useEffect(() => {
     try { localStorage.setItem('ai-panel-open', String(panelOpen)) } catch { /* noop */ }
@@ -116,6 +129,11 @@ export default function EditorView() {
   useEffect(() => { latestDefaultCategoryId.current = defaultCategoryId }, [defaultCategoryId])
   useEffect(() => { latestIsNew.current = isNew }, [isNew])
   useEffect(() => { latestNoteId.current = noteId }, [noteId])
+  useEffect(() => {
+    if (dictation.status === 'error' && dictation.errorMessage) {
+      showToast(dictation.errorMessage)
+    }
+  }, [dictation.status, dictation.errorMessage])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
@@ -458,6 +476,31 @@ export default function EditorView() {
                 >
                   {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
                 </button>
+
+                {dictation.isSupported && (
+                  <button
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
+                      dictation.status === 'recording'
+                        ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100'
+                        : 'border-gray-200 text-gray-500 hover:bg-green-50 hover:text-green-600 hover:border-green-200'
+                    }`}
+                    onClick={dictation.toggleDictation}
+                    title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+                  >
+                    {dictation.status === 'recording' ? (
+                      <>
+                        <MicOff className="w-3 h-3" />
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500" />
+                        </span>
+                        Stop
+                      </>
+                    ) : (
+                      <><Mic className="w-3 h-3" /> Dictate</>
+                    )}
+                  </button>
+                )}
               </div>
 
               {summary && (
@@ -502,6 +545,12 @@ export default function EditorView() {
                 {note && <span>Created {formatDate(note.created_at)}</span>}
                 {note && <span>Modified {formatDate(note.modified_at)}</span>}
               </div>
+
+              {dictation.interimText && (
+                <p className="text-xs text-gray-400 italic mt-1 px-1 truncate">
+                  {dictation.interimText}
+                </p>
+              )}
 
               {suggestedTags.length > 0 && (
                 <div className="flex items-center gap-2 mt-2">
