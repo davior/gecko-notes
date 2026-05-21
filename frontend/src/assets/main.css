@@ -53,6 +53,13 @@
   margin-top: 2px;
 }
 
+/* Code blocks always use dark background with light text, regardless of app theme */
+.bn-block-content[data-content-type="codeBlock"],
+.bn-block-content[data-content-type="codeBlock"] * {
+  color: #e2e8f0 !important;
+  text-shadow: none !important;
+}
+
 .bn-container {
   min-height: 100%;
 }
