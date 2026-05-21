@@ -196,7 +196,7 @@ export default function AIConversationPanel({
   }
 
   function handleDelete(idx: number) {
-    onConversationChange(conversation.slice(0, idx))
+    onConversationChange([...conversation.slice(0, idx), ...conversation.slice(idx + 1)])
   }
 
   if (!isOpen) {
