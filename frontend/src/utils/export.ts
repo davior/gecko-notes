@@ -310,7 +310,11 @@ export async function exportToPDF(note: Note): Promise<void> {
   const parser = new DOMParser()
   const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
   const styleContent = parsedDoc.head.querySelector('style')?.textContent ?? ''
-  container.innerHTML = `<style>${styleContent}</style>${parsedDoc.body.innerHTML}`
+  // html2canvas can't render background-color on inline elements that wrap
+  // across lines — it paints a full-width rectangle instead of following
+  // the text flow. Override inline code to font-only styling for the PDF.
+  const pdfStyleOverrides = `code { background: none !important; padding: 0 !important; border-radius: 0 !important; border: none !important; }`
+  container.innerHTML = `<style>${styleContent}${pdfStyleOverrides}</style>${parsedDoc.body.innerHTML}`
   document.body.appendChild(container)
 
   // Replace img src with data URLs so html2canvas can render cross-origin images
