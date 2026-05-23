@@ -98,10 +98,14 @@ tar -czf gecko-notes-backup-$(date +%Y%m%d).tar.gz data/
 ### Backend (FastAPI)
 
 ```bash
+python3.12 -m venv .venv312
+source .venv312/bin/activate
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
+
+Use Python 3.12 for local backend development. The current backend dependency stack may not start cleanly on newer Python releases such as 3.14.
 
 Local backend runs and Docker Compose both use the same persistent paths by default:
 `./data/db/notes.db` and `./data/media/`.

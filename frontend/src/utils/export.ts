@@ -2,6 +2,7 @@ import type { Note } from '@/api/notes'
 
 type DocxParagraph = InstanceType<(typeof import('docx'))['Paragraph']>
 type DocxTextRun = InstanceType<(typeof import('docx'))['TextRun']>
+type DocxTable = InstanceType<(typeof import('docx'))['Table']>
 
 // ─── Helper: extract plain text (images become [Image] references) ────────────
 
@@ -58,6 +59,17 @@ function formatDate(isoStr: string): string {
   } catch {
     return isoStr
   }
+}
+
+// ─── Helper: extract inline content from a table cell (handles both formats) ──
+
+function extractCellInlineContent(cell: unknown): unknown[] {
+  if (Array.isArray(cell)) return cell
+  if (typeof cell === 'object' && cell !== null) {
+    const c = cell as Record<string, unknown>
+    if (c.type === 'tableCell' && Array.isArray(c.content)) return c.content as unknown[]
+  }
+  return []
 }
 
 // ─── Helper: render inline content with full style support ───────────────────
@@ -169,6 +181,22 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
       continue
     }
 
+    if (type === 'table') {
+      const tableData = block.content as { rows?: Array<{ cells: unknown[][] }> } | undefined
+      const rows = tableData?.rows
+      if (Array.isArray(rows) && rows.length > 0) {
+        const headerCells = rows[0].cells.map((cell) => `<th>${buildInlineContent(extractCellInlineContent(cell))}</th>`).join('')
+        const bodyRowsHTML = rows.slice(1).map((row) => {
+          const cells = row.cells.map((cell) => `<td>${buildInlineContent(extractCellInlineContent(cell))}</td>`).join('')
+          return `<tr>${cells}</tr>`
+        }).join('')
+        const tbody = bodyRowsHTML ? `<tbody>${bodyRowsHTML}</tbody>` : ''
+        parts.push(`<table><thead><tr>${headerCells}</tr></thead>${tbody}</table>`)
+      }
+      i++
+      continue
+    }
+
     // paragraph and any unknown block types
     const nested = Array.isArray(children) && children.length > 0 ? buildBlocksHTML(children) : ''
     parts.push(`<p>${buildInlineContent(content ?? [])}</p>${nested}`)
@@ -214,8 +242,8 @@ function noteToHTML(note: Note): string {
   h2 { font-size: 1.5em; margin: 1em 0 0.4em; }
   h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
   p { line-height: 1.6; margin: 0.5em 0; }
-  ul, ol { margin: 0.5em 0 0.5em 1.5em; padding: 0; line-height: 1.6; }
-  ul.checklist { list-style: none; margin-left: 0; padding-left: 0; }
+  ul, ol { margin: 0.5em 0; padding-left: 1.5em; line-height: 1.6; }
+  ul.checklist { list-style: none; padding-left: 0; margin-left: 0; }
   li { margin: 0.25em 0; }
   pre { background: #f5f5f5; border-radius: 4px; padding: 12px 16px; overflow-x: auto; margin: 0.75em 0; }
   code { font-family: 'Courier New', Courier, monospace; font-size: 0.9em; background: #f5f5f5; padding: 0.1em 0.3em; border-radius: 3px; }
@@ -227,6 +255,10 @@ function noteToHTML(note: Note): string {
   a { color: #2563eb; text-decoration: underline; }
   figure { margin: 16px 0; }
   img { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background-color: #f3f4f6; font-weight: bold; }
+  tr:nth-child(even) td { background-color: #f9fafb; }
   .metadata { border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; padding: 8px 0; margin: 0.5em 0 1.5em; color: #6b7280; font-size: 0.85em; font-family: system-ui, sans-serif; }
   .metadata p { margin: 2px 0; line-height: 1.5; }
 </style>
@@ -278,7 +310,11 @@ export async function exportToPDF(note: Note): Promise<void> {
   const parser = new DOMParser()
   const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
   const styleContent = parsedDoc.head.querySelector('style')?.textContent ?? ''
-  container.innerHTML = `<style>${styleContent}</style>${parsedDoc.body.innerHTML}`
+  // html2canvas can't render background-color on inline elements that wrap
+  // across lines — it paints a full-width rectangle instead of following
+  // the text flow. Override inline code to font-only styling for the PDF.
+  const pdfStyleOverrides = `code { background: none !important; padding: 0 !important; border-radius: 0 !important; border: none !important; }`
+  container.innerHTML = `<style>${styleContent}${pdfStyleOverrides}</style>${parsedDoc.body.innerHTML}`
   document.body.appendChild(container)
 
   // Replace img src with data URLs so html2canvas can render cross-origin images
@@ -304,6 +340,24 @@ export async function exportToPDF(note: Note): Promise<void> {
       }
     })
   )
+
+  // html2canvas v1 doesn't render CSS ::marker pseudo-elements, so inject
+  // bullet and number characters as plain text nodes before each <li>.
+  container.querySelectorAll('ul:not(.checklist)').forEach((ul) => {
+    ;(ul as HTMLElement).style.listStyle = 'none'
+    ul.querySelectorAll(':scope > li').forEach((li) => {
+      ;(li as HTMLElement).style.listStyle = 'none'
+      li.insertBefore(document.createTextNode('• '), li.firstChild)
+    })
+  })
+  container.querySelectorAll('ol').forEach((ol) => {
+    ;(ol as HTMLElement).style.listStyle = 'none'
+    let n = 1
+    ol.querySelectorAll(':scope > li').forEach((li) => {
+      ;(li as HTMLElement).style.listStyle = 'none'
+      li.insertBefore(document.createTextNode(`${n++}. `), li.firstChild)
+    })
+  })
 
   try {
     const canvas = await html2canvas(container, { scale: 1.5 })
@@ -375,7 +429,7 @@ export async function exportToPDF(note: Note): Promise<void> {
 // ─── Export: Word (.docx) ─────────────────────────────────────────────────────
 
 export async function exportToWord(note: Note): Promise<void> {
-  const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun, UnderlineType, AlignmentType } =
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun, UnderlineType, AlignmentType, Table, TableRow, TableCell, WidthType } =
     await import('docx')
 
   const orderedListLevels = [0, 1, 2].map((level) => ({
@@ -429,7 +483,7 @@ export async function exportToWord(note: Note): Promise<void> {
     return runs
   }
 
-  const paragraphs: DocxParagraph[] = [
+  const paragraphs: (DocxParagraph | DocxTable)[] = [
     new Paragraph({ text: note.title, heading: HeadingLevel.TITLE }),
     new Paragraph({
       children: [
@@ -464,7 +518,7 @@ export async function exportToWord(note: Note): Promise<void> {
     blocks = []
   }
 
-  async function blockToParagraphs(block: Record<string, unknown>, depth: number): Promise<DocxParagraph[]> {
+  async function blockToParagraphs(block: Record<string, unknown>, depth: number): Promise<(DocxParagraph | DocxTable)[]> {
     const type = block.type as string
     const content = (block.content as Array<Record<string, unknown>>) ?? []
     const children = (block.children as Record<string, unknown>[]) ?? []
@@ -483,8 +537,24 @@ export async function exportToWord(note: Note): Promise<void> {
       return [new Paragraph({ children: [] })]
     }
 
+    if (type === 'table') {
+      const tableData = block.content as { rows?: Array<{ cells: unknown[][] }> } | undefined
+      const rows = tableData?.rows
+      if (Array.isArray(rows) && rows.length > 0) {
+        const tableRows = rows.map((row) => {
+          const tableCells = row.cells.map((cell) => {
+            const cellRuns = buildWordRuns(extractCellInlineContent(cell) as Array<Record<string, unknown>>)
+            return new TableCell({ children: [new Paragraph({ children: cellRuns })] })
+          })
+          return new TableRow({ children: tableCells })
+        })
+        return [new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } })]
+      }
+      return []
+    }
+
     const runs = buildWordRuns(content)
-    let childParas: DocxParagraph[] = []
+    let childParas: (DocxParagraph | DocxTable)[] = []
     for (const child of children) {
       childParas = childParas.concat(await blockToParagraphs(child as Record<string, unknown>, depth + 1))
     }
@@ -521,7 +591,11 @@ export async function exportToWord(note: Note): Promise<void> {
 
     if (type === 'codeBlock') {
       const plainText = content.filter((i) => i.type === 'text').map((i) => (i.text as string) ?? '').join('')
-      return [new Paragraph({ children: [new TextRun({ text: plainText, font: 'Courier New', size: 18 })] })]
+      const lines = plainText.split('\n')
+      const runs = lines.map((line, i) =>
+        new TextRun({ text: line, font: 'Courier New', size: 18, break: i > 0 ? 1 : undefined })
+      )
+      return [new Paragraph({ children: runs })]
     }
 
     return [new Paragraph({ children: runs }), ...childParas]
@@ -571,6 +645,30 @@ function buildMarkdownFrontmatter(note: Note): string {
 export async function exportToMarkdown(note: Note): Promise<void> {
   const TurndownService = (await import('turndown')).default
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
+
+  // GFM table support
+  td.addRule('tableCell', {
+    filter: ['th', 'td'],
+    replacement: (content: string) => ` ${content.trim().replace(/\n+/g, ' ')} |`,
+  })
+  td.addRule('tableRow', {
+    filter: 'tr',
+    replacement: (content: string, node: Node) => {
+      const tr = node as HTMLElement
+      const isHeader = tr.parentElement?.tagName === 'THEAD'
+      const row = `|${content}\n`
+      if (isHeader) {
+        const colCount = tr.querySelectorAll('th, td').length
+        const separator = `| ${Array(colCount).fill('---').join(' | ')} |\n`
+        return row + separator
+      }
+      return row
+    },
+  })
+  td.addRule('table', {
+    filter: 'table',
+    replacement: (content: string) => `\n\n${content}\n`,
+  })
 
   let blocks: Record<string, unknown>[] = []
   try { blocks = JSON.parse(note.content) } catch { blocks = [] }
