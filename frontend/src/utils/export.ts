@@ -338,15 +338,12 @@ export async function exportToPDF(note: Note): Promise<void> {
   )
 
   // html2canvas v1 doesn't render CSS ::marker pseudo-elements, so inject
-  // bullet and number characters directly into the DOM before capture.
+  // bullet and number characters as plain text nodes before each <li>.
   container.querySelectorAll('ul:not(.checklist)').forEach((ul) => {
     ;(ul as HTMLElement).style.listStyle = 'none'
     ul.querySelectorAll(':scope > li').forEach((li) => {
       ;(li as HTMLElement).style.listStyle = 'none'
-      const marker = document.createElement('span')
-      marker.style.cssText = 'display:inline-block;width:1.2em;margin-left:-1.2em;'
-      marker.textContent = '•'
-      li.insertBefore(marker, li.firstChild)
+      li.insertBefore(document.createTextNode('• '), li.firstChild)
     })
   })
   container.querySelectorAll('ol').forEach((ol) => {
@@ -354,10 +351,7 @@ export async function exportToPDF(note: Note): Promise<void> {
     let n = 1
     ol.querySelectorAll(':scope > li').forEach((li) => {
       ;(li as HTMLElement).style.listStyle = 'none'
-      const marker = document.createElement('span')
-      marker.style.cssText = 'display:inline-block;min-width:1.5em;margin-left:-1.5em;'
-      marker.textContent = `${n++}.`
-      li.insertBefore(marker, li.firstChild)
+      li.insertBefore(document.createTextNode(`${n++}. `), li.firstChild)
     })
   })
 
@@ -593,7 +587,11 @@ export async function exportToWord(note: Note): Promise<void> {
 
     if (type === 'codeBlock') {
       const plainText = content.filter((i) => i.type === 'text').map((i) => (i.text as string) ?? '').join('')
-      return [new Paragraph({ children: [new TextRun({ text: plainText, font: 'Courier New', size: 18 })] })]
+      const lines = plainText.split('\n')
+      const runs = lines.map((line, i) =>
+        new TextRun({ text: line, font: 'Courier New', size: 18, break: i > 0 ? 1 : undefined })
+      )
+      return [new Paragraph({ children: runs })]
     }
 
     return [new Paragraph({ children: runs }), ...childParas]
