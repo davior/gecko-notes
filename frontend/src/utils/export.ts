@@ -61,6 +61,17 @@ function formatDate(isoStr: string): string {
   }
 }
 
+// ─── Helper: extract inline content from a table cell (handles both formats) ──
+
+function extractCellInlineContent(cell: unknown): unknown[] {
+  if (Array.isArray(cell)) return cell
+  if (typeof cell === 'object' && cell !== null) {
+    const c = cell as Record<string, unknown>
+    if (c.type === 'tableCell' && Array.isArray(c.content)) return c.content as unknown[]
+  }
+  return []
+}
+
 // ─── Helper: render inline content with full style support ───────────────────
 
 function buildInlineContent(content: unknown[]): string {
@@ -174,9 +185,9 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
       const tableData = block.content as { rows?: Array<{ cells: unknown[][] }> } | undefined
       const rows = tableData?.rows
       if (Array.isArray(rows) && rows.length > 0) {
-        const headerCells = rows[0].cells.map((cell) => `<th>${buildInlineContent(cell as unknown[])}</th>`).join('')
+        const headerCells = rows[0].cells.map((cell) => `<th>${buildInlineContent(extractCellInlineContent(cell))}</th>`).join('')
         const bodyRowsHTML = rows.slice(1).map((row) => {
-          const cells = row.cells.map((cell) => `<td>${buildInlineContent(cell as unknown[])}</td>`).join('')
+          const cells = row.cells.map((cell) => `<td>${buildInlineContent(extractCellInlineContent(cell))}</td>`).join('')
           return `<tr>${cells}</tr>`
         }).join('')
         const tbody = bodyRowsHTML ? `<tbody>${bodyRowsHTML}</tbody>` : ''
@@ -325,6 +336,30 @@ export async function exportToPDF(note: Note): Promise<void> {
       }
     })
   )
+
+  // html2canvas v1 doesn't render CSS ::marker pseudo-elements, so inject
+  // bullet and number characters directly into the DOM before capture.
+  container.querySelectorAll('ul:not(.checklist)').forEach((ul) => {
+    ;(ul as HTMLElement).style.listStyle = 'none'
+    ul.querySelectorAll(':scope > li').forEach((li) => {
+      ;(li as HTMLElement).style.listStyle = 'none'
+      const marker = document.createElement('span')
+      marker.style.cssText = 'display:inline-block;width:1.2em;margin-left:-1.2em;'
+      marker.textContent = '•'
+      li.insertBefore(marker, li.firstChild)
+    })
+  })
+  container.querySelectorAll('ol').forEach((ol) => {
+    ;(ol as HTMLElement).style.listStyle = 'none'
+    let n = 1
+    ol.querySelectorAll(':scope > li').forEach((li) => {
+      ;(li as HTMLElement).style.listStyle = 'none'
+      const marker = document.createElement('span')
+      marker.style.cssText = 'display:inline-block;min-width:1.5em;margin-left:-1.5em;'
+      marker.textContent = `${n++}.`
+      li.insertBefore(marker, li.firstChild)
+    })
+  })
 
   try {
     const canvas = await html2canvas(container, { scale: 1.5 })
@@ -510,7 +545,7 @@ export async function exportToWord(note: Note): Promise<void> {
       if (Array.isArray(rows) && rows.length > 0) {
         const tableRows = rows.map((row) => {
           const tableCells = row.cells.map((cell) => {
-            const cellRuns = buildWordRuns(cell as Array<Record<string, unknown>>)
+            const cellRuns = buildWordRuns(extractCellInlineContent(cell) as Array<Record<string, unknown>>)
             return new TableCell({ children: [new Paragraph({ children: cellRuns })] })
           })
           return new TableRow({ children: tableCells })
