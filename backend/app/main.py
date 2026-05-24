@@ -18,6 +18,7 @@ from app.routers import notes, categories, media, settings
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
+from app.routers import shared as shared_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.models import AIProvider
 from sqlmodel import Session, select
@@ -31,7 +32,7 @@ PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
 
 
 def _is_public(path: str) -> bool:
-    return path in PUBLIC_PATHS or path.startswith("/media/")
+    return path in PUBLIC_PATHS or path.startswith("/media/") or path.startswith("/api/shared/")
 
 
 def _encrypt_legacy_api_keys(session: Session) -> None:
@@ -111,6 +112,7 @@ app.include_router(categories.router, prefix="/api/categories", tags=["categorie
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])
+app.include_router(shared_router.router, prefix="/api/shared", tags=["shared"])
 
 os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")

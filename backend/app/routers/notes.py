@@ -74,6 +74,8 @@ def note_to_read(note: Note) -> NoteRead:
         category_id=note.category_id,
         tags=tags,
         is_pinned=note.is_pinned,
+        is_shared=note.is_shared,
+        share_token=note.share_token,
         summary=note.summary,
         conversation=note.conversation,
         created_at=note.created_at,
@@ -94,6 +96,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         category_id=note.category_id,
         tags=tags,
         is_pinned=note.is_pinned,
+        is_shared=note.is_shared,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
@@ -223,3 +226,31 @@ def delete_note(note_id: str, request: Request, session: Session = Depends(get_s
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
     session.delete(note)
     session.commit()
+
+
+@router.post("/{note_id}/share", response_model=DataResponse[NoteRead])
+def share_note(note_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    if not note.share_token:
+        note.share_token = str(uuid.uuid4())
+    note.is_shared = True
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
+
+
+@router.delete("/{note_id}/share", response_model=DataResponse[NoteRead])
+def unshare_note(note_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    note.is_shared = False
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
