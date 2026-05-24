@@ -80,6 +80,17 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/shared/"):
+            response.headers["Cache-Control"] = "public, max-age=60"
+        else:
+            response.headers["Cache-Control"] = "no-store, private"
+    return response
+
+
+@app.middleware("http")
 async def jwt_auth_middleware(request: Request, call_next):
     if _is_public(request.url.path):
         return await call_next(request)
