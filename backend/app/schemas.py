@@ -78,6 +78,8 @@ class NoteRead(BaseModel):
     category_id: str
     tags: List[str]
     is_pinned: bool
+    is_shared: bool = False
+    share_token: Optional[str] = None
     summary: Optional[str] = None
     conversation: Optional[str] = None
     created_at: datetime
@@ -95,8 +97,24 @@ class NoteListItem(BaseModel):
     category_id: str
     tags: List[str]
     is_pinned: bool
+    is_shared: bool = False
     created_at: datetime
     modified_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SharedNoteRead(BaseModel):
+    id: str
+    title: str
+    content: str
+    tags: List[str]
+    created_at: datetime
+    modified_at: datetime
+    author_username: str
+    author_avatar_url: Optional[str] = None
+    theme: Optional['ThemeRead'] = None
 
     class Config:
         from_attributes = True

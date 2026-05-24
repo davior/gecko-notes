@@ -129,6 +129,16 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN is_shared BOOLEAN NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN share_token TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Collapse exact duplicate categories created by seed + import flows.
         try:
             duplicate_groups = conn.execute(text("""

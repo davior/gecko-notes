@@ -7,6 +7,7 @@ import ListView from '@/views/ListView'
 import EditorView from '@/views/EditorView'
 import SettingsView from '@/views/SettingsView'
 import LoginView from '@/views/LoginView'
+import SharedNoteView from '@/views/SharedNoteView'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="/notes/:id" element={<ProtectedRoute><EditorView /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Navigate to="/settings/profile" replace /></ProtectedRoute>} />
         <Route path="/settings/:tab" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
+        <Route path="/shared/:token" element={<SharedNoteView />} />
       </Routes>
     </div>
   )

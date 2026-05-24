@@ -8,6 +8,7 @@ export interface NoteListItem {
   category_id: string
   tags: string[]
   is_pinned: boolean
+  is_shared: boolean
   created_at: string
   modified_at: string
 }
@@ -19,6 +20,8 @@ export interface Note {
   category_id: string
   tags: string[]
   is_pinned: boolean
+  is_shared: boolean
+  share_token?: string | null
   summary?: string | null
   conversation?: string | null
   created_at: string
@@ -81,5 +84,13 @@ export const notesApi = {
 
   delete(id: string): Promise<void> {
     return client.delete(`/notes/${id}`).then(() => undefined)
+  },
+
+  share(id: string): Promise<{ data: Note }> {
+    return client.post(`/notes/${id}/share`).then((r) => r.data)
+  },
+
+  unshare(id: string): Promise<{ data: Note }> {
+    return client.delete(`/notes/${id}/share`).then((r) => r.data)
   },
 }
