@@ -97,6 +97,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           category_id: response.data.category_id,
           tags: response.data.tags,
           is_pinned: response.data.is_pinned,
+          is_shared: response.data.is_shared,
           created_at: response.data.created_at,
           modified_at: response.data.modified_at,
         },
