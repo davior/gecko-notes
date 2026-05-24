@@ -114,6 +114,7 @@ class SharedNoteRead(BaseModel):
     modified_at: datetime
     author_username: str
     author_avatar_url: Optional[str] = None
+    theme: Optional['ThemeRead'] = None
 
     class Config:
         from_attributes = True

@@ -132,7 +132,7 @@ function SliderField({ label, value, min, max, step, unit, onChange }: { label: 
 }
 
 export default function ThemeManager() {
-  const { themes, activeThemeId, createTheme, updateTheme, deleteTheme, activateTheme, deactivateTheme } = useSettingsStore()
+  const { themes, activeThemeId, sharedThemeId, createTheme, updateTheme, deleteTheme, activateTheme, deactivateTheme, setSharedTheme } = useSettingsStore()
   const user = useAuthStore((s) => s.user)
   const isAdmin = user?.is_admin ?? false
 
@@ -198,6 +198,13 @@ export default function ThemeManager() {
       if (activeThemeId === id) { await deactivateTheme(); showToast('Theme removed') }
       else { await activateTheme(id); showToast('Theme applied') }
     } catch { showToast('Failed to apply theme', true) }
+  }
+
+  async function handleSetSharedDefault(id: string) {
+    try {
+      if (sharedThemeId === id) { await setSharedTheme(null); showToast('Removed as shared note default') }
+      else { await setSharedTheme(id); showToast('Set as shared note default') }
+    } catch { showToast('Failed to update shared default', true) }
   }
 
   async function handleDelete(id: string) {
@@ -361,11 +368,13 @@ export default function ThemeManager() {
                 key={t.id}
                 theme={t}
                 isActive={t.id === activeThemeId}
+                isSharedDefault={t.id === sharedThemeId}
                 canEdit={isAdmin}
                 canDelete={isAdmin}
                 onEdit={() => startEdit(t)}
                 onDelete={() => setConfirmDelete(t.id)}
                 onActivate={() => handleActivate(t.id)}
+                onSetSharedDefault={() => handleSetSharedDefault(t.id)}
               />
             ))}
           </div>
@@ -385,11 +394,13 @@ export default function ThemeManager() {
                   key={t.id}
                   theme={t}
                   isActive={t.id === activeThemeId}
+                  isSharedDefault={t.id === sharedThemeId}
                   canEdit
                   canDelete
                   onEdit={() => startEdit(t)}
                   onDelete={() => setConfirmDelete(t.id)}
                   onActivate={() => handleActivate(t.id)}
+                  onSetSharedDefault={() => handleSetSharedDefault(t.id)}
                 />
               ))}
             </div>
@@ -426,14 +437,16 @@ export default function ThemeManager() {
   )
 }
 
-function ThemeRow({ theme, isActive, canEdit, canDelete, onEdit, onDelete, onActivate }: {
+function ThemeRow({ theme, isActive, isSharedDefault, canEdit, canDelete, onEdit, onDelete, onActivate, onSetSharedDefault }: {
   theme: Theme
   isActive: boolean
+  isSharedDefault: boolean
   canEdit: boolean
   canDelete: boolean
   onEdit: () => void
   onDelete: () => void
   onActivate: () => void
+  onSetSharedDefault: () => void
 }) {
   let bgPreview: React.CSSProperties = { background: theme.bg_color1 }
   if (theme.bg_type === 'gradient' && theme.bg_color2) {
@@ -449,6 +462,7 @@ function ThemeRow({ theme, isActive, canEdit, canDelete, onEdit, onDelete, onAct
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{theme.name}</span>
           {isActive && <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 rounded-full font-medium">Active</span>}
+          {isSharedDefault && <span className="text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400 rounded-full font-medium flex items-center gap-1"><Globe className="w-2.5 h-2.5" />Shared</span>}
           {theme.is_global && <span className="text-xs px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 rounded-full font-medium">Global</span>}
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">{theme.mode} · {theme.bg_type} · {Math.round(theme.glass_opacity * 100)}% opacity</p>
@@ -459,6 +473,13 @@ function ThemeRow({ theme, isActive, canEdit, canDelete, onEdit, onDelete, onAct
           className={`btn text-xs px-3 py-1.5 ${isActive ? 'btn-secondary' : 'btn-primary'}`}
         >
           {isActive ? 'Remove' : 'Apply'}
+        </button>
+        <button
+          onClick={onSetSharedDefault}
+          className={`btn-ghost p-2 rounded-lg ${isSharedDefault ? 'text-green-500' : 'text-gray-400 hover:text-green-500'}`}
+          title={isSharedDefault ? 'Remove as shared note default' : 'Use for shared notes'}
+        >
+          <Globe className="w-4 h-4" />
         </button>
         {canEdit && (
           <button onClick={onEdit} className="btn-ghost p-2 rounded-lg" title="Edit">

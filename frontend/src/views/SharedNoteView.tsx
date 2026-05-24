@@ -8,6 +8,7 @@ import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import type { PartialBlock } from '@blocknote/core'
 import { sharedApi, type SharedNote } from '@/api/shared'
+import { applyThemeToDom } from '@/stores/settings'
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -32,11 +33,11 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
   }
 }
 
-function ReadOnlyEditor({ content }: { content: string }) {
+function ReadOnlyEditor({ content, editorTheme }: { content: string; editorTheme: 'light' | 'dark' }) {
   const editor = useCreateBlockNote({ initialContent: parseContent(content) })
   return (
     <EditorErrorBoundary>
-      <BlockNoteView editor={editor} editable={false} theme="light" />
+      <BlockNoteView editor={editor} editable={false} theme={editorTheme} />
     </EditorErrorBoundary>
   )
 }
@@ -49,9 +50,15 @@ export default function SharedNoteView() {
   useEffect(() => {
     if (!token) { setNotFound(true); return }
     sharedApi.get(token)
-      .then((res) => setNote(res.data))
+      .then((res) => {
+        setNote(res.data)
+        applyThemeToDom(res.data.theme ?? null)
+      })
       .catch(() => setNotFound(true))
+    return () => { applyThemeToDom(null) }
   }, [token])
+
+  const editorTheme: 'light' | 'dark' = note?.theme ? note.theme.mode : 'light'
 
   if (notFound) {
     return (
@@ -77,11 +84,25 @@ export default function SharedNoteView() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen">
+      {/* Fixed theme background layer — same as App.tsx */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: -1,
+          background: 'var(--theme-bg, #f9fafb)',
+          backgroundSize: 'var(--theme-bg-size, cover)',
+          backgroundPosition: 'center',
+          filter: 'var(--theme-bg-filter, none)',
+        }}
+      />
+
       {/* Header */}
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
+      <header className="border-b border-gray-100 dark:border-gray-700 sticky top-0 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
         <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-          <span className="font-semibold text-gray-800 text-sm tracking-tight">Gecko Notes</span>
+          <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
           <span className="flex items-center gap-1.5 text-xs font-medium text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
             <Globe className="w-3.5 h-3.5" />
             Shared note
@@ -92,12 +113,12 @@ export default function SharedNoteView() {
       {/* Content */}
       <main className="max-w-3xl mx-auto px-4 py-8">
         {/* Title */}
-        <h1 className="text-3xl font-bold text-gray-900 mb-4 leading-tight">
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-4 leading-tight">
           {note.title || 'Untitled'}
         </h1>
 
         {/* Author + metadata */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 text-sm text-gray-500">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 text-sm text-gray-500 dark:text-gray-400">
           <div className="flex items-center gap-2">
             {note.author_avatar_url ? (
               <img
@@ -110,7 +131,7 @@ export default function SharedNoteView() {
                 {note.author_username.charAt(0).toUpperCase()}
               </div>
             )}
-            <span className="font-medium text-gray-700">{note.author_username}</span>
+            <span className="font-medium text-gray-700 dark:text-gray-300">{note.author_username}</span>
           </div>
           <span>Created {formatDate(note.created_at)}</span>
           <span>Updated {formatDate(note.modified_at)}</span>
@@ -122,7 +143,7 @@ export default function SharedNoteView() {
             {note.tags.map((tag) => (
               <span
                 key={tag}
-                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600"
+                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"
               >
                 #{tag}
               </span>
@@ -130,14 +151,14 @@ export default function SharedNoteView() {
           </div>
         )}
 
-        <div className="border-t border-gray-100 mb-6" />
+        <div className="border-t border-gray-100 dark:border-gray-700 mb-6" />
 
         {/* Note content */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-          <ReadOnlyEditor content={note.content} />
+        <div className="card overflow-hidden">
+          <ReadOnlyEditor content={note.content} editorTheme={editorTheme} />
         </div>
 
-        <p className="text-center text-xs text-gray-400 mt-8">
+        <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-8">
           Shared with Gecko Notes
         </p>
       </main>

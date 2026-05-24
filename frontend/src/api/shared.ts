@@ -1,4 +1,5 @@
 import client from './client'
+import type { Theme } from './settings'
 
 export interface SharedNote {
   id: string
@@ -9,6 +10,7 @@ export interface SharedNote {
   modified_at: string
   author_username: string
   author_avatar_url: string | null
+  theme: Theme | null
 }
 
 export const sharedApi = {
