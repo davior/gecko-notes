@@ -77,11 +77,12 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
               {relativeDate(note.modified_at)}
             </span>
             {note.is_shared && (
-              <Globe
-                className="w-3.5 h-3.5 text-green-400"
-                style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
-                title="Shared publicly"
-              />
+              <span title="Shared publicly">
+                <Globe
+                  className="w-3.5 h-3.5 text-green-400"
+                  style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
+                />
+              </span>
             )}
             {onPin && (
               <button
@@ -151,7 +152,7 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-gray-400">{relativeDate(note.modified_at)}</span>
             {note.is_shared && (
-              <Globe className="w-3.5 h-3.5 text-green-400" title="Shared publicly" />
+              <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
             )}
             {onPin && (
               <button

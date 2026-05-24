@@ -54,7 +54,7 @@ export default function ThemePicker() {
                       <span className="truncate flex-1">{t.name}</span>
                       <span className="text-xs text-gray-400 dark:text-gray-500 capitalize shrink-0">{t.mode}</span>
                       {isActive && <Check className="w-3.5 h-3.5 shrink-0" />}
-                      {t.id === sharedThemeId && <Globe className="w-3 h-3 shrink-0 text-green-500" title="Default for shared notes" />}
+                      {t.id === sharedThemeId && <span title="Default for shared notes"><Globe className="w-3 h-3 shrink-0 text-green-500" /></span>}
                     </button>
                   )
                 })}
@@ -81,7 +81,7 @@ export default function ThemePicker() {
                       <span className="truncate flex-1">{t.name}</span>
                       <span className="text-xs text-gray-400 dark:text-gray-500 capitalize shrink-0">{t.mode}</span>
                       {isActive && <Check className="w-3.5 h-3.5 shrink-0" />}
-                      {t.id === sharedThemeId && <Globe className="w-3 h-3 shrink-0 text-green-500" title="Default for shared notes" />}
+                      {t.id === sharedThemeId && <span title="Default for shared notes"><Globe className="w-3 h-3 shrink-0 text-green-500" /></span>}
                     </button>
                   )
                 })}
