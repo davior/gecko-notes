@@ -84,7 +84,7 @@ export default function SharedNoteView() {
   }
 
   return (
-    <div className="min-h-screen">
+    <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', zIndex: 40 }}>
       {/* Fixed theme background layer — same as App.tsx */}
       <div
         aria-hidden="true"
