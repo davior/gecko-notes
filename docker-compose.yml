@@ -18,13 +18,18 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
   frontend:
     build: ./frontend
+    container_name: gn-frontend
     restart: unless-stopped
-    ports:
-      - "${APP_PORT:-8080}:80"
     environment:
       - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-1g}
+    networks:
+      - default
+      - web
     depends_on:
       - backend
+networks:
+  default:
+  web:
+    external: true
