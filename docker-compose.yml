@@ -10,6 +10,8 @@ services:
       - MEDIA_DIR=/app/data/media
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - CORS_ORIGIN=${CORS_ORIGIN:-}
+      - NOTE_VERSION_INTERVAL_MINUTES=${NOTE_VERSION_INTERVAL_MINUTES:-5}
+      - NOTE_VERSION_MAX_COUNT=${NOTE_VERSION_MAX_COUNT:-50}
     expose:
       - "8000"
     healthcheck:

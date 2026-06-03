@@ -3,8 +3,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
+import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -21,7 +22,7 @@ import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
-import type { Note } from '@/api/notes'
+import { notesApi, configApi, type Note } from '@/api/notes'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -70,6 +71,8 @@ export default function EditorView() {
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingTags, setGeneratingTags] = useState(false)
@@ -86,6 +89,7 @@ export default function EditorView() {
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
   const hasPendingChanges = useRef(false)
+  const dirtySinceSnapshot = useRef(false)
   const isSaving = useRef(false)
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
@@ -166,6 +170,7 @@ export default function EditorView() {
   const scheduleAutosave = useCallback(() => {
     if (isHydratingEditor.current) return
     hasPendingChanges.current = true
+    dirtySinceSnapshot.current = true
     currentNoteContent.current = extractPlainText()
     setSaveStatus('Unsaved changes')
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
@@ -235,6 +240,64 @@ export default function EditorView() {
       isHydratingEditor.current = false
     }, 0)
   }, [editor, loaded, isNew, noteId, note])
+
+  // Load the snapshot interval (env-var driven, served by the backend).
+  useEffect(() => {
+    let active = true
+    configApi.get()
+      .then((c) => { if (active) setSnapshotIntervalMs(Math.max(1, c.note_version_interval_minutes) * 60 * 1000) })
+      .catch(() => { /* keep default */ })
+    return () => { active = false }
+  }, [])
+
+  // Periodically snapshot a version while the editor is focused and has changed.
+  // The timer is disabled when the tab/window loses focus and re-armed on return.
+  useEffect(() => {
+    if (isNew && !createdNoteId.current) return
+    let timer: ReturnType<typeof setInterval> | null = null
+
+    async function snapshot() {
+      if (!dirtySinceSnapshot.current) return
+      const id = createdNoteId.current || latestNoteId.current
+      if (!id || typeof document !== 'undefined' && document.hidden) return
+      try {
+        if (hasPendingChanges.current) await saveDraftRef.current?.(true)
+        await notesApi.createVersion(id)
+        dirtySinceSnapshot.current = false
+      } catch { /* snapshot is best-effort */ }
+    }
+
+    const arm = () => { if (!timer) timer = setInterval(() => { void snapshot() }, snapshotIntervalMs) }
+    const disarm = () => { if (timer) { clearInterval(timer); timer = null } }
+    const onVisibility = () => { if (document.hidden) disarm(); else arm() }
+
+    if (!document.hidden) arm()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', arm)
+    window.addEventListener('blur', disarm)
+    return () => {
+      disarm()
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', arm)
+      window.removeEventListener('blur', disarm)
+    }
+  }, [snapshotIntervalMs, noteId, loaded])
+
+  function handleRestored(updated: Note) {
+    setNote(updated)
+    setTitle(updated.title)
+    setCategoryId(updated.category_id)
+    setTags([...updated.tags])
+    syncedEditorKey.current = null // force the hydrate effect to reload editor content
+    dirtySinceSnapshot.current = false
+    setShowHistory(false)
+    showToast('Note restored from history')
+  }
+
+  function handleRecoveredToNew(newNote: Note) {
+    setShowHistory(false)
+    navigate(`/notes/${newNote.id}`)
+  }
 
   function extractPlainText(blocks: unknown[] | undefined = editor?.document): string {
     if (!blocks) return ''
@@ -381,6 +444,14 @@ export default function EditorView() {
           <div className="flex-1" />
           {note && <ExportMenu note={note} onToast={showToast} />}
           {note && <ShareMenu note={note} onToast={showToast} />}
+          <button
+            className="btn-ghost p-2"
+            title="Version history"
+            disabled={!note}
+            onClick={() => setShowHistory(true)}
+          >
+            <History className="w-4 h-4" />
+          </button>
           <button className="btn-ghost p-2" title="Print" onClick={handlePrint}>
             <Printer className="w-4 h-4" />
           </button>
@@ -562,6 +633,15 @@ export default function EditorView() {
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-4 py-2 rounded-xl shadow-lg text-sm z-50">
           {toastMessage}
         </div>
+      )}
+
+      {showHistory && note && (
+        <NoteHistoryModal
+          noteId={note.id}
+          onClose={() => setShowHistory(false)}
+          onRestored={handleRestored}
+          onRecoveredToNew={handleRecoveredToNew}
+        />
       )}
 
       {showDeleteConfirm && (

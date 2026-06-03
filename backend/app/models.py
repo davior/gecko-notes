@@ -39,6 +39,17 @@ class Note(SQLModel, table=True):
     user_id: Optional[str] = Field(default=None, index=True)
 
 
+class NoteVersion(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    note_id: str = Field(foreign_key="note.id", index=True)
+    user_id: str = Field(index=True)
+    title: str
+    content: str  # BlockNote JSON snapshot serialised as string
+    category_id: str
+    tags: str = Field(default='[]')  # JSON array serialised as string
+    created_at: datetime
+
+
 class AIProvider(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

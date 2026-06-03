@@ -1,4 +1,4 @@
-from typing import Optional, Any, List, Generic, TypeVar
+from typing import Optional, Any, List, Generic, TypeVar, Literal
 from datetime import datetime
 from pydantic import BaseModel, field_validator
 
@@ -103,6 +103,33 @@ class NoteListItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class NoteVersionRead(BaseModel):
+    id: str
+    note_id: str
+    title: str
+    content: str
+    tags: List[str]
+    category_id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class NoteVersionListItem(BaseModel):
+    id: str
+    title: str
+    content_preview: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RestoreVersionRequest(BaseModel):
+    mode: Literal["in_place", "new_note"] = "in_place"
 
 
 class SharedNoteRead(BaseModel):

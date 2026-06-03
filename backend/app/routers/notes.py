@@ -1,18 +1,27 @@
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, col
 
 from app.database import get_session
-from app.models import Note
+from app.models import Note, NoteVersion
 from app.schemas import (
     NoteCreate, NoteUpdate, NoteRead, NoteListItem,
+    NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
     DataResponse, ListResponse, ErrorResponse
 )
 
 router = APIRouter()
+
+
+def _version_max_count() -> int:
+    try:
+        return max(1, int(os.getenv("NOTE_VERSION_MAX_COUNT", "50")))
+    except ValueError:
+        return 50
 
 
 def _get_user_id(request: Request) -> str:
@@ -100,6 +109,75 @@ def note_to_list_item(note: Note) -> NoteListItem:
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
+
+
+def version_to_read(version: NoteVersion) -> NoteVersionRead:
+    try:
+        tags = json.loads(version.tags)
+    except Exception:
+        tags = []
+    return NoteVersionRead(
+        id=version.id,
+        note_id=version.note_id,
+        title=version.title,
+        content=version.content,
+        tags=tags,
+        category_id=version.category_id,
+        created_at=version.created_at,
+    )
+
+
+def version_to_list_item(version: NoteVersion) -> NoteVersionListItem:
+    return NoteVersionListItem(
+        id=version.id,
+        title=version.title,
+        content_preview=extract_plain_text(version.content, 120),
+        created_at=version.created_at,
+    )
+
+
+def _latest_version(session: Session, note_id: str) -> Optional[NoteVersion]:
+    return session.exec(
+        select(NoteVersion)
+        .where(NoteVersion.note_id == note_id)
+        .order_by(NoteVersion.created_at.desc())
+    ).first()
+
+
+def _snapshot_note(session: Session, note: Note) -> Optional[NoteVersion]:
+    """Save the note's current state as a version, skipping duplicates of the latest one.
+
+    Returns the created version, or None if it was identical to the most recent version.
+    Prunes versions beyond NOTE_VERSION_MAX_COUNT (oldest first).
+    """
+    latest = _latest_version(session, note.id)
+    if latest and latest.title == note.title and latest.content == note.content and latest.tags == note.tags:
+        return None
+
+    version = NoteVersion(
+        id=str(uuid.uuid4()),
+        note_id=note.id,
+        user_id=note.user_id,
+        title=note.title,
+        content=note.content,
+        category_id=note.category_id,
+        tags=note.tags,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(version)
+    session.flush()  # make the new version visible to the query below
+
+    # Prune oldest versions beyond the retention cap (newest first, keep max_count).
+    max_count = _version_max_count()
+    existing = session.exec(
+        select(NoteVersion)
+        .where(NoteVersion.note_id == note.id)
+        .order_by(NoteVersion.created_at.desc())
+    ).all()
+    for old in existing[max_count:]:
+        session.delete(old)
+
+    return version
 
 
 @router.get("", response_model=ListResponse[NoteListItem])
@@ -224,6 +302,9 @@ def delete_note(note_id: str, request: Request, session: Session = Depends(get_s
     note = session.get(Note, note_id)
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    versions = session.exec(select(NoteVersion).where(NoteVersion.note_id == note_id)).all()
+    for version in versions:
+        session.delete(version)
     session.delete(note)
     session.commit()
 
@@ -250,6 +331,96 @@ def unshare_note(note_id: str, request: Request, session: Session = Depends(get_
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
     note.is_shared = False
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
+
+
+def _get_owned_note(session: Session, note_id: str, user_id: str) -> Note:
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    return note
+
+
+@router.post("/{note_id}/versions", response_model=Optional[DataResponse[NoteVersionRead]])
+def create_version(note_id: str, request: Request, response: Response, session: Session = Depends(get_session)):
+    """Snapshot the note's current state as a version. No-op (204) if unchanged."""
+    user_id = _get_user_id(request)
+    note = _get_owned_note(session, note_id, user_id)
+    version = _snapshot_note(session, note)
+    if version is None:
+        session.rollback()
+        response.status_code = 204
+        return None
+    session.commit()
+    session.refresh(version)
+    return DataResponse(data=version_to_read(version))
+
+
+@router.get("/{note_id}/versions", response_model=ListResponse[NoteVersionListItem])
+def list_versions(note_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    _get_owned_note(session, note_id, user_id)
+    versions = session.exec(
+        select(NoteVersion)
+        .where(NoteVersion.note_id == note_id)
+        .order_by(NoteVersion.created_at.desc())
+    ).all()
+    items = [version_to_list_item(v) for v in versions]
+    return ListResponse(data=items, total=len(items), limit=len(items), offset=0)
+
+
+@router.get("/{note_id}/versions/{version_id}", response_model=DataResponse[NoteVersionRead])
+def get_version(note_id: str, version_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    _get_owned_note(session, note_id, user_id)
+    version = session.get(NoteVersion, version_id)
+    if not version or version.note_id != note_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Version not found"})
+    return DataResponse(data=version_to_read(version))
+
+
+@router.post("/{note_id}/versions/{version_id}/restore", response_model=DataResponse[NoteRead])
+def restore_version(
+    note_id: str,
+    version_id: str,
+    payload: RestoreVersionRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    note = _get_owned_note(session, note_id, user_id)
+    version = session.get(NoteVersion, version_id)
+    if not version or version.note_id != note_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Version not found"})
+
+    now = datetime.now(timezone.utc)
+
+    if payload.mode == "new_note":
+        new_note = Note(
+            id=str(uuid.uuid4()),
+            title=f"RECOVERED: {version.title}",
+            content=version.content,
+            category_id=version.category_id,
+            tags=version.tags,
+            created_at=now,
+            modified_at=now,
+            user_id=user_id,
+        )
+        session.add(new_note)
+        session.commit()
+        session.refresh(new_note)
+        return DataResponse(data=note_to_read(new_note))
+
+    # in_place: preserve the current state as a version before overwriting it.
+    _snapshot_note(session, note)
+    note.title = version.title
+    note.content = version.content
+    note.category_id = version.category_id
+    note.tags = version.tags
+    note.modified_at = now
     session.add(note)
     session.commit()
     session.refresh(note)
