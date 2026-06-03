@@ -126,15 +126,38 @@
   body {
     background: white;
     color: black;
+    margin: 0;
+    padding: 0;
   }
 
   .print-content {
     display: block !important;
   }
 
+  /* Remove height restrictions and overflow that clip content in print */
+  html, body {
+    height: auto;
+    min-height: auto;
+  }
+
+  div[class*="flex"] {
+    height: auto;
+    min-height: auto;
+  }
+
+  /* Allow editor area to expand for printing */
+  .editor-area {
+    overflow: visible !important;
+    min-height: auto !important;
+    height: auto !important;
+    page-break-inside: auto;
+  }
+
   /* Allow natural page breaks in editor content */
   .bn-editor {
     page-break-inside: auto;
+    height: auto !important;
+    min-height: auto !important;
   }
 
   /* Keep headings with their content when possible, but allow page breaks if needed */
