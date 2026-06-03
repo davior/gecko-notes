@@ -131,4 +131,27 @@
   .print-content {
     display: block !important;
   }
+
+  /* Page break handling for better pagination */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+
+  img, figure {
+    page-break-inside: avoid;
+  }
+
+  /* Remove all shadows for clear print output */
+  h1, h2, h3, h4, h5, h6,
+  p, span, li, label,
+  * {
+    text-shadow: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Prevent orphaned/widowed lines */
+  ul, ol, blockquote {
+    page-break-inside: avoid;
+  }
 }
