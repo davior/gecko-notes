@@ -27,6 +27,14 @@ Then hard-refresh the browser (Ctrl/Cmd+Shift+R) to bypass cached assets.
 - Backend changes auto-reload under `uvicorn --reload`, or need `--build` under Docker.
 - The app is served at **http://localhost:18081** (frontend port mapping in `docker-compose.yml`).
 
+## After Committing to an Open Branch (pull request info)
+
+After every set of changes committed and pushed to an open (non-`main`) branch, return the pull request information for that branch:
+
+- Look up the PR via the GitHub MCP (list pull requests with `head` = the current branch, or read the PR directly).
+- Report the PR number, URL, title, and draft / CI status.
+- If no PR exists yet for the branch, create a **draft** PR and return its info.
+
 ## After Every Commit to main (production deployment)
 
 Whenever a commit lands on `main` — including a PR merge (e.g. a `<github-webhook-activity>` event indicating a merge) — automatically output the following production deployment instructions:
