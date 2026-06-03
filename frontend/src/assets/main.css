@@ -126,9 +126,58 @@
   body {
     background: white;
     color: black;
+    margin: 0;
+    padding: 0;
   }
 
   .print-content {
     display: block !important;
+  }
+
+  /* Remove height restrictions and overflow that clip content in print */
+  html, body {
+    height: auto;
+    min-height: auto;
+  }
+
+  div[class*="flex"] {
+    height: auto;
+    min-height: auto;
+  }
+
+  /* Allow editor area to expand for printing */
+  .editor-area {
+    overflow: visible !important;
+    min-height: auto !important;
+    height: auto !important;
+    page-break-inside: auto;
+  }
+
+  /* Allow natural page breaks in editor content */
+  .bn-editor {
+    page-break-inside: auto;
+    height: auto !important;
+    min-height: auto !important;
+  }
+
+  /* Keep headings with their content when possible, but allow page breaks if needed */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: auto;
+    orphans: 2;
+    widows: 2;
+  }
+
+  /* Keep images with content when possible */
+  img {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  /* Remove all shadows for clear print output */
+  h1, h2, h3, h4, h5, h6,
+  p, span, li, label,
+  * {
+    text-shadow: none !important;
+    box-shadow: none !important;
   }
 }

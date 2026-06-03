@@ -313,7 +313,9 @@ export async function exportToPDF(note: Note): Promise<void> {
   // html2canvas can't render background-color on inline elements that wrap
   // across lines — it paints a full-width rectangle instead of following
   // the text flow. Override inline code to font-only styling for the PDF.
-  const pdfStyleOverrides = `code { background: none !important; padding: 0 !important; border-radius: 0 !important; border: none !important; }`
+  // Also remove text shadows for clear, readable PDF output.
+  const pdfStyleOverrides = `code { background: none !important; padding: 0 !important; border-radius: 0 !important; border: none !important; }
+* { text-shadow: none !important; box-shadow: none !important; }`
   container.innerHTML = `<style>${styleContent}${pdfStyleOverrides}</style>${parsedDoc.body.innerHTML}`
   document.body.appendChild(container)
 

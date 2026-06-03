@@ -65,8 +65,7 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
 
     mime_type = file.content_type or "application/octet-stream"
 
-    base_url = str(request.base_url).rstrip("/")
-    url = f"{base_url}/media/{user_id}/{filename}"
+    url = f"/media/{user_id}/{filename}"
 
     return DataResponse(data=MediaUploadResponse(
         url=url,
