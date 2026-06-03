@@ -101,7 +101,7 @@ export default function SharedNoteView() {
 
       {/* Header */}
       <header className="border-b border-gray-100 dark:border-gray-700 sticky top-0 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between">
           <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
           <span className="flex items-center gap-1.5 text-xs font-medium text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
             <Globe className="w-3.5 h-3.5" />
@@ -111,7 +111,7 @@ export default function SharedNoteView() {
       </header>
 
       {/* Content */}
-      <main className="max-w-3xl mx-auto px-4 py-8">
+      <main className="w-full md:w-4/5 mx-auto px-4 py-8">
         {/* Title */}
         <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-4 leading-tight">
           {note.title || 'Untitled'}
@@ -154,7 +154,7 @@ export default function SharedNoteView() {
         <div className="border-t border-gray-100 dark:border-gray-700 mb-6" />
 
         {/* Note content */}
-        <div className="card overflow-hidden">
+        <div className="shared-content overflow-hidden">
           <ReadOnlyEditor content={note.content} editorTheme={editorTheme} />
         </div>
 
