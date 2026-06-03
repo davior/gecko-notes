@@ -32,7 +32,11 @@ function parseConversation(raw: string | null | undefined): ConversationMessage[
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  // Timestamps are UTC; toLocaleString renders them in the viewer's local timezone.
+  return new Date(dateStr).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
 }
 
 function parseNoteContent(content: string): PartialBlock[] {

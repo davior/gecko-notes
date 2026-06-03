@@ -1,8 +1,24 @@
-from typing import Optional, Any, List, Generic, TypeVar, Literal
-from datetime import datetime
-from pydantic import BaseModel, field_validator
+from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
+from datetime import datetime, timezone
+from pydantic import BaseModel, field_validator, PlainSerializer
 
 T = TypeVar("T")
+
+
+def _utc_isoformat(dt: datetime) -> str:
+    """Serialise a datetime as an unambiguous ISO 8601 string in UTC.
+
+    Timestamps are stored as UTC, but SQLite returns them without tzinfo. Tagging
+    them as UTC lets clients (e.g. `new Date(...)` in the browser) convert to the
+    viewer's local timezone instead of misreading them as local time.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+# Datetime that always serialises with an explicit UTC offset.
+UTCDatetime = Annotated[datetime, PlainSerializer(_utc_isoformat, return_type=str)]
 
 
 class DataResponse(BaseModel, Generic[T]):
@@ -82,8 +98,8 @@ class NoteRead(BaseModel):
     share_token: Optional[str] = None
     summary: Optional[str] = None
     conversation: Optional[str] = None
-    created_at: datetime
-    modified_at: datetime
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
 
     class Config:
         from_attributes = True
@@ -98,8 +114,8 @@ class NoteListItem(BaseModel):
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False
-    created_at: datetime
-    modified_at: datetime
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
 
     class Config:
         from_attributes = True
@@ -112,7 +128,7 @@ class NoteVersionRead(BaseModel):
     content: str
     tags: List[str]
     category_id: str
-    created_at: datetime
+    created_at: UTCDatetime
 
     class Config:
         from_attributes = True
@@ -122,7 +138,7 @@ class NoteVersionListItem(BaseModel):
     id: str
     title: str
     content_preview: str
-    created_at: datetime
+    created_at: UTCDatetime
 
     class Config:
         from_attributes = True
@@ -137,8 +153,8 @@ class SharedNoteRead(BaseModel):
     title: str
     content: str
     tags: List[str]
-    created_at: datetime
-    modified_at: datetime
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
     author_username: str
     author_avatar_url: Optional[str] = None
     theme: Optional['ThemeRead'] = None
