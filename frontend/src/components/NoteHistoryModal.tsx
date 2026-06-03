@@ -89,10 +89,10 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
   const [busy, setBusy] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
 
-  const editorTheme = useSettingsStore((s) => s.theme)
+  const theme = useSettingsStore((s) => s.theme)
   const themes = useSettingsStore((s) => s.themes)
   const activeThemeId = useSettingsStore((s) => s.activeThemeId)
-  const activeGlassTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
+  const activeTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
   const previewEditor = useCreateBlockNote()
 
   useEffect(() => {
@@ -153,9 +153,9 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
   const activeVersion = selected && selected.id === selectedId ? selected : null
   const diffResult = activeVersion ? diffLines(extractLines(activeVersion.content), extractLines(currentContent)) : []
 
-  const glassRgb = activeGlassTheme?.mode === 'dark' ? '0,0,0' : '255,255,255'
-  const glassOpacity = activeGlassTheme?.glass_opacity ?? 0.3
-  const glassBlur = activeGlassTheme?.glass_blur ?? 12
+  const glassRgb = activeTheme?.mode === 'dark' ? '0,0,0' : '255,255,255'
+  const glassOpacity = activeTheme?.glass_opacity ?? 0.3
+  const glassBlur = activeTheme?.glass_blur ?? 12
   const glassStyle: React.CSSProperties = {
     background: `rgba(${glassRgb}, ${glassOpacity})`,
     backdropFilter: `blur(${glassBlur}px)`,
@@ -257,7 +257,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
                   </div>
                 ) : (
                   <div style={{ background: 'transparent' }}>
-                    <BlockNoteView editor={previewEditor} editable={false} theme={editorTheme} />
+                    <BlockNoteView editor={previewEditor} editable={false} theme={theme} />
                   </div>
                 )
               ) : (
