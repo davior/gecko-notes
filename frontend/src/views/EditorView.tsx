@@ -300,6 +300,7 @@ export default function EditorView() {
     window.addEventListener('blur', disarm)
     return () => {
       disarm()
+      void snapshot()  // snapshot on leave/unmount if content changed since last version
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', arm)
       window.removeEventListener('blur', disarm)
