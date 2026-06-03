@@ -150,13 +150,24 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
   const activeVersion = selected && selected.id === selectedId ? selected : null
   const diffResult = activeVersion ? diffLines(extractLines(activeVersion.content), extractLines(currentContent)) : []
 
+  const glassRgb = theme?.mode === 'dark' ? '0,0,0' : '255,255,255'
+  const glassOpacity = theme?.glass_opacity ?? 0.3
+  const glassBlur = theme?.glass_blur ?? 12
+  const glassStyle: React.CSSProperties = {
+    background: `rgba(${glassRgb}, ${glassOpacity})`,
+    backdropFilter: `blur(${glassBlur}px)`,
+    WebkitBackdropFilter: `blur(${glassBlur}px)`,
+    border: `1px solid rgba(${glassRgb}, ${glassOpacity * 1.5})`,
+  }
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-4xl mx-4 shadow-xl flex flex-col max-h-[85vh]"
+        className="rounded-xl w-full max-w-4xl mx-4 shadow-xl flex flex-col max-h-[85vh]"
+        style={glassStyle}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-700">
+        <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: `rgba(${glassRgb}, ${glassOpacity * 1.5})` }}>
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
             <History className="w-5 h-5" /> Version History
           </h3>
@@ -167,7 +178,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
 
         <div className="flex flex-1 min-h-0">
           {/* Version list */}
-          <div className="w-64 shrink-0 border-r border-gray-100 dark:border-gray-700 overflow-y-auto">
+          <div className="w-64 shrink-0 border-r overflow-y-auto" style={{ borderColor: `rgba(${glassRgb}, ${glassOpacity * 1.5})`, background: `rgba(${glassRgb}, ${Math.max(glassOpacity * 0.5, 0.1)})` }}>
             {loading ? (
               <div className="p-4 text-sm text-gray-400">Loading…</div>
             ) : versions.length === 0 ? (
@@ -177,11 +188,12 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
                 <button
                   key={v.id}
                   onClick={() => setSelectedId(v.id)}
-                  className={`w-full text-left px-4 py-2.5 border-b border-gray-50 dark:border-gray-700/50 transition-colors ${
+                  className={`w-full text-left px-4 py-2.5 transition-colors ${
                     selectedId === v.id
                       ? 'bg-blue-50 dark:bg-blue-900/30'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'
+                      : 'hover:bg-white/20 dark:hover:bg-white/10'
                   }`}
+                  style={{ borderBottom: `1px solid rgba(${glassRgb}, ${glassOpacity * 0.8})` }}
                 >
                   <div className="text-xs font-medium text-gray-700 dark:text-gray-200">
                     {formatTimestamp(v.created_at)}
@@ -241,7 +253,9 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
                     )}
                   </div>
                 ) : (
-                  <BlockNoteView editor={previewEditor} editable={false} theme={theme} />
+                  <div style={{ background: 'transparent' }}>
+                    <BlockNoteView editor={previewEditor} editable={false} theme={theme} />
+                  </div>
                 )
               ) : (
                 <div className="p-4 text-sm text-gray-400">
@@ -251,7 +265,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
             </div>
 
             {activeVersion && (
-              <div className="shrink-0 flex gap-3 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
+              <div className="shrink-0 flex gap-3 px-4 py-3 border-t" style={{ borderColor: `rgba(${glassRgb}, ${glassOpacity * 1.5})` }}>
                 <button className="btn-secondary flex-1 inline-flex items-center justify-center gap-1.5" disabled={busy} onClick={() => handleRestore('in_place')}>
                   <RotateCcw className="w-4 h-4" /> Restore over this note
                 </button>
