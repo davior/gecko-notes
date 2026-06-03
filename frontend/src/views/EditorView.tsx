@@ -156,7 +156,12 @@ export default function EditorView() {
         setLoaded(true)
       }
     }
-    init()
+    // Skip the reload when we just created this note ourselves: autosave on a new
+    // note navigates here via replace(), changing noteId. The editor already holds
+    // the user's content, so reloading would clear state and steal focus mid-typing.
+    if (!(noteId && noteId === createdNoteId.current)) {
+      init()
+    }
     return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }
   }, [noteId])
 
@@ -198,6 +203,9 @@ export default function EditorView() {
       if (latestIsNew.current && !createdNoteId.current) {
         const created = await notesStore.createNote(payload)
         createdNoteId.current = created.id
+        // Mark the editor as already synced to the new id so the hydrate effect
+        // doesn't replaceBlocks (which would reset the cursor) after navigation.
+        syncedEditorKey.current = created.id
         setNote(created)
         navigate(`/notes/${created.id}`, { replace: true })
       } else {
@@ -229,7 +237,7 @@ export default function EditorView() {
     const editorKey = noteId ?? 'new'
     if (syncedEditorKey.current === editorKey) return
 
-    const blocks = isNew ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
+    const blocks = (isNew && !createdNoteId.current) ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
     isHydratingEditor.current = true
     editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
     currentNoteContent.current = extractPlainText(blocks as unknown[])
