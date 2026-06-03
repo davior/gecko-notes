@@ -418,7 +418,7 @@ export default function EditorView() {
   function handlePrint() {
     const style = document.createElement('style')
     style.setAttribute('media', 'print')
-    style.textContent = '.no-print { display: none !important; } body { background: white; color: black; } .print-content { display: block !important; }'
+    style.textContent = `.no-print { display: none !important; } body { background: white; color: black; } .print-content { display: block !important; } .bn-editor { page-break-inside: auto; } h1, h2, h3, h4, h5, h6 { text-shadow: none !important; box-shadow: none !important; } * { text-shadow: none !important; box-shadow: none !important; }`
     document.head.appendChild(style)
     window.print()
     setTimeout(() => document.head.removeChild(style), 1000)

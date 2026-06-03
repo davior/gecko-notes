@@ -132,14 +132,22 @@
     display: block !important;
   }
 
-  /* Page break handling for better pagination */
-  h1, h2, h3, h4, h5, h6 {
-    page-break-after: avoid;
-    page-break-inside: avoid;
+  /* Allow natural page breaks in editor content */
+  .bn-editor {
+    page-break-inside: auto;
   }
 
-  img, figure {
+  /* Keep headings with their content when possible, but allow page breaks if needed */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: auto;
+    orphans: 2;
+    widows: 2;
+  }
+
+  /* Keep images with content when possible */
+  img {
     page-break-inside: avoid;
+    page-break-after: auto;
   }
 
   /* Remove all shadows for clear print output */
@@ -148,10 +156,5 @@
   * {
     text-shadow: none !important;
     box-shadow: none !important;
-  }
-
-  /* Prevent orphaned/widowed lines */
-  ul, ol, blockquote {
-    page-break-inside: avoid;
   }
 }
