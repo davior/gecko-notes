@@ -3,8 +3,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
+import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -21,7 +22,7 @@ import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
-import type { Note } from '@/api/notes'
+import { notesApi, configApi, type Note } from '@/api/notes'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -31,7 +32,11 @@ function parseConversation(raw: string | null | undefined): ConversationMessage[
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  // Timestamps are UTC; toLocaleString renders them in the viewer's local timezone.
+  return new Date(dateStr).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
 }
 
 function parseNoteContent(content: string): PartialBlock[] {
@@ -70,6 +75,8 @@ export default function EditorView() {
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingTags, setGeneratingTags] = useState(false)
@@ -86,6 +93,8 @@ export default function EditorView() {
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
   const hasPendingChanges = useRef(false)
+  const dirtySinceSnapshot = useRef(false)
+  const blurTimestamp = useRef<number | null>(null)
   const isSaving = useRef(false)
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
@@ -152,7 +161,12 @@ export default function EditorView() {
         setLoaded(true)
       }
     }
-    init()
+    // Skip the reload when we just created this note ourselves: autosave on a new
+    // note navigates here via replace(), changing noteId. The editor already holds
+    // the user's content, so reloading would clear state and steal focus mid-typing.
+    if (!(noteId && noteId === createdNoteId.current)) {
+      init()
+    }
     return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }
   }, [noteId])
 
@@ -166,6 +180,7 @@ export default function EditorView() {
   const scheduleAutosave = useCallback(() => {
     if (isHydratingEditor.current) return
     hasPendingChanges.current = true
+    dirtySinceSnapshot.current = true
     currentNoteContent.current = extractPlainText()
     setSaveStatus('Unsaved changes')
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
@@ -193,6 +208,9 @@ export default function EditorView() {
       if (latestIsNew.current && !createdNoteId.current) {
         const created = await notesStore.createNote(payload)
         createdNoteId.current = created.id
+        // Mark the editor as already synced to the new id so the hydrate effect
+        // doesn't replaceBlocks (which would reset the cursor) after navigation.
+        syncedEditorKey.current = created.id
         setNote(created)
         navigate(`/notes/${created.id}`, { replace: true })
       } else {
@@ -224,7 +242,7 @@ export default function EditorView() {
     const editorKey = noteId ?? 'new'
     if (syncedEditorKey.current === editorKey) return
 
-    const blocks = isNew ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
+    const blocks = (isNew && !createdNoteId.current) ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
     isHydratingEditor.current = true
     editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
     currentNoteContent.current = extractPlainText(blocks as unknown[])
@@ -235,6 +253,75 @@ export default function EditorView() {
       isHydratingEditor.current = false
     }, 0)
   }, [editor, loaded, isNew, noteId, note])
+
+  // Load the snapshot interval (env-var driven, served by the backend).
+  useEffect(() => {
+    let active = true
+    configApi.get()
+      .then((c) => { if (active) setSnapshotIntervalMs(Math.max(1, c.note_version_interval_minutes) * 60 * 1000) })
+      .catch(() => { /* keep default */ })
+    return () => { active = false }
+  }, [])
+
+  // Periodically snapshot a version while the editor is focused and has changed.
+  // The timer is disabled when the tab/window loses focus and re-armed on return.
+  useEffect(() => {
+    if (isNew && !createdNoteId.current) return
+    let timer: ReturnType<typeof setInterval> | null = null
+
+    async function snapshot() {
+      if (!dirtySinceSnapshot.current) return
+      const id = createdNoteId.current || latestNoteId.current
+      if (!id || typeof document !== 'undefined' && document.hidden) return
+      try {
+        if (hasPendingChanges.current) await saveDraftRef.current?.(true)
+        await notesApi.createVersion(id)
+        dirtySinceSnapshot.current = false
+      } catch { /* snapshot is best-effort */ }
+    }
+
+    const arm = () => {
+      // If focus was absent for ≥ the interval, trigger an immediate snapshot check.
+      if (blurTimestamp.current !== null && Date.now() - blurTimestamp.current >= snapshotIntervalMs) {
+        void snapshot()
+      }
+      blurTimestamp.current = null
+      if (!timer) timer = setInterval(() => { void snapshot() }, snapshotIntervalMs)
+    }
+    const disarm = () => {
+      blurTimestamp.current = Date.now()
+      if (timer) { clearInterval(timer); timer = null }
+    }
+    const onVisibility = () => { if (document.hidden) disarm(); else arm() }
+
+    if (!document.hidden) arm()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', arm)
+    window.addEventListener('blur', disarm)
+    return () => {
+      disarm()
+      void snapshot()  // snapshot on leave/unmount if content changed since last version
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', arm)
+      window.removeEventListener('blur', disarm)
+    }
+  }, [snapshotIntervalMs, noteId, loaded])
+
+  function handleRestored(updated: Note) {
+    setNote(updated)
+    setTitle(updated.title)
+    setCategoryId(updated.category_id)
+    setTags([...updated.tags])
+    syncedEditorKey.current = null // force the hydrate effect to reload editor content
+    dirtySinceSnapshot.current = false
+    setShowHistory(false)
+    showToast('Note restored from history')
+  }
+
+  function handleRecoveredToNew(newNote: Note) {
+    setShowHistory(false)
+    navigate(`/notes/${newNote.id}`)
+  }
 
   function extractPlainText(blocks: unknown[] | undefined = editor?.document): string {
     if (!blocks) return ''
@@ -381,6 +468,14 @@ export default function EditorView() {
           <div className="flex-1" />
           {note && <ExportMenu note={note} onToast={showToast} />}
           {note && <ShareMenu note={note} onToast={showToast} />}
+          <button
+            className="btn-ghost p-2"
+            title="Version history"
+            disabled={!note}
+            onClick={() => setShowHistory(true)}
+          >
+            <History className="w-4 h-4" />
+          </button>
           <button className="btn-ghost p-2" title="Print" onClick={handlePrint}>
             <Printer className="w-4 h-4" />
           </button>
@@ -562,6 +657,16 @@ export default function EditorView() {
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-4 py-2 rounded-xl shadow-lg text-sm z-50">
           {toastMessage}
         </div>
+      )}
+
+      {showHistory && note && (
+        <NoteHistoryModal
+          noteId={note.id}
+          currentContent={note.content}
+          onClose={() => setShowHistory(false)}
+          onRestored={handleRestored}
+          onRecoveredToNew={handleRecoveredToNew}
+        />
       )}
 
       {showDeleteConfirm && (

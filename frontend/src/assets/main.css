@@ -53,6 +53,40 @@
   margin-top: 2px;
 }
 
+/* Hyperlinks in note content — discernible colour, no underline, underline on
+   hover. A direct rule on <a> overrides inherited block text colours (including
+   the glass-theme overrides). Dark themes use a lighter blue for contrast. */
+.bn-editor a {
+  color: #2563eb; /* blue-600 */
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.bn-editor a:hover {
+  text-decoration: underline;
+}
+
+.bn-container[data-color-scheme="dark"] .bn-editor a {
+  color: #60a5fa; /* blue-400 — readable on dark backgrounds */
+}
+
+/* Shared note content panel — translucent so the theme background shows through.
+   Uses the active theme's glass colour (light/dark) with a fixed, readable
+   opacity, falling back to translucent white when no theme is applied. */
+.shared-content {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(var(--glass-rgb, 255, 255, 255), 0.3);
+  background: rgba(var(--glass-rgb, 255, 255, 255), 0.65);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 10px));
+  backdrop-filter: blur(var(--glass-blur, 10px));
+}
+
+/* Clear BlockNote's own opaque editor background so the translucent panel shows. */
+.shared-content .bn-container,
+.shared-content .bn-editor {
+  background: transparent !important;
+}
+
 /* Code blocks always use dark background with light text, regardless of app theme */
 .bn-block-content[data-content-type="codeBlock"],
 .bn-block-content[data-content-type="codeBlock"] * {

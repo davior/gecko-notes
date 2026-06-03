@@ -132,3 +132,20 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+def app_config():
+    """Client-facing runtime configuration (env-var driven)."""
+    try:
+        interval = max(1, int(os.getenv("NOTE_VERSION_INTERVAL_MINUTES", "5")))
+    except ValueError:
+        interval = 5
+    try:
+        max_count = max(1, int(os.getenv("NOTE_VERSION_MAX_COUNT", "50")))
+    except ValueError:
+        max_count = 50
+    return {
+        "note_version_interval_minutes": interval,
+        "note_version_max_count": max_count,
+    }

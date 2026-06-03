@@ -1,0 +1,9 @@
+services:
+  frontend:
+    networks:
+      - default
+      - web
+
+networks:
+  web:
+    external: true
