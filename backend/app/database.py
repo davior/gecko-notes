@@ -201,6 +201,21 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Convert absolute theme image URLs to relative paths for domain portability
+        try:
+            themes = conn.execute(text(
+                "SELECT id, bg_image_url FROM theme WHERE bg_image_url IS NOT NULL AND bg_image_url LIKE '%/media/%'"
+            )).fetchall()
+            for theme_id, url in themes:
+                if url and "/media/" in url:
+                    relative_url = url[url.find("/media/"):]
+                    conn.execute(text(
+                        "UPDATE theme SET bg_image_url = :url WHERE id = :id"
+                    ), {"url": relative_url, "id": theme_id})
+            if themes:
+                conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():
