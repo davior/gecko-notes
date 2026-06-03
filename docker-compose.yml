@@ -24,7 +24,7 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "18081:80"
+      - "${APP_PORT:-18081}:80"
     environment:
       - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-1g}
     depends_on:
