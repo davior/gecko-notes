@@ -45,6 +45,7 @@ class NoteVersion(SQLModel, table=True):
     user_id: str = Field(index=True)
     title: str
     content: str  # BlockNote JSON snapshot serialised as string
+    content_checksum: str = Field(default='')  # SHA-256 of content for fast dedup
     category_id: str
     tags: str = Field(default='[]')  # JSON array serialised as string
     created_at: datetime

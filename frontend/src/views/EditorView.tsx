@@ -94,6 +94,7 @@ export default function EditorView() {
   const currentNoteContent = useRef('')
   const hasPendingChanges = useRef(false)
   const dirtySinceSnapshot = useRef(false)
+  const blurTimestamp = useRef<number | null>(null)
   const isSaving = useRef(false)
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
@@ -279,8 +280,18 @@ export default function EditorView() {
       } catch { /* snapshot is best-effort */ }
     }
 
-    const arm = () => { if (!timer) timer = setInterval(() => { void snapshot() }, snapshotIntervalMs) }
-    const disarm = () => { if (timer) { clearInterval(timer); timer = null } }
+    const arm = () => {
+      // If focus was absent for ≥ the interval, trigger an immediate snapshot check.
+      if (blurTimestamp.current !== null && Date.now() - blurTimestamp.current >= snapshotIntervalMs) {
+        void snapshot()
+      }
+      blurTimestamp.current = null
+      if (!timer) timer = setInterval(() => { void snapshot() }, snapshotIntervalMs)
+    }
+    const disarm = () => {
+      blurTimestamp.current = Date.now()
+      if (timer) { clearInterval(timer); timer = null }
+    }
     const onVisibility = () => { if (document.hidden) disarm(); else arm() }
 
     if (!document.hidden) arm()
@@ -650,6 +661,7 @@ export default function EditorView() {
       {showHistory && note && (
         <NoteHistoryModal
           noteId={note.id}
+          currentContent={note.content}
           onClose={() => setShowHistory(false)}
           onRestored={handleRestored}
           onRecoveredToNew={handleRecoveredToNew}

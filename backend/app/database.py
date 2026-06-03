@@ -147,6 +147,11 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE noteversion ADD COLUMN content_checksum TEXT NOT NULL DEFAULT ''"))
+            conn.commit()
+        except Exception:
+            pass
         # Collapse exact duplicate categories created by seed + import flows.
         try:
             duplicate_groups = conn.execute(text("""

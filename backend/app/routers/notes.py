@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import uuid
@@ -147,11 +148,12 @@ def _latest_version(session: Session, note_id: str) -> Optional[NoteVersion]:
 def _snapshot_note(session: Session, note: Note) -> Optional[NoteVersion]:
     """Save the note's current state as a version, skipping duplicates of the latest one.
 
-    Returns the created version, or None if it was identical to the most recent version.
+    Returns the created version, or None if content checksum matches the most recent version.
     Prunes versions beyond NOTE_VERSION_MAX_COUNT (oldest first).
     """
+    checksum = hashlib.sha256(note.content.encode()).hexdigest()
     latest = _latest_version(session, note.id)
-    if latest and latest.title == note.title and latest.content == note.content and latest.tags == note.tags:
+    if latest and latest.content_checksum == checksum:
         return None
 
     version = NoteVersion(
@@ -160,6 +162,7 @@ def _snapshot_note(session: Session, note: Note) -> Optional[NoteVersion]:
         user_id=note.user_id,
         title=note.title,
         content=note.content,
+        content_checksum=checksum,
         category_id=note.category_id,
         tags=note.tags,
         created_at=datetime.now(timezone.utc),

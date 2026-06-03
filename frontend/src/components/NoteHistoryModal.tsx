@@ -27,19 +27,67 @@ function formatTimestamp(dateStr: string): string {
   })
 }
 
+// Extract plain-text lines from BlockNote JSON (one entry per block).
+function extractLines(content: string): string[] {
+  const blocks = parseNoteContent(content)
+  return blocks.map((block) => {
+    const b = block as Record<string, unknown>
+    const inlines = Array.isArray(b.content) ? (b.content as Array<Record<string, unknown>>) : []
+    return inlines
+      .filter((s) => s.type === 'text' && typeof s.text === 'string')
+      .map((s) => s.text as string)
+      .join('')
+  }).filter((line) => line.length > 0)
+}
+
+type DiffLine = { type: 'add' | 'remove' | 'same'; text: string }
+
+function diffLines(a: string[], b: string[]): DiffLine[] {
+  // LCS-based diff (Myers algorithm approximation via DP table).
+  const m = a.length
+  const n = b.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      if (a[i] === b[j]) {
+        dp[i][j] = 1 + dp[i + 1][j + 1]
+      } else {
+        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1])
+      }
+    }
+  }
+  const result: DiffLine[] = []
+  let i = 0, j = 0
+  while (i < m || j < n) {
+    if (i < m && j < n && a[i] === b[j]) {
+      result.push({ type: 'same', text: a[i] })
+      i++; j++
+    } else if (j < n && (i >= m || dp[i][j + 1] >= dp[i + 1][j])) {
+      result.push({ type: 'add', text: b[j] })
+      j++
+    } else {
+      result.push({ type: 'remove', text: a[i] })
+      i++
+    }
+  }
+  return result
+}
+
 interface Props {
   noteId: string
+  currentContent: string
   onClose: () => void
   onRestored: (note: Note) => void
   onRecoveredToNew: (note: Note) => void
 }
 
-export default function NoteHistoryModal({ noteId, onClose, onRestored, onRecoveredToNew }: Props) {
+export default function NoteHistoryModal({ noteId, currentContent, onClose, onRestored, onRecoveredToNew }: Props) {
   const [versions, setVersions] = useState<NoteVersionListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<NoteVersion | null>(null)
   const [busy, setBusy] = useState(false)
+  const [showDiff, setShowDiff] = useState(false)
 
   const theme = useSettingsStore((s) => s.theme)
   const previewEditor = useCreateBlockNote()
@@ -94,6 +142,8 @@ export default function NoteHistoryModal({ noteId, onClose, onRestored, onRecove
     }
   }
 
+  const diffResult = selected ? diffLines(extractLines(selected.content), extractLines(currentContent)) : []
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div
@@ -138,11 +188,55 @@ export default function NoteHistoryModal({ noteId, onClose, onRestored, onRecove
             )}
           </div>
 
-          {/* Preview */}
+          {/* Preview / Diff */}
           <div className="flex-1 min-w-0 flex flex-col">
+            {/* Toggle bar */}
+            {selected && (
+              <div className="shrink-0 flex gap-1 px-4 pt-2">
+                <button
+                  className={`text-xs px-3 py-1 rounded-full transition-colors ${!showDiff ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium' : 'btn-ghost'}`}
+                  onClick={() => setShowDiff(false)}
+                >
+                  Preview
+                </button>
+                <button
+                  className={`text-xs px-3 py-1 rounded-full transition-colors ${showDiff ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium' : 'btn-ghost'}`}
+                  onClick={() => setShowDiff(true)}
+                >
+                  Diff vs. current
+                </button>
+              </div>
+            )}
+
             <div className="flex-1 min-h-0 overflow-auto p-2">
               {selected ? (
-                <BlockNoteView editor={previewEditor} editable={false} theme={theme} />
+                showDiff ? (
+                  <div className="font-mono text-xs leading-5 select-text">
+                    {diffResult.length === 0 ? (
+                      <div className="p-4 text-gray-400">No differences — content is identical to current note.</div>
+                    ) : (
+                      diffResult.map((line, i) => (
+                        <div
+                          key={i}
+                          className={
+                            line.type === 'add'
+                              ? 'bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-200 px-2'
+                              : line.type === 'remove'
+                                ? 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 px-2'
+                                : 'text-gray-600 dark:text-gray-400 px-2'
+                          }
+                        >
+                          <span className="select-none mr-1 opacity-50">
+                            {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+                          </span>
+                          {line.text || <span className="opacity-30">(empty line)</span>}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <BlockNoteView editor={previewEditor} editable={false} theme={theme} />
+                )
               ) : (
                 <div className="p-4 text-sm text-gray-400">
                   {versions.length === 0 ? 'Versions are captured automatically as you edit.' : 'Select a version to preview.'}
