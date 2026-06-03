@@ -112,6 +112,9 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
       setSelected(null)
       return
     }
+    // Clear immediately so the previously-loaded version can't render against
+    // the newly-selected row while the fetch is in flight.
+    setSelected(null)
     let active = true
     notesApi.getVersion(noteId, selectedId).then((res) => {
       if (active) setSelected(res.data)
@@ -142,7 +145,10 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
     }
   }
 
-  const diffResult = selected ? diffLines(extractLines(selected.content), extractLines(currentContent)) : []
+  // Only treat the loaded version as current once its id matches the highlighted
+  // selection — guards against out-of-order fetch resolution.
+  const activeVersion = selected && selected.id === selectedId ? selected : null
+  const diffResult = activeVersion ? diffLines(extractLines(activeVersion.content), extractLines(currentContent)) : []
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
@@ -191,7 +197,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
           {/* Preview / Diff */}
           <div className="flex-1 min-w-0 flex flex-col">
             {/* Toggle bar */}
-            {selected && (
+            {activeVersion && (
               <div className="shrink-0 flex gap-1 px-4 pt-2">
                 <button
                   className={`text-xs px-3 py-1 rounded-full transition-colors ${!showDiff ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium' : 'btn-ghost'}`}
@@ -209,7 +215,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
             )}
 
             <div className="flex-1 min-h-0 overflow-auto p-2">
-              {selected ? (
+              {activeVersion ? (
                 showDiff ? (
                   <div className="font-mono text-xs leading-5 select-text">
                     {diffResult.length === 0 ? (
@@ -239,12 +245,12 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
                 )
               ) : (
                 <div className="p-4 text-sm text-gray-400">
-                  {versions.length === 0 ? 'Versions are captured automatically as you edit.' : 'Select a version to preview.'}
+                  {selectedId ? 'Loading…' : versions.length === 0 ? 'Versions are captured automatically as you edit.' : 'Select a version to preview.'}
                 </div>
               )}
             </div>
 
-            {selected && (
+            {activeVersion && (
               <div className="shrink-0 flex gap-3 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
                 <button className="btn-secondary flex-1 inline-flex items-center justify-center gap-1.5" disabled={busy} onClick={() => handleRestore('in_place')}>
                   <RotateCcw className="w-4 h-4" /> Restore over this note
