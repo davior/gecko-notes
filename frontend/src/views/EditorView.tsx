@@ -23,9 +23,8 @@ import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
-import type { Note } from '@/api/notes'
-import { useDictation } from '@/hooks/useDictation'
 import { notesApi, configApi, type Note } from '@/api/notes'
+import { useDictation } from '@/hooks/useDictation'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
