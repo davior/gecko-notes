@@ -207,6 +207,8 @@ export const settingsApi = {
     const form = new FormData()
     form.append('file', blob, `recording.${ext}`)
     form.append('model', model)
-    return client.post('/settings/speech/transcribe', form).then((r) => r.data.text as string)
+    return client.post('/settings/speech/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data.text as string)
   },
 }
