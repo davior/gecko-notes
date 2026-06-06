@@ -121,12 +121,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   async loadSettings() {
     set({ loading: true })
     try {
-      const [settings, providers, prompts, themesResp, speechSettings] = await Promise.all([
+      const [settings, providers, prompts, themesResp] = await Promise.all([
         settingsApi.getAll(),
         settingsApi.listAIProviders(),
         settingsApi.listSystemPrompts(),
         settingsApi.listThemes(),
-        settingsApi.getSpeechSettings(),
       ])
       const activeThemeId = (settings['active_theme_id'] as string) ?? null
       const sharedThemeId = (settings['shared_theme_id'] as string) ?? null
@@ -146,11 +145,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         themes: themesResp.data,
         activeThemeId,
         sharedThemeId,
-        deepgramApiKey: speechSettings.deepgram_api_key,
       })
     } finally {
       set({ loading: false })
     }
+    // Speech settings are loaded separately so a missing endpoint never
+    // breaks the rest of the settings load (e.g. old backend in dev).
+    try {
+      const speechSettings = await settingsApi.getSpeechSettings()
+      set({ deepgramApiKey: speechSettings.deepgram_api_key })
+    } catch { /* no speech endpoint — deepgramApiKey stays '' */ }
   },
 
   async updateSpeechSettings(apiKey) {
