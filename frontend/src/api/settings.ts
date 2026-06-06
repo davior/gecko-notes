@@ -193,4 +193,12 @@ export const settingsApi = {
   deactivateTheme(): Promise<void> {
     return client.delete('/settings/themes/activate').then(() => undefined)
   },
+
+  transcribeAudio(providerId: string, blob: Blob): Promise<string> {
+    const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
+    const form = new FormData()
+    form.append('provider_id', providerId)
+    form.append('file', blob, `recording.${ext}`)
+    return client.post('/settings/ai-providers/proxy/whisper', form).then((r) => r.data.text as string)
+  },
 }

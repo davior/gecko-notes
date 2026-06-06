@@ -4,7 +4,7 @@ import urllib.parse
 import uuid
 import httpx
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -490,6 +490,37 @@ async def proxy_ollama(
             f"{base}/api/chat",
             headers={"content-type": "application/json"},
             json=body,
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
+
+
+@router.post("/ai-providers/proxy/whisper")
+async def proxy_whisper(
+    request: Request,
+    provider_id: str = Form(...),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type not in ("openai", "custom"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Whisper requires an OpenAI-compatible provider"})
+
+    base = (provider.base_url or "https://api.openai.com").rstrip("/")
+    audio_bytes = await file.read()
+
+    async with httpx.AsyncClient(timeout=120.0) as http:
+        response = await http.post(
+            f"{base}/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {decrypt_api_key(provider.api_key)}"},
+            files={"file": (file.filename or "recording.webm", audio_bytes, file.content_type or "audio/webm")},
+            data={"model": "whisper-1"},
         )
 
     if not response.is_success:
