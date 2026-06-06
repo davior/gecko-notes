@@ -1,8 +1,53 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 
+// Self-contained type declarations for the Web Speech API — not universally present
+// in all TypeScript DOM lib versions, so we declare them explicitly here.
+interface SpeechRecognitionAlternative {
+  readonly transcript: string
+  readonly confidence: number
+}
+
+interface SpeechRecognitionResult {
+  readonly length: number
+  readonly isFinal: boolean
+  readonly [index: number]: SpeechRecognitionAlternative
+}
+
+interface SpeechRecognitionResultList {
+  readonly length: number
+  readonly [index: number]: SpeechRecognitionResult
+}
+
+interface SpeechRecognitionEvent extends Event {
+  readonly resultIndex: number
+  readonly results: SpeechRecognitionResultList
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string
+}
+
+interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  start(): void
+  stop(): void
+  abort(): void
+  onstart: ((ev: Event) => void) | null
+  onresult: ((ev: SpeechRecognitionEvent) => void) | null
+  onerror: ((ev: SpeechRecognitionErrorEvent) => void) | null
+  onend: ((ev: Event) => void) | null
+}
+
+interface SpeechRecognitionConstructor {
+  new(): SpeechRecognitionInstance
+}
+
 declare global {
   interface Window {
-    webkitSpeechRecognition: typeof SpeechRecognition
+    SpeechRecognition?: SpeechRecognitionConstructor
+    webkitSpeechRecognition?: SpeechRecognitionConstructor
   }
 }
 
@@ -28,10 +73,10 @@ const SPEECH_ERRORS: Record<string, string> = {
 
 const hasSpeechRecognition =
   typeof window !== 'undefined' &&
-  ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
+  (!!window.SpeechRecognition || !!window.webkitSpeechRecognition)
 
 const hasMediaRecorder =
-  typeof window !== 'undefined' && 'MediaRecorder' in window
+  typeof window !== 'undefined' && typeof MediaRecorder !== 'undefined'
 
 export function useDictation(
   onFinalResult: (text: string) => void,
@@ -44,7 +89,7 @@ export function useDictation(
   const [interimText, setInterimText] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const onFinalResultRef = useRef(onFinalResult)
@@ -64,7 +109,9 @@ export function useDictation(
   const startSpeechRecognition = useCallback(() => {
     userStoppedRef.current = false
 
-    const Impl = (window as Window).SpeechRecognition ?? window.webkitSpeechRecognition
+    const Impl = window.SpeechRecognition ?? window.webkitSpeechRecognition
+    if (!Impl) return
+
     const recognition = new Impl()
     recognition.continuous = true
     recognition.interimResults = true
@@ -127,7 +174,7 @@ export function useDictation(
           const text = await transcribeAudioRef.current!(blob)
           if (text.trim()) onFinalResultRef.current(text)
         } catch {
-          setErrorMessage('Transcription failed — check your OpenAI provider')
+          setErrorMessage('Transcription failed — check your Deepgram key in Settings → Speech')
           setStatus('error')
         } finally {
           setInterimText('')
