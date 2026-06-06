@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings, Mic } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -11,6 +11,7 @@ import UserManager from '@/components/settings/UserManager'
 import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
+import SpeechSettings from '@/components/settings/SpeechSettings'
 import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
@@ -19,6 +20,7 @@ const baseTabs = [
   { to: '/settings/themes', label: 'Themes', icon: Palette, key: 'themes' },
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
+  { to: '/settings/speech', label: 'Speech', icon: Mic, key: 'speech' },
   { to: '/settings/general', label: 'General', icon: SlidersHorizontal, key: 'general' },
   { to: '/settings/data', label: 'Data', icon: HardDriveDownload, key: 'data' },
 ]
@@ -169,6 +171,7 @@ export default function SettingsView() {
               </div>
             )}
 
+            {tab === 'speech' && <SpeechSettings />}
             {tab === 'profile' && <ProfileSettings />}
             {tab === 'users' && <UserManager />}
             {tab === 'data' && <DataManager />}

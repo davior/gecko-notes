@@ -194,11 +194,19 @@ export const settingsApi = {
     return client.delete('/settings/themes/activate').then(() => undefined)
   },
 
-  transcribeAudio(providerId: string, blob: Blob): Promise<string> {
+  getSpeechSettings(): Promise<{ deepgram_api_key: string }> {
+    return client.get('/settings/speech').then((r) => r.data)
+  },
+
+  updateSpeechSettings(payload: { deepgram_api_key: string }): Promise<void> {
+    return client.put('/settings/speech', payload).then(() => undefined)
+  },
+
+  transcribeAudio(blob: Blob, model = 'nova-2'): Promise<string> {
     const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
     const form = new FormData()
-    form.append('provider_id', providerId)
     form.append('file', blob, `recording.${ext}`)
-    return client.post('/settings/ai-providers/proxy/whisper', form).then((r) => r.data.text as string)
+    form.append('model', model)
+    return client.post('/settings/speech/transcribe', form).then((r) => r.data.text as string)
   },
 }

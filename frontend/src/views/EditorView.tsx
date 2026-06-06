@@ -127,16 +127,13 @@ export default function EditorView() {
     )
   }, [editor])
 
-  const openAIProvider = settingsStore.aiProviders.find(
-    (p) => (p.provider_type === 'openai' || p.provider_type === 'custom') && p.enabled,
-  )
+  const { deepgramApiKey } = settingsStore
   const transcribeAudio = useCallback(
-    (blob: Blob) => settingsApi.transcribeAudio(openAIProvider!.id, blob),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [openAIProvider?.id],
+    (blob: Blob) => settingsApi.transcribeAudio(blob),
+    [],
   )
   const dictation = useDictation(insertDictatedText, {
-    transcribeAudio: openAIProvider ? transcribeAudio : undefined,
+    transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
   })
 
   useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])

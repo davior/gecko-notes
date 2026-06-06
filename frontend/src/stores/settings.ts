@@ -18,7 +18,9 @@ interface SettingsState {
   themes: Theme[]
   activeThemeId: string | null
   sharedThemeId: string | null
+  deepgramApiKey: string
   loadSettings: () => Promise<void>
+  updateSpeechSettings: (apiKey: string) => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
   createAIProvider: (payload: Parameters<typeof settingsApi.createAIProvider>[0]) => Promise<AIProvider>
@@ -114,15 +116,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   themes: [],
   activeThemeId: null,
   sharedThemeId: null,
+  deepgramApiKey: '',
 
   async loadSettings() {
     set({ loading: true })
     try {
-      const [settings, providers, prompts, themesResp] = await Promise.all([
+      const [settings, providers, prompts, themesResp, speechSettings] = await Promise.all([
         settingsApi.getAll(),
         settingsApi.listAIProviders(),
         settingsApi.listSystemPrompts(),
         settingsApi.listThemes(),
+        settingsApi.getSpeechSettings(),
       ])
       const activeThemeId = (settings['active_theme_id'] as string) ?? null
       const sharedThemeId = (settings['shared_theme_id'] as string) ?? null
@@ -142,10 +146,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         themes: themesResp.data,
         activeThemeId,
         sharedThemeId,
+        deepgramApiKey: speechSettings.deepgram_api_key,
       })
     } finally {
       set({ loading: false })
     }
+  },
+
+  async updateSpeechSettings(apiKey) {
+    await settingsApi.updateSpeechSettings({ deepgram_api_key: apiKey })
+    set({ deepgramApiKey: apiKey ? '***' : '' })
   },
 
   async updateAppSettings(settings) {
@@ -320,6 +330,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       themes: [],
       activeThemeId: null,
       sharedThemeId: null,
+      deepgramApiKey: '',
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },
