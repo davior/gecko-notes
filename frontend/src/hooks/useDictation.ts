@@ -99,6 +99,13 @@ export function useDictation(
   useEffect(() => { onFinalResultRef.current = onFinalResult })
   useEffect(() => { transcribeAudioRef.current = options?.transcribeAudio })
 
+  // Sync status when support becomes available after initial mount
+  // (e.g. Deepgram key loads asynchronously from settings)
+  useEffect(() => {
+    if (isSupported && status === 'unsupported') setStatus('idle')
+    if (!isSupported && status === 'idle') setStatus('unsupported')
+  }, [isSupported, status])
+
   useEffect(() => {
     return () => {
       recognitionRef.current?.abort()
