@@ -39,6 +39,8 @@ interface NotesState {
   createNote: (payload: { title: string; content?: string; category_id: string; tags?: string[] }) => Promise<Note>
   updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; tags?: string[]; summary?: string | null }) => Promise<Note>
   pinNote: (id: string) => Promise<Note>
+  shareNote: (id: string) => Promise<Note>
+  unshareNote: (id: string) => Promise<Note>
   deleteNote: (id: string) => Promise<void>
   clearCurrentNote: () => void
   reset: () => void
@@ -95,6 +97,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           category_id: response.data.category_id,
           tags: response.data.tags,
           is_pinned: response.data.is_pinned,
+          is_shared: response.data.is_shared,
           created_at: response.data.created_at,
           modified_at: response.data.modified_at,
         },
@@ -128,6 +131,24 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1
           return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime()
         }),
+    }))
+    return response.data
+  },
+
+  async shareNote(id) {
+    const response = await notesApi.share(id)
+    set((s) => ({
+      currentNote: s.currentNote?.id === id ? response.data : s.currentNote,
+      notes: s.notes.map((n) => n.id === id ? { ...n, is_shared: true } : n),
+    }))
+    return response.data
+  },
+
+  async unshareNote(id) {
+    const response = await notesApi.unshare(id)
+    set((s) => ({
+      currentNote: s.currentNote?.id === id ? response.data : s.currentNote,
+      notes: s.notes.map((n) => n.id === id ? { ...n, is_shared: false } : n),
     }))
     return response.data
   },

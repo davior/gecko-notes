@@ -18,6 +18,7 @@ from app.routers import notes, categories, media, settings
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
+from app.routers import shared as shared_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.models import AIProvider
 from sqlmodel import Session, select
@@ -31,7 +32,7 @@ PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
 
 
 def _is_public(path: str) -> bool:
-    return path in PUBLIC_PATHS or path.startswith("/media/")
+    return path in PUBLIC_PATHS or path.startswith("/media/") or path.startswith("/api/shared/")
 
 
 def _encrypt_legacy_api_keys(session: Session) -> None:
@@ -79,6 +80,17 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/shared/"):
+            response.headers["Cache-Control"] = "public, max-age=60"
+        else:
+            response.headers["Cache-Control"] = "no-store, private"
+    return response
+
+
+@app.middleware("http")
 async def jwt_auth_middleware(request: Request, call_next):
     if _is_public(request.url.path):
         return await call_next(request)
@@ -111,6 +123,7 @@ app.include_router(categories.router, prefix="/api/categories", tags=["categorie
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])
+app.include_router(shared_router.router, prefix="/api/shared", tags=["shared"])
 
 os.makedirs(MEDIA_DIR, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
@@ -119,3 +132,20 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+def app_config():
+    """Client-facing runtime configuration (env-var driven)."""
+    try:
+        interval = max(1, int(os.getenv("NOTE_VERSION_INTERVAL_MINUTES", "5")))
+    except ValueError:
+        interval = 5
+    try:
+        max_count = max(1, int(os.getenv("NOTE_VERSION_MAX_COUNT", "50")))
+    except ValueError:
+        max_count = 50
+    return {
+        "note_version_interval_minutes": interval,
+        "note_version_max_count": max_count,
+    }

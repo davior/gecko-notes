@@ -57,15 +57,15 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     filename = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join(user_dir, filename)
 
-    contents = await file.read()
+    size = 0
     with open(file_path, "wb") as f:
-        f.write(contents)
+        while chunk := await file.read(1024 * 1024):  # stream in 1 MB chunks
+            f.write(chunk)
+            size += len(chunk)
 
-    size = len(contents)
     mime_type = file.content_type or "application/octet-stream"
 
-    base_url = str(request.base_url).rstrip("/")
-    url = f"{base_url}/media/{user_id}/{filename}"
+    url = f"/media/{user_id}/{filename}"
 
     return DataResponse(data=MediaUploadResponse(
         url=url,

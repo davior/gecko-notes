@@ -48,18 +48,24 @@ cp .env.example .env
 docker compose up -d
 ```
 
-The app will be available at **http://localhost:8080** (or the port you set in `.env`).
+The app will be available at **http://localhost:18081** by default, or whatever port you set in `.env`.
+
+For production behind an external reverse proxy that already provides a `web` Docker network, run:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
 
 ### 3. Access on your LAN
 
-If your machine's IP is `192.168.1.100`, the app is available at `http://192.168.1.100:8080` from any device on the same network.
+If your machine's IP is `192.168.1.100`, the app is available at `http://192.168.1.100:18081` from any device on the same network.
 
 ## Configuration
 
 Edit `.env` before starting:
 
 ```env
-APP_PORT=8080        # Port to expose on your host machine (default: 8080)
+APP_PORT=18081       # Port to expose on your host machine (default: 18081)
 JWT_SECRET_KEY=      # REQUIRED — generate with: openssl rand -hex 32
 CORS_ORIGIN=         # Optional — your public domain, e.g. https://notes.example.com
 ```
@@ -98,10 +104,14 @@ tar -czf gecko-notes-backup-$(date +%Y%m%d).tar.gz data/
 ### Backend (FastAPI)
 
 ```bash
+python3.12 -m venv .venv312
+source .venv312/bin/activate
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
+
+Use Python 3.12 for local backend development. The current backend dependency stack may not start cleanly on newer Python releases such as 3.14.
 
 Local backend runs and Docker Compose both use the same persistent paths by default:
 `./data/db/notes.db` and `./data/media/`.
@@ -151,4 +161,7 @@ docker compose down
 # Update (after pulling new code)
 docker compose build --no-cache
 docker compose up -d
+
+# Production deployment with external proxy network
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```

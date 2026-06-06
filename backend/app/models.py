@@ -30,11 +30,25 @@ class Note(SQLModel, table=True):
     category_id: str = Field(foreign_key="category.id")
     tags: str = Field(default='[]')  # JSON array serialised as string
     is_pinned: bool = Field(default=False)
+    is_shared: bool = Field(default=False)
+    share_token: Optional[str] = Field(default=None, index=True)
     summary: Optional[str] = None
     conversation: Optional[str] = None  # JSON array of ConversationMessage
     created_at: datetime
     modified_at: datetime
     user_id: Optional[str] = Field(default=None, index=True)
+
+
+class NoteVersion(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    note_id: str = Field(foreign_key="note.id", index=True)
+    user_id: str = Field(index=True)
+    title: str
+    content: str  # BlockNote JSON snapshot serialised as string
+    content_checksum: str = Field(default='')  # SHA-256 of content for fast dedup
+    category_id: str
+    tags: str = Field(default='[]')  # JSON array serialised as string
+    created_at: datetime
 
 
 class AIProvider(SQLModel, table=True):

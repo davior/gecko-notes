@@ -55,7 +55,7 @@ class AnthropicProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 2048,
+      max_tokens: 4096,
       messages,
     }
     if (systemPrompt) body.system = systemPrompt
@@ -63,7 +63,11 @@ class AnthropicProvider implements AIService {
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
     const text = response.data?.content?.[0]?.text ?? ''
-    return prefill ? prefill + text : text
+    const full = prefill ? prefill + text : text
+    if (response.data?.stop_reason === 'max_tokens') {
+      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
+    }
+    return full
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -126,14 +130,18 @@ class OpenAIProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 2048,
+      max_tokens: 4096,
       messages,
     }
     if (temperature !== undefined) body.temperature = temperature
 
     const response = await client.post('/settings/ai-providers/proxy/openai', body)
     const text = response.data?.choices?.[0]?.message?.content ?? ''
-    return prefill ? prefill + text : text
+    const full = prefill ? prefill + text : text
+    if (response.data?.choices?.[0]?.finish_reason === 'length') {
+      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
+    }
+    return full
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -202,7 +210,11 @@ class OllamaProvider implements AIService {
 
     const response = await client.post('/settings/ai-providers/proxy/ollama', body)
     const text = response.data?.message?.content ?? ''
-    return prefill ? prefill + text : text
+    const full = prefill ? prefill + text : text
+    if (response.data?.done_reason === 'length') {
+      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
+    }
+    return full
   }
 
   async generateTags(noteContent: string): Promise<string[]> {

@@ -17,6 +17,7 @@ interface SettingsState {
   summaryPrompt: string
   themes: Theme[]
   activeThemeId: string | null
+  sharedThemeId: string | null
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -37,6 +38,7 @@ interface SettingsState {
   deleteTheme: (id: string) => Promise<void>
   activateTheme: (id: string) => Promise<Theme>
   deactivateTheme: () => Promise<void>
+  setSharedTheme: (id: string | null) => Promise<void>
   applyTheme: (theme: Theme | null) => void
   reset: () => void
 }
@@ -56,7 +58,7 @@ function deriveAIService(providers: AIProvider[]): AIService | null {
   return active ? createAIService(active) : null
 }
 
-function applyThemeToDom(theme: Theme | null) {
+export function applyThemeToDom(theme: Theme | null) {
   const root = document.documentElement
   if (!theme) {
     root.removeAttribute('data-glass')
@@ -111,6 +113,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
   themes: [],
   activeThemeId: null,
+  sharedThemeId: null,
 
   async loadSettings() {
     set({ loading: true })
@@ -122,6 +125,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         settingsApi.listThemes(),
       ])
       const activeThemeId = (settings['active_theme_id'] as string) ?? null
+      const sharedThemeId = (settings['shared_theme_id'] as string) ?? null
       const activeTheme = activeThemeId ? themesResp.data.find((t) => t.id === activeThemeId) ?? null : null
       applyThemeToDom(activeTheme)
       set({
@@ -137,6 +141,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
         themes: themesResp.data,
         activeThemeId,
+        sharedThemeId,
       })
     } finally {
       set({ loading: false })
@@ -289,6 +294,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     applyThemeToDom(null)
   },
 
+  async setSharedTheme(id) {
+    await settingsApi.update({ shared_theme_id: id })
+    set({ sharedThemeId: id })
+  },
+
   applyTheme(theme) {
     applyThemeToDom(theme)
   },
@@ -309,6 +319,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       summaryPrompt: DEFAULT_SUMMARY_PROMPT,
       themes: [],
       activeThemeId: null,
+      sharedThemeId: null,
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

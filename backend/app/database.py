@@ -2,7 +2,7 @@ import os
 import uuid as _uuid
 from pathlib import Path
 from sqlmodel import SQLModel, create_engine, Session
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "db" / "notes.db"
@@ -14,6 +14,14 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     echo=False,
 )
+
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragmas(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 
 def _run_migrations():
@@ -129,6 +137,21 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN is_shared BOOLEAN NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN share_token TEXT"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE noteversion ADD COLUMN content_checksum TEXT NOT NULL DEFAULT ''"))
+            conn.commit()
+        except Exception:
+            pass
         # Collapse exact duplicate categories created by seed + import flows.
         try:
             duplicate_groups = conn.execute(text("""
@@ -176,6 +199,21 @@ def _run_migrations():
                     """), {"duplicate_id": duplicate_id})
 
             conn.commit()
+        except Exception:
+            pass
+        # Convert absolute theme image URLs to relative paths for domain portability
+        try:
+            themes = conn.execute(text(
+                "SELECT id, bg_image_url FROM theme WHERE bg_image_url IS NOT NULL AND bg_image_url LIKE '%/media/%'"
+            )).fetchall()
+            for theme_id, url in themes:
+                if url and "/media/" in url:
+                    relative_url = url[url.find("/media/"):]
+                    conn.execute(text(
+                        "UPDATE theme SET bg_image_url = :url WHERE id = :id"
+                    ), {"url": relative_url, "id": theme_id})
+            if themes:
+                conn.commit()
         except Exception:
             pass
 

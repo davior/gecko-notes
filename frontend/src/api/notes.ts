@@ -8,6 +8,7 @@ export interface NoteListItem {
   category_id: string
   tags: string[]
   is_pinned: boolean
+  is_shared: boolean
   created_at: string
   modified_at: string
 }
@@ -19,6 +20,8 @@ export interface Note {
   category_id: string
   tags: string[]
   is_pinned: boolean
+  is_shared: boolean
+  share_token?: string | null
   summary?: string | null
   conversation?: string | null
   created_at: string
@@ -41,6 +44,25 @@ export interface NoteUpdate {
   summary?: string | null
   conversation?: string | null
 }
+
+export interface NoteVersion {
+  id: string
+  note_id: string
+  title: string
+  content: string
+  tags: string[]
+  category_id: string
+  created_at: string
+}
+
+export interface NoteVersionListItem {
+  id: string
+  title: string
+  content_preview: string
+  created_at: string
+}
+
+export type RestoreMode = 'in_place' | 'new_note'
 
 export interface ListNotesParams {
   sort?: 'modified_at' | 'created_at'
@@ -81,5 +103,41 @@ export const notesApi = {
 
   delete(id: string): Promise<void> {
     return client.delete(`/notes/${id}`).then(() => undefined)
+  },
+
+  share(id: string): Promise<{ data: Note }> {
+    return client.post(`/notes/${id}/share`).then((r) => r.data)
+  },
+
+  unshare(id: string): Promise<{ data: Note }> {
+    return client.delete(`/notes/${id}/share`).then((r) => r.data)
+  },
+
+  // Version history
+  createVersion(id: string): Promise<{ data: NoteVersion } | null> {
+    return client.post(`/notes/${id}/versions`).then((r) => (r.status === 204 ? null : r.data))
+  },
+
+  listVersions(id: string): Promise<ListResponse<NoteVersionListItem>> {
+    return client.get(`/notes/${id}/versions`).then((r) => r.data)
+  },
+
+  getVersion(id: string, versionId: string): Promise<{ data: NoteVersion }> {
+    return client.get(`/notes/${id}/versions/${versionId}`).then((r) => r.data)
+  },
+
+  restoreVersion(id: string, versionId: string, mode: RestoreMode): Promise<{ data: Note }> {
+    return client.post(`/notes/${id}/versions/${versionId}/restore`, { mode }).then((r) => r.data)
+  },
+}
+
+export interface AppConfig {
+  note_version_interval_minutes: number
+  note_version_max_count: number
+}
+
+export const configApi = {
+  get(): Promise<AppConfig> {
+    return client.get('/config').then((r) => r.data)
   },
 }

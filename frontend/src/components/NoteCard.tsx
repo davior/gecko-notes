@@ -1,4 +1,4 @@
-import { Pin } from 'lucide-react'
+import { Pin, Globe } from 'lucide-react'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
 import CategoryBadge from './CategoryBadge'
@@ -76,6 +76,14 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
             >
               {relativeDate(note.modified_at)}
             </span>
+            {note.is_shared && (
+              <span title="Shared publicly">
+                <Globe
+                  className="w-3.5 h-3.5 text-green-400"
+                  style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
+                />
+              </span>
+            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-400' : 'text-gray-300 hover:text-gray-500'}`}
@@ -143,6 +151,9 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
           {category ? <CategoryBadge category={category} /> : <span className="text-xs text-gray-400">Uncategorised</span>}
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-gray-400">{relativeDate(note.modified_at)}</span>
+            {note.is_shared && (
+              <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
+            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-500' : 'text-gray-300 hover:text-gray-500'}`}

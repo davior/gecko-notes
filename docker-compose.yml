@@ -10,6 +10,8 @@ services:
       - MEDIA_DIR=/app/data/media
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - CORS_ORIGIN=${CORS_ORIGIN:-}
+      - NOTE_VERSION_INTERVAL_MINUTES=${NOTE_VERSION_INTERVAL_MINUTES:-5}
+      - NOTE_VERSION_MAX_COUNT=${NOTE_VERSION_MAX_COUNT:-50}
     expose:
       - "8000"
     healthcheck:
@@ -18,11 +20,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
   frontend:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-8080}:80"
+      - "${APP_PORT:-18081}:80"
+    environment:
+      - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-1g}
     depends_on:
       - backend
+networks:
+  default:
