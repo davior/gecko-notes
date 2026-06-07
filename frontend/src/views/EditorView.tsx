@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History, Mic, MicOff, Volume2, Square } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History, Mic, MicOff, Volume2, Square, Play, Pause, Download } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote } from '@blocknote/react'
@@ -463,11 +463,29 @@ export default function EditorView() {
     return ''
   }
 
-  function handleReadAloud() {
-    if (tts.isSpeaking) { tts.stop(); return }
-    const text = getSelectedText().trim() || blocksToSpeechText()
+  function speechText(): string {
+    return getSelectedText().trim() || blocksToSpeechText()
+  }
+
+  function speechFilename(): string {
+    const base = (title || 'note').trim().replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'note'
+    return `${base}.mp3`
+  }
+
+  function handlePlayPause() {
+    if (tts.status === 'playing') { tts.pause(); return }
+    if (tts.status === 'paused') { tts.resume(); return }
+    if (tts.status === 'loading') return
+    const text = speechText()
     if (!text) { showToast('Nothing to read'); return }
     tts.play(text)
+  }
+
+  function handleExportAudio() {
+    if (tts.isExporting) return
+    const text = speechText()
+    if (!text) { showToast('Nothing to read'); return }
+    void tts.exportToFile(text, speechFilename())
   }
 
   function addTag() {
@@ -716,29 +734,80 @@ export default function EditorView() {
                 )}
 
                 {deepgramApiKey && (
-                  <button
-                    className={`text-xs px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
-                      tts.isSpeaking
-                        ? 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'
-                        : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200'
-                    }`}
-                    onClick={handleReadAloud}
-                    title={tts.isSpeaking ? 'Stop reading' : 'Read selection or whole note aloud'}
-                  >
-                    {tts.status === 'loading' ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      className={`text-xs px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
+                        tts.isSpeaking
+                          ? 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'
+                          : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200'
+                      }`}
+                      onClick={handlePlayPause}
+                      disabled={tts.status === 'loading'}
+                      title={
+                        tts.status === 'playing' ? 'Pause' : tts.status === 'paused' ? 'Resume' : 'Read selection or whole note aloud'
+                      }
+                    >
+                      {tts.status === 'loading' ? (
+                        <>
+                          <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                          </svg>
+                          Loading...
+                        </>
+                      ) : tts.status === 'playing' ? (
+                        <><Pause className="w-3 h-3" /> Pause</>
+                      ) : tts.status === 'paused' ? (
+                        <><Play className="w-3 h-3" /> Resume</>
+                      ) : (
+                        <><Volume2 className="w-3 h-3" /> Read aloud</>
+                      )}
+                    </button>
+
+                    {tts.isSpeaking && (
                       <>
-                        <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                        </svg>
-                        Loading...
+                        <button
+                          className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors flex items-center gap-1"
+                          onClick={() => tts.stop()}
+                          title="Stop"
+                        >
+                          <Square className="w-3 h-3" /> Stop
+                        </button>
+                        <span className="flex items-center gap-1 px-1" title="Volume">
+                          <Volume2 className="w-3 h-3 text-gray-400" />
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={tts.volume}
+                            className="w-16 accent-blue-600"
+                            onChange={(e) => tts.setVolume(parseFloat(e.target.value))}
+                            aria-label="Volume"
+                          />
+                        </span>
                       </>
-                    ) : tts.isSpeaking ? (
-                      <><Square className="w-3 h-3" /> Stop</>
-                    ) : (
-                      <><Volume2 className="w-3 h-3" /> Read aloud</>
                     )}
-                  </button>
+
+                    <button
+                      className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1"
+                      onClick={handleExportAudio}
+                      disabled={tts.isExporting}
+                      title="Export selection or whole note as an MP3 file"
+                    >
+                      {tts.isExporting ? (
+                        <>
+                          <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                          </svg>
+                          Exporting...
+                        </>
+                      ) : (
+                        <><Download className="w-3 h-3" /> Export MP3</>
+                      )}
+                    </button>
+                  </div>
                 )}
               </div>
 

@@ -7,10 +7,14 @@ export interface UseTextToSpeechReturn {
   status: TTSStatus
   errorMessage: string
   isSpeaking: boolean
+  volume: number
+  setVolume: (v: number) => void
+  isExporting: boolean
   play: (text: string) => void
   pause: () => void
   resume: () => void
   stop: () => void
+  exportToFile: (text: string, filename?: string) => Promise<void>
 }
 
 // Deepgram /v1/speak caps text per request (~2000 chars). Stay comfortably below
@@ -55,6 +59,8 @@ export function chunkText(text: string): string[] {
 export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechReturn {
   const [status, setStatus] = useState<TTSStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
+  const [volume, setVolumeState] = useState(1)
+  const [isExporting, setIsExporting] = useState(false)
 
   const modelRef = useRef(options?.model)
   useEffect(() => { modelRef.current = options?.model })
@@ -65,6 +71,14 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const objectUrlRef = useRef<string | null>(null)
   const prefetchRef = useRef<Promise<Blob> | null>(null)
   const cancelledRef = useRef(false)
+  const volumeRef = useRef(1)
+
+  const setVolume = useCallback((v: number) => {
+    const clamped = Math.min(1, Math.max(0, v))
+    volumeRef.current = clamped
+    if (audioRef.current) audioRef.current.volume = clamped
+    setVolumeState(clamped)
+  }, [])
 
   const revokeUrl = useCallback(() => {
     if (objectUrlRef.current) {
@@ -133,6 +147,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
 
     const audio = audioRef.current ?? new Audio()
     audioRef.current = audio
+    audio.volume = volumeRef.current
     audio.src = url
     audio.onended = () => {
       if (cancelledRef.current) return
@@ -188,13 +203,48 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     }
   }, [status])
 
+  // Synthesize the whole text and download it as a single MP3 file. Chunks are
+  // fetched sequentially (to stay friendly to Deepgram's rate limits) and the
+  // resulting MP3 segments are concatenated — MP3 is frame-based, so simple
+  // byte concatenation plays back correctly.
+  const exportToFile = useCallback(async (text: string, filename = 'note.mp3') => {
+    const chunks = chunkText(text)
+    if (chunks.length === 0) return
+    setIsExporting(true)
+    setErrorMessage('')
+    try {
+      const blobs: Blob[] = []
+      for (const chunk of chunks) {
+        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current))
+      }
+      const combined = new Blob(blobs, { type: 'audio/mpeg' })
+      const url = URL.createObjectURL(combined)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename.toLowerCase().endsWith('.mp3') ? filename : `${filename}.mp3`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      setErrorMessage('Failed to export audio — check your Deepgram key in Settings → Speech')
+      setStatus('error')
+    } finally {
+      setIsExporting(false)
+    }
+  }, [])
+
   return {
     status,
     errorMessage,
     isSpeaking: status === 'loading' || status === 'playing' || status === 'paused',
+    volume,
+    setVolume,
+    isExporting,
     play,
     pause,
     resume,
     stop,
+    exportToFile,
   }
 }
