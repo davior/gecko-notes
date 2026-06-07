@@ -4,7 +4,7 @@ import urllib.parse
 import uuid
 import httpx
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -496,6 +496,85 @@ async def proxy_ollama(
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
     return response.json()
+
+
+# ─── Speech / Deepgram ────────────────────────────────────────────────────────
+
+_DEEPGRAM_KEY = "deepgram_api_key"
+
+
+@router.get("/speech")
+def get_speech_settings(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
+    ).first()
+    has_key = bool(row and row.value and json.loads(row.value))
+    return {"deepgram_api_key": "***" if has_key else ""}
+
+
+class SpeechSettingsUpdate(BaseModel):
+    deepgram_api_key: str
+
+
+@router.put("/speech")
+def update_speech_settings(
+    payload: SpeechSettingsUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    encrypted = encrypt_api_key(payload.deepgram_api_key) if payload.deepgram_api_key else ""
+    existing = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
+    ).first()
+    serialised = json.dumps(encrypted)
+    if existing:
+        existing.value = serialised
+        session.add(existing)
+    else:
+        session.add(UserSetting(user_id=user_id, key=_DEEPGRAM_KEY, value=serialised))
+    session.commit()
+    return {"deepgram_api_key": "***" if payload.deepgram_api_key else ""}
+
+
+@router.post("/speech/transcribe")
+async def transcribe_speech(
+    request: Request,
+    file: UploadFile = File(...),
+    model: str = Form("nova-2"),
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
+    ).first()
+    if not row or not row.value:
+        raise HTTPException(status_code=400, detail={"code": "no_deepgram_key", "message": "Deepgram API key is not configured"})
+
+    api_key = decrypt_api_key(json.loads(row.value))
+    audio_bytes = await file.read()
+    content_type = file.content_type or "audio/webm"
+
+    async with httpx.AsyncClient(timeout=120.0) as http:
+        response = await http.post(
+            f"https://api.deepgram.com/v1/listen?model={model}&smart_format=true",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": content_type,
+            },
+            content=audio_bytes,
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": response.text})
+
+    try:
+        text = response.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=502, detail={"code": "deepgram_parse_error", "message": "Unexpected Deepgram response"})
+
+    return {"text": text}
 
 
 # ─── Themes ───────────────────────────────────────────────────────────────────

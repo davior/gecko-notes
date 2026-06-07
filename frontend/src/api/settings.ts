@@ -193,4 +193,22 @@ export const settingsApi = {
   deactivateTheme(): Promise<void> {
     return client.delete('/settings/themes/activate').then(() => undefined)
   },
+
+  getSpeechSettings(): Promise<{ deepgram_api_key: string }> {
+    return client.get('/settings/speech').then((r) => r.data)
+  },
+
+  updateSpeechSettings(payload: { deepgram_api_key: string }): Promise<void> {
+    return client.put('/settings/speech', payload).then(() => undefined)
+  },
+
+  transcribeAudio(blob: Blob, model = 'nova-2'): Promise<string> {
+    const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
+    const form = new FormData()
+    form.append('file', blob, `recording.${ext}`)
+    form.append('model', model)
+    return client.post('/settings/speech/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data.text as string)
+  },
 }
