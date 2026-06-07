@@ -56,10 +56,24 @@ export function chunkText(text: string): string[] {
   return chunks.filter(Boolean)
 }
 
+// Read-aloud volume is a global, device-level preference shared across notes.
+const VOLUME_KEY = 'tts_volume'
+
+function loadStoredVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_KEY)
+    if (raw !== null) {
+      const v = parseFloat(raw)
+      if (!Number.isNaN(v)) return Math.min(1, Math.max(0, v))
+    }
+  } catch { /* ignore */ }
+  return 1
+}
+
 export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechReturn {
   const [status, setStatus] = useState<TTSStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
-  const [volume, setVolumeState] = useState(1)
+  const [volume, setVolumeState] = useState(loadStoredVolume)
   const [isExporting, setIsExporting] = useState(false)
 
   const modelRef = useRef(options?.model)
@@ -71,13 +85,14 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const objectUrlRef = useRef<string | null>(null)
   const prefetchRef = useRef<Promise<Blob> | null>(null)
   const cancelledRef = useRef(false)
-  const volumeRef = useRef(1)
+  const volumeRef = useRef(volume)
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.min(1, Math.max(0, v))
     volumeRef.current = clamped
     if (audioRef.current) audioRef.current.volume = clamped
     setVolumeState(clamped)
+    try { localStorage.setItem(VOLUME_KEY, String(clamped)) } catch { /* ignore */ }
   }, [])
 
   const revokeUrl = useCallback(() => {
