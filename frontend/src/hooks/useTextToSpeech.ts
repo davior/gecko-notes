@@ -9,6 +9,8 @@ export interface UseTextToSpeechReturn {
   isSpeaking: boolean
   volume: number
   setVolume: (v: number) => void
+  speed: number
+  setSpeed: (s: number) => void
   isExporting: boolean
   play: (text: string) => void
   pause: () => void
@@ -56,8 +58,9 @@ export function chunkText(text: string): string[] {
   return chunks.filter(Boolean)
 }
 
-// Read-aloud volume is a global, device-level preference shared across notes.
+// Read-aloud volume and speed are global, device-level preferences shared across notes.
 const VOLUME_KEY = 'tts_volume'
+const SPEED_KEY = 'tts_speed'
 
 function loadStoredVolume(): number {
   try {
@@ -70,10 +73,22 @@ function loadStoredVolume(): number {
   return 1
 }
 
+function loadStoredSpeed(): number {
+  try {
+    const raw = localStorage.getItem(SPEED_KEY)
+    if (raw !== null) {
+      const v = parseFloat(raw)
+      if (!Number.isNaN(v)) return Math.min(2, Math.max(0.25, v))
+    }
+  } catch { /* ignore */ }
+  return 1
+}
+
 export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechReturn {
   const [status, setStatus] = useState<TTSStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
   const [volume, setVolumeState] = useState(loadStoredVolume)
+  const [speed, setSpeedState] = useState(loadStoredSpeed)
   const [isExporting, setIsExporting] = useState(false)
 
   const modelRef = useRef(options?.model)
@@ -86,6 +101,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const prefetchRef = useRef<Promise<Blob> | null>(null)
   const cancelledRef = useRef(false)
   const volumeRef = useRef(volume)
+  const speedRef = useRef(speed)
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.min(1, Math.max(0, v))
@@ -93,6 +109,13 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     if (audioRef.current) audioRef.current.volume = clamped
     setVolumeState(clamped)
     try { localStorage.setItem(VOLUME_KEY, String(clamped)) } catch { /* ignore */ }
+  }, [])
+
+  const setSpeed = useCallback((s: number) => {
+    const clamped = Math.min(2, Math.max(0.25, s))
+    speedRef.current = clamped
+    setSpeedState(clamped)
+    try { localStorage.setItem(SPEED_KEY, String(clamped)) } catch { /* ignore */ }
   }, [])
 
   const revokeUrl = useCallback(() => {
@@ -129,7 +152,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const fetchChunk = useCallback((i: number): Promise<Blob> | null => {
     const chunk = queueRef.current[i]
     if (chunk === undefined) return null
-    return settingsApi.synthesizeSpeech(chunk, modelRef.current)
+    return settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current)
   }, [])
 
   const playIndex = useCallback(async (i: number) => {
@@ -239,7 +262,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     try {
       const blobs: Blob[] = []
       for (const chunk of chunks) {
-        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current))
+        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current))
       }
       const combined = new Blob(blobs, { type: 'audio/mpeg' })
       const url = URL.createObjectURL(combined)
@@ -264,6 +287,8 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     isSpeaking: status === 'loading' || status === 'playing' || status === 'paused',
     volume,
     setVolume,
+    speed,
+    setSpeed,
     isExporting,
     play,
     pause,

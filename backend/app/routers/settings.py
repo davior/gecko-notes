@@ -655,6 +655,7 @@ async def transcribe_speech(
 class TTSRequest(BaseModel):
     text: str
     model: str = "aura-2-thalia-en"
+    speed: float = 1.0
 
 
 @router.get("/speech/voices")
@@ -688,7 +689,7 @@ async def synthesize_speech(
 
     async with httpx.AsyncClient(timeout=120.0) as http:
         response = await http.post(
-            f"https://api.deepgram.com/v1/speak?model={payload.model}",
+            f"https://api.deepgram.com/v1/speak?model={payload.model}&speed={payload.speed}",
             headers={
                 "Authorization": f"Token {api_key}",
                 "Content-Type": "application/json",

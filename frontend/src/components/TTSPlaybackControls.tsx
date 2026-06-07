@@ -1,15 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Play, Pause, Square, Volume2, VolumeX, GripVertical } from 'lucide-react'
+import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff } from 'lucide-react'
 import type { UseTextToSpeechReturn } from '@/hooks/useTextToSpeech'
+import type { UseDictationReturn } from '@/hooks/useDictation'
 
 const POS_KEY = 'tts_controls_pos'
-const PANEL_FALLBACK_W = 220
+const PANEL_FALLBACK_W = 280
 const PANEL_FALLBACK_H = 44
 
 interface Props {
   tts: UseTextToSpeechReturn
   anchorRef: React.RefObject<HTMLElement>
   onPlayPause: () => void
+  dictation?: UseDictationReturn
+  onDictationToggle?: () => void
+  ttsSpeed?: number
+  onTtsSpeedChange?: (speed: number) => void
 }
 
 function clamp(v: number, min: number, max: number) {
@@ -22,7 +27,7 @@ function clamp(v: number, min: number, max: number) {
  * volume control. Its position is remembered across notes in localStorage and
  * defaults to sitting next to the export button.
  */
-export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause }: Props) {
+export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dictation, onDictationToggle, ttsSpeed = 1, onTtsSpeedChange }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   const lastVolRef = useRef(tts.volume || 1)
@@ -172,6 +177,37 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause }: Pro
           onChange={(e) => tts.setVolume(parseFloat(e.target.value))}
           aria-label="Volume"
         />
+      </div>
+
+      {dictation && onDictationToggle && dictation.isSupported && (
+        <button
+          className="p-1.5 rounded-full text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-50"
+          onClick={onDictationToggle}
+          disabled={dictation.status === 'transcribing'}
+          title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+          aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+        >
+          {dictation.status === 'recording' ? (
+            <MicOff className="w-4 h-4 text-red-500" />
+          ) : (
+            <Mic className="w-4 h-4" />
+          )}
+        </button>
+      )}
+
+      <div className="flex items-center gap-1 pl-1 pr-1.5">
+        <input
+          type="range"
+          min={0.25}
+          max={2}
+          step={0.05}
+          value={ttsSpeed}
+          className="w-16 accent-blue-600"
+          onChange={(e) => onTtsSpeedChange?.(parseFloat(e.target.value))}
+          title={`Speed: ${ttsSpeed.toFixed(2)}x`}
+          aria-label="TTS Speed"
+        />
+        <span className="text-xs text-gray-400 dark:text-gray-500 w-8 text-right">{ttsSpeed.toFixed(2)}x</span>
       </div>
     </div>
   )

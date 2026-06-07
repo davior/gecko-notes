@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History, Mic, MicOff } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote } from '@blocknote/react'
@@ -702,41 +702,6 @@ export default function EditorView() {
                   {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
                 </button>
 
-                {dictation.isSupported && (
-                  <button
-                    className={`text-xs px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
-                      dictation.status === 'recording'
-                        ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100'
-                        : dictation.status === 'transcribing'
-                          ? 'border-yellow-200 bg-yellow-50 text-yellow-600 cursor-not-allowed'
-                          : 'border-gray-200 text-gray-500 hover:bg-green-50 hover:text-green-600 hover:border-green-200'
-                    }`}
-                    onClick={dictation.toggleDictation}
-                    disabled={dictation.status === 'transcribing'}
-                    title={dictation.status === 'recording' ? 'Stop dictation' : dictation.status === 'transcribing' ? 'Transcribing...' : 'Start dictation'}
-                  >
-                    {dictation.status === 'recording' ? (
-                      <>
-                        <MicOff className="w-3 h-3" />
-                        <span className="relative flex h-1.5 w-1.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500" />
-                        </span>
-                        Stop
-                      </>
-                    ) : dictation.status === 'transcribing' ? (
-                      <>
-                        <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                        </svg>
-                        Transcribing...
-                      </>
-                    ) : (
-                      <><Mic className="w-3 h-3" /> Dictate</>
-                    )}
-                  </button>
-                )}
 
               </div>
 
@@ -745,6 +710,10 @@ export default function EditorView() {
                   tts={tts}
                   anchorRef={exportAnchorRef}
                   onPlayPause={handlePlayPause}
+                  dictation={dictation}
+                  onDictationToggle={dictation.toggleDictation}
+                  ttsSpeed={tts.speed}
+                  onTtsSpeedChange={tts.setSpeed}
                 />
               )}
 

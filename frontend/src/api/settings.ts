@@ -259,8 +259,8 @@ export const settingsApi = {
     }).then((r) => r.data.text as string)
   },
 
-  synthesizeSpeech(text: string, model = 'aura-2-thalia-en'): Promise<Blob> {
-    return client.post('/settings/speech/tts', { text, model }, {
+  synthesizeSpeech(text: string, model = 'aura-2-thalia-en', speed = 1): Promise<Blob> {
+    return client.post('/settings/speech/tts', { text, model, speed }, {
       responseType: 'arraybuffer',
     }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
   },
