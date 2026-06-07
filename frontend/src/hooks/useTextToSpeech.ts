@@ -115,8 +115,10 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     setStatus('idle')
   }, [revokeUrl])
 
-  // Stop and clean up on unmount.
+  // Stop and clean up on unmount. Reset the cancelled flag on (re)mount so a
+  // StrictMode unmount/remount in dev can't leave playback permanently cancelled.
   useEffect(() => {
+    cancelledRef.current = false
     return () => {
       cancelledRef.current = true
       audioRef.current?.pause()
@@ -163,7 +165,11 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     const audio = audioRef.current ?? new Audio()
     audioRef.current = audio
     audio.volume = volumeRef.current
-    audio.src = url
+    // Drive the 'playing' status from the element's own event rather than the
+    // play() promise — on a freshly created element the promise can resolve in
+    // a way that races the status update, leaving the first play stuck showing
+    // "play" with Stop disabled even though audio is playing.
+    audio.onplaying = () => { if (!cancelledRef.current) setStatus('playing') }
     audio.onended = () => {
       if (cancelledRef.current) return
       indexRef.current = i + 1
@@ -174,12 +180,15 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
         setStatus('idle')
       }
     }
+    audio.src = url
 
     try {
       await audio.play()
-      if (!cancelledRef.current) setStatus('playing')
     } catch {
       if (cancelledRef.current) return
+      // Some browsers reject play() spuriously even though playback started;
+      // only surface an error if audio is not actually playing.
+      if (!audio.paused) return
       setErrorMessage('Playback was blocked by the browser')
       setStatus('error')
     }
