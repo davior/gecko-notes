@@ -2,15 +2,16 @@ import ipaddress
 import json
 import urllib.parse
 import uuid
+from datetime import datetime, timedelta
 import httpx
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session
-from app.models import AIProvider, AppSetting, User, UserSetting, SystemPrompt, Theme
+from app.models import AIProvider, AppSetting, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
     DataResponse, ListResponse, SettingsUpdate,
@@ -26,6 +27,30 @@ def _get_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user_id
+
+
+def _record_usage(
+    session: Session,
+    user_id: str,
+    kind: str,
+    model: str,
+    units: int,
+    unit_type: str,
+) -> None:
+    """Record an external-API usage event. Best-effort: never breaks the request."""
+    try:
+        session.add(UsageEvent(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            kind=kind,
+            model=model or "",
+            units=int(units or 0),
+            unit_type=unit_type or "",
+            created_at=datetime.utcnow(),
+        ))
+        session.commit()
+    except Exception:
+        session.rollback()
 
 
 def _require_safe_external_url(url: str) -> None:
@@ -407,7 +432,15 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
-    return response.json()
+    data = response.json()
+    try:
+        usage = data.get("usage") or {}
+        tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+        if tokens:
+            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+    except Exception:
+        pass
+    return data
 
 
 class OpenAIProxyRequest(BaseModel):
@@ -453,7 +486,15 @@ async def proxy_openai(
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
-    return response.json()
+    data = response.json()
+    try:
+        usage = data.get("usage") or {}
+        tokens = int(usage.get("total_tokens", 0))
+        if tokens:
+            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+    except Exception:
+        pass
+    return data
 
 
 class OllamaProxyRequest(BaseModel):
@@ -495,12 +536,35 @@ async def proxy_ollama(
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
-    return response.json()
+    data = response.json()
+    try:
+        tokens = int(data.get("prompt_eval_count", 0)) + int(data.get("eval_count", 0))
+        if tokens:
+            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+    except Exception:
+        pass
+    return data
 
 
 # ─── Speech / Deepgram ────────────────────────────────────────────────────────
 
 _DEEPGRAM_KEY = "deepgram_api_key"
+
+# Curated set of Deepgram Aura / Aura-2 English voices exposed in the UI.
+_TTS_VOICES = {
+    "aura-2-thalia-en",
+    "aura-2-andromeda-en",
+    "aura-2-apollo-en",
+    "aura-2-arcas-en",
+    "aura-2-aries-en",
+    "aura-asteria-en",
+    "aura-luna-en",
+    "aura-stella-en",
+    "aura-orion-en",
+    "aura-zeus-en",
+}
+
+_TTS_MAX_CHARS = 2000
 
 
 @router.get("/speech")
@@ -569,12 +633,120 @@ async def transcribe_speech(
     if not response.is_success:
         raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": response.text})
 
+    body = response.json()
     try:
-        text = response.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+        transcript = body["results"]["channels"][0]["alternatives"][0]["transcript"]
     except (KeyError, IndexError):
         raise HTTPException(status_code=502, detail={"code": "deepgram_parse_error", "message": "Unexpected Deepgram response"})
 
-    return {"text": text}
+    # Record STT usage by audio duration (how Deepgram bills), falling back to chars.
+    try:
+        duration = body.get("metadata", {}).get("duration")
+        if duration is not None:
+            _record_usage(session, user_id, "stt", model, round(float(duration)), "seconds")
+        else:
+            _record_usage(session, user_id, "stt", model, len(transcript), "chars")
+    except Exception:
+        pass
+
+    return {"text": transcript}
+
+
+class TTSRequest(BaseModel):
+    text: str
+    model: str = "aura-2-thalia-en"
+
+
+@router.get("/speech/voices")
+def list_tts_voices():
+    """Curated Deepgram TTS voices available for read-aloud."""
+    return {"voices": sorted(_TTS_VOICES)}
+
+
+@router.post("/speech/tts")
+async def synthesize_speech(
+    payload: TTSRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
+    ).first()
+    if not row or not row.value:
+        raise HTTPException(status_code=400, detail={"code": "no_deepgram_key", "message": "Deepgram API key is not configured"})
+
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
+    if len(text) > _TTS_MAX_CHARS:
+        raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
+    if payload.model not in _TTS_VOICES:
+        raise HTTPException(status_code=400, detail={"code": "invalid_voice", "message": "Unknown TTS voice"})
+
+    api_key = decrypt_api_key(json.loads(row.value))
+
+    async with httpx.AsyncClient(timeout=120.0) as http:
+        response = await http.post(
+            f"https://api.deepgram.com/v1/speak?model={payload.model}",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"text": text},
+        )
+
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": response.text})
+
+    _record_usage(session, user_id, "tts", payload.model, len(text), "chars")
+    return Response(content=response.content, media_type="audio/mpeg")
+
+
+@router.get("/usage")
+def get_usage(request: Request, days: int = 30, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    days = max(1, min(days, 365))
+    since = datetime.utcnow() - timedelta(days=days)
+
+    events = session.exec(
+        select(UsageEvent).where(
+            UsageEvent.user_id == user_id,
+            UsageEvent.created_at >= since,
+        )
+    ).all()
+
+    totals: Dict[str, Dict[str, Any]] = {}
+    by_day: Dict[tuple, int] = {}
+    for ev in events:
+        t = totals.setdefault(ev.kind, {"kind": ev.kind, "count": 0, "units": 0, "unit_type": ev.unit_type})
+        t["count"] += 1
+        t["units"] += ev.units
+        if not t["unit_type"]:
+            t["unit_type"] = ev.unit_type
+        day = ev.created_at.date().isoformat()
+        by_day[(day, ev.kind)] = by_day.get((day, ev.kind), 0) + ev.units
+
+    recent = sorted(events, key=lambda e: e.created_at, reverse=True)[:50]
+
+    return {
+        "days": days,
+        "totals_by_kind": list(totals.values()),
+        "by_day": [
+            {"date": day, "kind": kind, "units": units}
+            for (day, kind), units in sorted(by_day.items())
+        ],
+        "recent": [
+            {
+                "kind": e.kind,
+                "model": e.model,
+                "units": e.units,
+                "unit_type": e.unit_type,
+                "created_at": e.created_at.replace(tzinfo=None).isoformat() + "Z",
+            }
+            for e in recent
+        ],
+    }
 
 
 # ─── Themes ───────────────────────────────────────────────────────────────────

@@ -74,6 +74,16 @@ class UserSetting(SQLModel, table=True):
     value: str  # JSON-serialised value
 
 
+class UsageEvent(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    kind: str = Field(index=True)        # "tts" | "stt" | "ai"
+    model: str = Field(default="")
+    units: int = Field(default=0)        # chars (tts) / seconds (stt) / tokens (ai)
+    unit_type: str = Field(default="")   # "chars" | "seconds" | "tokens"
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class SystemPrompt(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

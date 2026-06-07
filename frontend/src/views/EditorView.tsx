@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History, Mic, MicOff } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History, Mic, MicOff, Volume2, Square } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote } from '@blocknote/react'
@@ -25,6 +25,7 @@ import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { notesApi, configApi, type Note } from '@/api/notes'
 import { useDictation } from '@/hooks/useDictation'
+import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -135,6 +136,7 @@ export default function EditorView() {
   const dictation = useDictation(insertDictatedText, {
     transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
   })
+  const tts = useTextToSpeech({ model: settingsStore.ttsModel })
 
   useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])
   useEffect(() => {
@@ -151,6 +153,11 @@ export default function EditorView() {
       showToast(dictation.errorMessage)
     }
   }, [dictation.status, dictation.errorMessage])
+  useEffect(() => {
+    if (tts.status === 'error' && tts.errorMessage) {
+      showToast(tts.errorMessage)
+    }
+  }, [tts.status, tts.errorMessage])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
@@ -369,6 +376,26 @@ export default function EditorView() {
       for (const block of blocks) { processBlock(block as unknown as Record<string, unknown>); texts.push('\n') }
       return texts.join('').trim()
     } catch { return '' }
+  }
+
+  function getSelectedText(): string {
+    if (!editor) return ''
+    try {
+      // BlockNote exposes getSelectedText() for the current inline selection.
+      const ed = editor as unknown as { getSelectedText?: () => string; getSelection?: () => { blocks?: unknown[] } | undefined }
+      const direct = ed.getSelectedText?.()
+      if (typeof direct === 'string' && direct.trim()) return direct
+      const selection = ed.getSelection?.()
+      if (selection?.blocks?.length) return extractPlainText(selection.blocks)
+    } catch { /* fall through */ }
+    return ''
+  }
+
+  function handleReadAloud() {
+    if (tts.isSpeaking) { tts.stop(); return }
+    const text = getSelectedText().trim() || extractPlainText()
+    if (!text) { showToast('Nothing to read'); return }
+    tts.play(text)
   }
 
   function addTag() {
@@ -612,6 +639,32 @@ export default function EditorView() {
                       </>
                     ) : (
                       <><Mic className="w-3 h-3" /> Dictate</>
+                    )}
+                  </button>
+                )}
+
+                {deepgramApiKey && (
+                  <button
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
+                      tts.isSpeaking
+                        ? 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'
+                        : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200'
+                    }`}
+                    onClick={handleReadAloud}
+                    title={tts.isSpeaking ? 'Stop reading' : 'Read selection or whole note aloud'}
+                  >
+                    {tts.status === 'loading' ? (
+                      <>
+                        <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                        Loading...
+                      </>
+                    ) : tts.isSpeaking ? (
+                      <><Square className="w-3 h-3" /> Stop</>
+                    ) : (
+                      <><Volume2 className="w-3 h-3" /> Read aloud</>
                     )}
                   </button>
                 )}
