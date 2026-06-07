@@ -121,7 +121,7 @@ export default function EditorView() {
 
   const insertDictatedText = useCallback((text: string) => {
     if (!editor || !text.trim()) return
-    const block = { type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }
+    const block: PartialBlock = { type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }
     // When the editor has focus, insert at the cursor position. Otherwise (e.g.
     // dictation started while focus was elsewhere) append to the end of the note.
     if (editor.isFocused()) {
