@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2 } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
+import { useDictation } from '@/hooks/useDictation'
+import { settingsApi } from '@/api/settings'
 
 export interface ConversationMessage {
   id: string
@@ -43,6 +45,7 @@ export default function AIConversationPanel({
   onAddToNote,
 }: AIConversationPanelProps) {
   const aiService = useSettingsStore((s) => s.aiService)
+  const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -64,6 +67,26 @@ export default function AIConversationPanel({
   const isMobileRef = useRef(isMobile)
   const panelWidthRef = useRef(panelWidth)
   const panelHeightRef = useRef(panelHeight)
+
+  const handleDictationResult = useCallback((text: string) => {
+    // Append dictated text to input and submit immediately
+    const newInput = input.trim() ? `${input.trim()} ${text}` : text
+    setInput(newInput)
+    // Use setTimeout to ensure state updates before calling handleSend
+    setTimeout(() => {
+      if (newInput.trim() && !loading && aiService) {
+        void handleSend(newInput, conversation)
+      }
+    }, 0)
+  }, [input, loading, aiService, conversation])
+
+  const transcribeAudio = useCallback(
+    (blob: Blob) => settingsApi.transcribeAudio(blob),
+    [],
+  )
+  const dictation = useDictation(handleDictationResult, {
+    transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
+  })
 
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   useEffect(() => { panelWidthRef.current = panelWidth }, [panelWidth])
@@ -412,6 +435,23 @@ export default function AIConversationPanel({
       {aiService && (
         <div className="shrink-0 border-t border-gray-100 dark:border-gray-700 p-2">
           <div className="flex items-end gap-2">
+            {dictation.isSupported && (
+              <button
+                className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
+                onClick={dictation.toggleDictation}
+                // Keep input focus when toggling dictation so text lands in the input
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={loading}
+                title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+                aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+              >
+                {dictation.status === 'recording' ? (
+                  <MicOff className="w-4 h-4 text-red-500" />
+                ) : (
+                  <Mic className="w-4 h-4" />
+                )}
+              </button>
+            )}
             <textarea
               ref={inputRef}
               value={input}

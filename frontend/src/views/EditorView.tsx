@@ -121,12 +121,17 @@ export default function EditorView() {
 
   const insertDictatedText = useCallback((text: string) => {
     if (!editor || !text.trim()) return
-    const cursorBlock = editor.getTextCursorPosition().block
-    editor.insertBlocks(
-      [{ type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }],
-      cursorBlock,
-      'after',
-    )
+    const block = { type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }
+    // When the editor has focus, insert at the cursor position. Otherwise (e.g.
+    // dictation started while focus was elsewhere) append to the end of the note.
+    if (editor.isFocused()) {
+      const cursorBlock = editor.getTextCursorPosition().block
+      editor.insertBlocks([block], cursorBlock, 'after')
+    } else {
+      const doc = editor.document
+      const lastBlock = doc[doc.length - 1]
+      if (lastBlock) editor.insertBlocks([block], lastBlock, 'after')
+    }
   }, [editor])
 
   const { deepgramApiKey } = settingsStore
