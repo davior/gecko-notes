@@ -18,7 +18,10 @@ interface SettingsState {
   themes: Theme[]
   activeThemeId: string | null
   sharedThemeId: string | null
+  deepgramApiKey: string
+  ttsModel: string
   loadSettings: () => Promise<void>
+  updateSpeechSettings: (apiKey: string) => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
   createAIProvider: (payload: Parameters<typeof settingsApi.createAIProvider>[0]) => Promise<AIProvider>
@@ -114,6 +117,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   themes: [],
   activeThemeId: null,
   sharedThemeId: null,
+  deepgramApiKey: '',
+  ttsModel: 'aura-2-thalia-en',
 
   async loadSettings() {
     set({ loading: true })
@@ -139,6 +144,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
+        ttsModel: (settings['tts_model'] as string) || 'aura-2-thalia-en',
         themes: themesResp.data,
         activeThemeId,
         sharedThemeId,
@@ -146,6 +152,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } finally {
       set({ loading: false })
     }
+    // Speech settings are loaded separately so a missing endpoint never
+    // breaks the rest of the settings load (e.g. old backend in dev).
+    try {
+      const speechSettings = await settingsApi.getSpeechSettings()
+      set({ deepgramApiKey: speechSettings.deepgram_api_key })
+    } catch { /* no speech endpoint — deepgramApiKey stays '' */ }
+  },
+
+  async updateSpeechSettings(apiKey) {
+    await settingsApi.updateSpeechSettings({ deepgram_api_key: apiKey })
+    set({ deepgramApiKey: apiKey ? '***' : '' })
   },
 
   async updateAppSettings(settings) {
@@ -156,6 +173,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
       aiPrefill: (updated['ai_prefill'] as string) ?? '',
       summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
+      ttsModel: (updated['tts_model'] as string) || 'aura-2-thalia-en',
     })
   },
 
@@ -320,6 +338,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       themes: [],
       activeThemeId: null,
       sharedThemeId: null,
+      deepgramApiKey: '',
+      ttsModel: 'aura-2-thalia-en',
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

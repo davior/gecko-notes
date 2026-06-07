@@ -216,6 +216,23 @@ def _run_migrations():
                 conn.commit()
         except Exception:
             pass
+        # Usage tracking table (TTS / STT / AI). create_all also creates this, but
+        # an explicit idempotent create matches the codebase's defensive convention.
+        try:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS usageevent (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    kind TEXT,
+                    model TEXT,
+                    units INTEGER,
+                    unit_type TEXT,
+                    created_at TEXT
+                )
+            """))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

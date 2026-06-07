@@ -1,5 +1,52 @@
 import client from './client'
 
+export interface TTSVoice {
+  id: string
+  label: string
+}
+
+// Curated Deepgram Aura / Aura-2 English voices (mirrors backend `_TTS_VOICES`).
+export const TTS_VOICES: TTSVoice[] = [
+  { id: 'aura-2-thalia-en', label: 'Thalia (Aura-2, female)' },
+  { id: 'aura-2-andromeda-en', label: 'Andromeda (Aura-2, female)' },
+  { id: 'aura-2-apollo-en', label: 'Apollo (Aura-2, male)' },
+  { id: 'aura-2-arcas-en', label: 'Arcas (Aura-2, male)' },
+  { id: 'aura-2-aries-en', label: 'Aries (Aura-2, male)' },
+  { id: 'aura-asteria-en', label: 'Asteria (Aura, female)' },
+  { id: 'aura-luna-en', label: 'Luna (Aura, female)' },
+  { id: 'aura-stella-en', label: 'Stella (Aura, female)' },
+  { id: 'aura-orion-en', label: 'Orion (Aura, male)' },
+  { id: 'aura-zeus-en', label: 'Zeus (Aura, male)' },
+]
+
+export interface UsageTotal {
+  kind: string
+  count: number
+  units: number
+  unit_type: string
+}
+
+export interface UsageByDay {
+  date: string
+  kind: string
+  units: number
+}
+
+export interface UsageEvent {
+  kind: string
+  model: string
+  units: number
+  unit_type: string
+  created_at: string
+}
+
+export interface UsageSummary {
+  days: number
+  totals_by_kind: UsageTotal[]
+  by_day: UsageByDay[]
+  recent: UsageEvent[]
+}
+
 export interface SystemPrompt {
   id: string
   name: string
@@ -192,5 +239,33 @@ export const settingsApi = {
 
   deactivateTheme(): Promise<void> {
     return client.delete('/settings/themes/activate').then(() => undefined)
+  },
+
+  getSpeechSettings(): Promise<{ deepgram_api_key: string }> {
+    return client.get('/settings/speech').then((r) => r.data)
+  },
+
+  updateSpeechSettings(payload: { deepgram_api_key: string }): Promise<void> {
+    return client.put('/settings/speech', payload).then(() => undefined)
+  },
+
+  transcribeAudio(blob: Blob, model = 'nova-2'): Promise<string> {
+    const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
+    const form = new FormData()
+    form.append('file', blob, `recording.${ext}`)
+    form.append('model', model)
+    return client.post('/settings/speech/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data.text as string)
+  },
+
+  synthesizeSpeech(text: string, model = 'aura-2-thalia-en', speed = 1): Promise<Blob> {
+    return client.post('/settings/speech/tts', { text, model, speed }, {
+      responseType: 'arraybuffer',
+    }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
+  },
+
+  getUsage(days = 30): Promise<UsageSummary> {
+    return client.get('/settings/usage', { params: { days } }).then((r) => r.data)
   },
 }

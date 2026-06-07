@@ -17,12 +17,16 @@ import TagChip from '@/components/TagChip'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel, { type ConversationMessage } from '@/components/AIConversationPanel'
+import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
+import { settingsApi } from '@/api/settings'
 import { notesApi, configApi, type Note } from '@/api/notes'
+import { useDictation } from '@/hooks/useDictation'
+import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -115,6 +119,32 @@ export default function EditorView() {
     },
   })
 
+  const insertDictatedText = useCallback((text: string) => {
+    if (!editor || !text.trim()) return
+    const block: PartialBlock = { type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }
+    // When the editor has focus, insert at the cursor position. Otherwise (e.g.
+    // dictation started while focus was elsewhere) append to the end of the note.
+    if (editor.isFocused()) {
+      const cursorBlock = editor.getTextCursorPosition().block
+      editor.insertBlocks([block], cursorBlock, 'after')
+    } else {
+      const doc = editor.document
+      const lastBlock = doc[doc.length - 1]
+      if (lastBlock) editor.insertBlocks([block], lastBlock, 'after')
+    }
+  }, [editor])
+
+  const { deepgramApiKey } = settingsStore
+  const transcribeAudio = useCallback(
+    (blob: Blob) => settingsApi.transcribeAudio(blob),
+    [],
+  )
+  const dictation = useDictation(insertDictatedText, {
+    transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
+  })
+  const tts = useTextToSpeech({ model: settingsStore.ttsModel })
+  const exportAnchorRef = useRef<HTMLSpanElement>(null)
+
   useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])
   useEffect(() => {
     try { localStorage.setItem('ai-panel-open', String(panelOpen)) } catch { /* noop */ }
@@ -125,6 +155,16 @@ export default function EditorView() {
   useEffect(() => { latestDefaultCategoryId.current = defaultCategoryId }, [defaultCategoryId])
   useEffect(() => { latestIsNew.current = isNew }, [isNew])
   useEffect(() => { latestNoteId.current = noteId }, [noteId])
+  useEffect(() => {
+    if (dictation.status === 'error' && dictation.errorMessage) {
+      showToast(dictation.errorMessage)
+    }
+  }, [dictation.status, dictation.errorMessage])
+  useEffect(() => {
+    if (tts.status === 'error' && tts.errorMessage) {
+      showToast(tts.errorMessage)
+    }
+  }, [tts.status, tts.errorMessage])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
@@ -345,6 +385,115 @@ export default function EditorView() {
     } catch { return '' }
   }
 
+  // Build well-punctuated text for text-to-speech. Unlike extractPlainText (used
+  // for AI context), this terminates list items, table rows and headings with
+  // punctuation so the TTS engine inserts natural pauses instead of reading the
+  // note as one run-on line.
+  function blocksToSpeechText(blocks: unknown[] | undefined = editor?.document): string {
+    if (!blocks) return ''
+    try {
+      const lines: string[] = []
+
+      function inlineText(content: unknown): string {
+        if (!Array.isArray(content)) return ''
+        let out = ''
+        for (const item of content) {
+          if (typeof item !== 'object' || item === null) continue
+          const rec = item as Record<string, unknown>
+          if (rec.type === 'text') out += String(rec.text ?? '')
+          else if (Array.isArray(rec.content)) out += inlineText(rec.content) // e.g. links
+        }
+        return out
+      }
+
+      // Append sentence-ending punctuation unless the text already ends with some.
+      function terminate(text: string, end = '.'): string {
+        const t = text.trim()
+        if (!t) return ''
+        return /[.!?:,;]$/.test(t) ? t : t + end
+      }
+
+      function processBlock(block: Record<string, unknown>) {
+        const type = block.type
+        const content = block.content
+
+        // Tables: read each row as a comma-separated sentence so cells and rows
+        // are clearly delineated.
+        if (type === 'table' && content && typeof content === 'object') {
+          const rows = (content as Record<string, unknown>).rows
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const cells = (row as Record<string, unknown>)?.cells
+              if (!Array.isArray(cells)) continue
+              const cellTexts = cells
+                .map((cell) =>
+                  // A cell is either inline content (array) or a TableCell object.
+                  Array.isArray(cell)
+                    ? inlineText(cell).trim()
+                    : inlineText((cell as Record<string, unknown>)?.content).trim(),
+                )
+                .filter(Boolean)
+              if (cellTexts.length) lines.push(terminate(cellTexts.join(', ')))
+            }
+          }
+          return
+        }
+
+        const text = inlineText(content).trim()
+        if (text) lines.push(terminate(text, type === 'heading' ? ':' : '.'))
+
+        if (Array.isArray(block.children)) {
+          for (const child of block.children) processBlock(child as Record<string, unknown>)
+        }
+      }
+
+      for (const block of blocks) processBlock(block as Record<string, unknown>)
+      return lines.join('\n')
+    } catch { return '' }
+  }
+
+  function getSelectedText(): string {
+    if (!editor) return ''
+    try {
+      const ed = editor as unknown as { getSelectedText?: () => string; getSelection?: () => { blocks?: unknown[] } | undefined }
+      // Prefer block-based extraction so multi-item / table selections are
+      // punctuated; getSelection() returns blocks only for multi-block selections.
+      const selection = ed.getSelection?.()
+      if (selection?.blocks?.length) {
+        const fromBlocks = blocksToSpeechText(selection.blocks)
+        if (fromBlocks.trim()) return fromBlocks
+      }
+      // Single-block / inline selection: the exact highlighted substring.
+      const direct = ed.getSelectedText?.()
+      if (typeof direct === 'string' && direct.trim()) return direct
+    } catch { /* fall through */ }
+    return ''
+  }
+
+  function speechText(): string {
+    return getSelectedText().trim() || blocksToSpeechText()
+  }
+
+  function speechFilename(): string {
+    const base = (title || 'note').trim().replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'note'
+    return `${base}.mp3`
+  }
+
+  function handlePlayPause() {
+    if (tts.status === 'playing') { tts.pause(); return }
+    if (tts.status === 'paused') { tts.resume(); return }
+    if (tts.status === 'loading') return
+    const text = speechText()
+    if (!text) { showToast('Nothing to read'); return }
+    tts.play(text)
+  }
+
+  async function handleExportAudio() {
+    const text = speechText()
+    if (!text) { showToast('Nothing to read'); return }
+    await tts.exportToFile(text, speechFilename())
+  }
+
   function addTag() {
     const raw = newTagInput.trim().replace(/^#/, '').toLowerCase()
     if (raw && !tags.includes(raw)) setTags((t) => [...t, raw])
@@ -466,7 +615,11 @@ export default function EditorView() {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex-1" />
-          {note && <ExportMenu note={note} onToast={showToast} />}
+          {note && (
+            <span ref={exportAnchorRef}>
+              <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
+            </span>
+          )}
           {note && <ShareMenu note={note} onToast={showToast} />}
           <button
             className="btn-ghost p-2"
@@ -553,7 +706,21 @@ export default function EditorView() {
                 >
                   {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
                 </button>
+
+
               </div>
+
+              {deepgramApiKey && (
+                <TTSPlaybackControls
+                  tts={tts}
+                  anchorRef={exportAnchorRef}
+                  onPlayPause={handlePlayPause}
+                  dictation={dictation}
+                  onDictationToggle={dictation.toggleDictation}
+                  ttsSpeed={tts.speed}
+                  onTtsSpeedChange={tts.setSpeed}
+                />
+              )}
 
               {summary && (
                 <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -597,6 +764,12 @@ export default function EditorView() {
                 {note && <span>Created {formatDate(note.created_at)}</span>}
                 {note && <span>Modified {formatDate(note.modified_at)}</span>}
               </div>
+
+              {dictation.interimText && (
+                <p className="text-xs text-gray-400 italic mt-1 px-1 truncate">
+                  {dictation.interimText}
+                </p>
+              )}
 
               {suggestedTags.length > 0 && (
                 <div className="flex items-center gap-2 mt-2">
