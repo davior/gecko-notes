@@ -18,11 +18,14 @@ export interface UseTextToSpeechReturn {
 const MAX_CHUNK_CHARS = 1500
 
 export function chunkText(text: string): string[] {
-  const clean = text.replace(/\s+/g, ' ').trim()
+  // Collapse runs of spaces/tabs but preserve newlines so list items, table
+  // rows and other line-delimited content remain separate segments (and the
+  // TTS engine pauses between them) rather than being read as one line.
+  const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
   if (!clean) return []
   if (clean.length <= MAX_CHUNK_CHARS) return [clean]
 
-  // Split into sentences, then greedily pack into chunks.
+  // Split into sentences / lines, then greedily pack into chunks.
   const sentences = clean.match(/[^.!?\n]+[.!?\n]*\s*/g) ?? [clean]
   const chunks: string[] = []
   let current = ''

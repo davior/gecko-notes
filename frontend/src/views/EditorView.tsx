@@ -378,22 +378,94 @@ export default function EditorView() {
     } catch { return '' }
   }
 
+  // Build well-punctuated text for text-to-speech. Unlike extractPlainText (used
+  // for AI context), this terminates list items, table rows and headings with
+  // punctuation so the TTS engine inserts natural pauses instead of reading the
+  // note as one run-on line.
+  function blocksToSpeechText(blocks: unknown[] | undefined = editor?.document): string {
+    if (!blocks) return ''
+    try {
+      const lines: string[] = []
+
+      function inlineText(content: unknown): string {
+        if (!Array.isArray(content)) return ''
+        let out = ''
+        for (const item of content) {
+          if (typeof item !== 'object' || item === null) continue
+          const rec = item as Record<string, unknown>
+          if (rec.type === 'text') out += String(rec.text ?? '')
+          else if (Array.isArray(rec.content)) out += inlineText(rec.content) // e.g. links
+        }
+        return out
+      }
+
+      // Append sentence-ending punctuation unless the text already ends with some.
+      function terminate(text: string, end = '.'): string {
+        const t = text.trim()
+        if (!t) return ''
+        return /[.!?:,;]$/.test(t) ? t : t + end
+      }
+
+      function processBlock(block: Record<string, unknown>) {
+        const type = block.type
+        const content = block.content
+
+        // Tables: read each row as a comma-separated sentence so cells and rows
+        // are clearly delineated.
+        if (type === 'table' && content && typeof content === 'object') {
+          const rows = (content as Record<string, unknown>).rows
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const cells = (row as Record<string, unknown>)?.cells
+              if (!Array.isArray(cells)) continue
+              const cellTexts = cells
+                .map((cell) =>
+                  // A cell is either inline content (array) or a TableCell object.
+                  Array.isArray(cell)
+                    ? inlineText(cell).trim()
+                    : inlineText((cell as Record<string, unknown>)?.content).trim(),
+                )
+                .filter(Boolean)
+              if (cellTexts.length) lines.push(terminate(cellTexts.join(', ')))
+            }
+          }
+          return
+        }
+
+        const text = inlineText(content).trim()
+        if (text) lines.push(terminate(text, type === 'heading' ? ':' : '.'))
+
+        if (Array.isArray(block.children)) {
+          for (const child of block.children) processBlock(child as Record<string, unknown>)
+        }
+      }
+
+      for (const block of blocks) processBlock(block as Record<string, unknown>)
+      return lines.join('\n')
+    } catch { return '' }
+  }
+
   function getSelectedText(): string {
     if (!editor) return ''
     try {
-      // BlockNote exposes getSelectedText() for the current inline selection.
       const ed = editor as unknown as { getSelectedText?: () => string; getSelection?: () => { blocks?: unknown[] } | undefined }
+      // Prefer block-based extraction so multi-item / table selections are
+      // punctuated; getSelection() returns blocks only for multi-block selections.
+      const selection = ed.getSelection?.()
+      if (selection?.blocks?.length) {
+        const fromBlocks = blocksToSpeechText(selection.blocks)
+        if (fromBlocks.trim()) return fromBlocks
+      }
+      // Single-block / inline selection: the exact highlighted substring.
       const direct = ed.getSelectedText?.()
       if (typeof direct === 'string' && direct.trim()) return direct
-      const selection = ed.getSelection?.()
-      if (selection?.blocks?.length) return extractPlainText(selection.blocks)
     } catch { /* fall through */ }
     return ''
   }
 
   function handleReadAloud() {
     if (tts.isSpeaking) { tts.stop(); return }
-    const text = getSelectedText().trim() || extractPlainText()
+    const text = getSelectedText().trim() || blocksToSpeechText()
     if (!text) { showToast('Nothing to read'); return }
     tts.play(text)
   }
