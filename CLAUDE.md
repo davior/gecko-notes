@@ -60,5 +60,22 @@ curl -f http://localhost:18081/api/health
 - Database schema migrations run automatically on backend startup (`init_db()` in `database.py`).
 - `JWT_SECRET_KEY` must be set in `.env`; app will refuse to start without it.
 - The app is exposed on port `18081` (frontend service in `docker-compose.yml`); the backend listens on `8000` internally.
-- For deployment behind an external reverse proxy that provides a `web` Docker network, use:
-  `docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d`
+
+### Deploying Behind a Reverse Proxy (Caddy, Nginx, etc.)
+
+If the app is deployed behind an external reverse proxy on a shared Docker network (e.g., `davior/infra` with Caddy on a `web` network):
+
+**Setup:** Ensure `.env` contains:
+```bash
+COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+```
+
+This tells Docker Compose to always include the prod overlay, which joins the frontend to the external `web` network. With this set, plain `docker compose up --build -d` will correctly attach to the reverse proxy's network.
+
+Alternatively, use the explicit form (no `.env` change needed):
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+```
+
+**Why:** `docker-compose.prod.yml` attaches the frontend to an external `web` network created by the infra repo. Without it, the frontend is isolated on the local `gecko-notes_default` network and unreachable from the reverse proxy (resulting in 502 errors). The `COMPOSE_FILE` setting automates this so it's never forgotten.
+

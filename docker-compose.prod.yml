@@ -1,3 +1,19 @@
+# Overlay composition for reverse-proxy deployments.
+#
+# When this app is deployed behind a reverse proxy (Caddy, Nginx, etc.) on a
+# shared Docker network, use both compose files together:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# Or set in .env:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+#
+# This file joins the frontend to the external 'web' network created by the
+# reverse proxy deployment (e.g., davior/infra). Without it, the frontend
+# remains isolated on the local 'gecko-notes_default' network and is unreachable
+# from the reverse proxy (resulting in 502 errors).
+
 services:
   frontend:
     networks:
