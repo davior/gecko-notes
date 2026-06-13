@@ -11,7 +11,7 @@ import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import { filterSuggestionItems, type PartialBlock } from '@blocknote/core'
-import { noteSchema } from '@/blocks/childNoteBlock'
+import { noteSchema, ChildNoteChainContext } from '@/blocks/childNoteBlock'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -213,7 +213,16 @@ export default function EditorView() {
     if (!(noteId && noteId === createdNoteId.current)) {
       init()
     }
-    return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+      // Flush any pending edits to the note we're leaving (e.g. navigating
+      // parent <-> child) so they aren't lost to the cancelled debounce. Refs
+      // still point at the departing note here (effect bodies run after
+      // cleanups). Guard against materialising an empty, never-saved draft.
+      if (hasPendingChanges.current && (latestNoteId.current || createdNoteId.current)) {
+        void saveDraftRef.current?.(true)
+      }
+    }
   }, [noteId])
 
   // Sync categoryId once categories load (for new notes)
@@ -648,6 +657,10 @@ export default function EditorView() {
         'before',
       )
       editor.removeBlocks(blocks as never)
+      // Persist the embed reference immediately so it survives navigation,
+      // rather than relying on the 800ms autosave debounce.
+      hasPendingChanges.current = true
+      await doSave(true)
       showToast('Moved to child note')
     } catch {
       showToast('Could not create child note')
@@ -666,6 +679,9 @@ export default function EditorView() {
         editor.getTextCursorPosition().block,
         'after',
       )
+      // Persist the embed reference immediately (see sendSelectionToChild).
+      hasPendingChanges.current = true
+      await doSave(true)
     } catch {
       showToast('Could not create child note')
     }
@@ -904,17 +920,19 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
-                <BlockNoteView
-                  editor={editor}
-                  onChange={scheduleAutosave}
-                  theme={editorTheme}
-                  slashMenu={false}
-                >
-                  <SuggestionMenuController
-                    triggerCharacter="/"
-                    getItems={async (query) => getSlashItems(query)}
-                  />
-                </BlockNoteView>
+                <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
+                  <BlockNoteView
+                    editor={editor}
+                    onChange={scheduleAutosave}
+                    theme={editorTheme}
+                    slashMenu={false}
+                  >
+                    <SuggestionMenuController
+                      triggerCharacter="/"
+                      getItems={async (query) => getSlashItems(query)}
+                    />
+                  </BlockNoteView>
+                </ChildNoteChainContext.Provider>
               </EditorErrorBoundary>
             )}
           </div>

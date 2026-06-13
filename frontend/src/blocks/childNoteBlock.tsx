@@ -1,11 +1,16 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useContext, createContext } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createReactBlockSpec } from '@blocknote/react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import { BlockNoteSchema, defaultBlockSpecs, type PartialBlock } from '@blocknote/core'
-import { ChevronRight, ChevronDown, FileText, ExternalLink } from 'lucide-react'
+import { ChevronRight, ChevronDown, FileText, ExternalLink, Repeat } from 'lucide-react'
 import { notesApi } from '@/api/notes'
+
+// Tracks the chain of child-note ids currently being rendered so an embed that
+// references one of its own ancestors is shown as a circular reference instead
+// of recursing forever.
+export const ChildNoteChainContext = createContext<string[]>([])
 
 function parseContent(content: string): PartialBlock[] {
   try {
@@ -20,12 +25,17 @@ function parseContent(content: string): PartialBlock[] {
 // when the panel is expanded) so collapsed children cost nothing. Uses the full
 // note schema so nested child-note blocks render too. `noteSchema` is defined
 // below in this module and resolved at render time.
-function ChildNotePreview({ content }: { content: string }) {
+function ChildNotePreview({ content, chain }: { content: string; chain: string[] }) {
   const editor = useCreateBlockNote({
     schema: noteSchema,
     initialContent: parseContent(content) as never,
   })
-  return <BlockNoteView editor={editor} editable={false} />
+  // Propagate the ancestor chain so nested child blocks can detect cycles.
+  return (
+    <ChildNoteChainContext.Provider value={chain}>
+      <BlockNoteView editor={editor} editable={false} />
+    </ChildNoteChainContext.Provider>
+  )
 }
 
 interface PanelProps {
@@ -35,6 +45,8 @@ interface PanelProps {
 
 function ChildNotePanel({ childNoteId, title }: PanelProps) {
   const navigate = useNavigate()
+  const chain = useContext(ChildNoteChainContext)
+  const isCircular = chain.includes(childNoteId)
   const [open, setOpen] = useState(false)
   const [content, setContent] = useState<string | null>(null)
   const [displayTitle, setDisplayTitle] = useState(title)
@@ -42,6 +54,7 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
   const [loading, setLoading] = useState(false)
 
   const toggle = useCallback(async () => {
+    if (isCircular) return
     const next = !open
     setOpen(next)
     if (next && content === null && !error) {
@@ -65,12 +78,18 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
     >
       <div className="flex items-center gap-2 px-3 py-2">
         <button
-          className="flex items-center gap-1.5 flex-1 min-w-0 text-left text-sm font-medium text-gray-800 dark:text-gray-100"
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left text-sm font-medium text-gray-800 dark:text-gray-100 disabled:cursor-default"
           onClick={toggle}
+          disabled={isCircular}
         >
-          {open ? <ChevronDown className="w-4 h-4 shrink-0 text-gray-400" /> : <ChevronRight className="w-4 h-4 shrink-0 text-gray-400" />}
+          {isCircular
+            ? <Repeat className="w-4 h-4 shrink-0 text-amber-500" />
+            : open
+              ? <ChevronDown className="w-4 h-4 shrink-0 text-gray-400" />
+              : <ChevronRight className="w-4 h-4 shrink-0 text-gray-400" />}
           <FileText className="w-4 h-4 shrink-0 text-blue-500" />
           <span className="truncate">{displayTitle || 'Untitled'}</span>
+          {isCircular && <span className="text-xs text-amber-500 shrink-0">(circular reference)</span>}
         </button>
         <button
           className="shrink-0 flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
@@ -80,14 +99,14 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
           <ExternalLink className="w-3.5 h-3.5" /> Open
         </button>
       </div>
-      {open && (
+      {open && !isCircular && (
         <div className="border-t border-gray-200 dark:border-gray-700 px-2 py-1 bg-white/50 dark:bg-gray-900/30">
           {loading ? (
             <p className="text-xs text-gray-400 px-2 py-3">Loading…</p>
           ) : error ? (
             <p className="text-xs text-gray-400 px-2 py-3">Embedded note unavailable.</p>
           ) : content !== null ? (
-            <ChildNotePreview content={content} />
+            <ChildNotePreview content={content} chain={[...chain, childNoteId]} />
           ) : null}
         </div>
       )}
