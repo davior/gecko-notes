@@ -39,6 +39,7 @@ class Note(SQLModel, table=True):
     content: str  # BlockNote JSON serialised as string
     category_id: str = Field(foreign_key="category.id")
     folder_id: Optional[str] = Field(default=None, foreign_key="folder.id", index=True)  # null = root
+    parent_note_id: Optional[str] = Field(default=None, foreign_key="note.id", index=True)  # null = top-level note
     tags: str = Field(default='[]')  # JSON array serialised as string
     is_pinned: bool = Field(default=False)
     is_shared: bool = Field(default=False)

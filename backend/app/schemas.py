@@ -113,6 +113,11 @@ class NoteCreate(BaseModel):
     tags: List[str] = []
 
 
+class CreateChildRequest(BaseModel):
+    title: str = "Untitled"
+    content: str = '[]'  # selected blocks JSON when sending a selection, else empty
+
+
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
@@ -130,6 +135,7 @@ class NoteRead(BaseModel):
     content: str
     category_id: str
     folder_id: Optional[str] = None
+    parent_note_id: Optional[str] = None
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False
@@ -150,6 +156,7 @@ class NoteListItem(BaseModel):
     first_image_url: Optional[str]
     category_id: str
     folder_id: Optional[str] = None
+    parent_note_id: Optional[str] = None
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False

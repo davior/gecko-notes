@@ -3,14 +3,15 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, Settings, History, CornerUpLeft, FileText } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
-import { useCreateBlockNote } from '@blocknote/react'
+import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, type DefaultReactSuggestionItem } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
-import type { PartialBlock } from '@blocknote/core'
+import { filterSuggestionItems, type PartialBlock } from '@blocknote/core'
+import { noteSchema } from '@/blocks/childNoteBlock'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -117,6 +118,7 @@ export default function EditorView() {
   const saveDraftRef = useRef<((force?: boolean) => Promise<Note | null | undefined>) | undefined>(undefined)
 
   const editor = useCreateBlockNote({
+    schema: noteSchema,
     uploadFile: async (file: File) => {
       const response = await mediaApi.upload(file)
       return response.data.url
@@ -605,6 +607,85 @@ export default function EditorView() {
     )
   }
 
+  // Resolve (saving first if needed) the id under which a child note should be
+  // created. New notes must be persisted before they can parent a child.
+  async function ensureParentId(): Promise<string | undefined> {
+    const existing = createdNoteId.current || noteId
+    if (existing) return existing
+    await doSave(true)
+    return createdNoteId.current ?? undefined
+  }
+
+  function deriveChildTitle(blocks: unknown[]): string {
+    const text = extractPlainText(blocks).trim()
+    if (!text) return 'Untitled'
+    return text.length > 60 ? `${text.slice(0, 57)}…` : text
+  }
+
+  // Move the current selection (or the cursor's block) into a new child note and
+  // replace it with an embedded childNote block.
+  async function sendSelectionToChild() {
+    if (!editor) return
+    const ed = editor as unknown as { getSelection?: () => { blocks?: unknown[] } | undefined }
+    let blocks = ed.getSelection?.()?.blocks as PartialBlock[] | undefined
+    if (!blocks || blocks.length === 0) {
+      const cur = editor.getTextCursorPosition().block
+      blocks = cur ? [cur as PartialBlock] : []
+    }
+    if (!blocks.length) { showToast('Select some content first'); return }
+
+    const parentId = await ensureParentId()
+    if (!parentId) { showToast('Could not save note'); return }
+
+    try {
+      const child = await notesApi.createChild(parentId, {
+        title: deriveChildTitle(blocks as unknown[]),
+        content: JSON.stringify(blocks),
+      })
+      editor.insertBlocks(
+        [{ type: 'childNote', props: { childNoteId: child.data.id, title: child.data.title } }] as never,
+        blocks[0] as never,
+        'before',
+      )
+      editor.removeBlocks(blocks as never)
+      showToast('Moved to child note')
+    } catch {
+      showToast('Could not create child note')
+    }
+  }
+
+  // Insert an empty child note at the cursor (slash-menu entry point).
+  async function insertEmptyChild() {
+    if (!editor) return
+    const parentId = await ensureParentId()
+    if (!parentId) { showToast('Could not save note'); return }
+    try {
+      const child = await notesApi.createChild(parentId, { title: 'Untitled' })
+      editor.insertBlocks(
+        [{ type: 'childNote', props: { childNoteId: child.data.id, title: child.data.title } }] as never,
+        editor.getTextCursorPosition().block,
+        'after',
+      )
+    } catch {
+      showToast('Could not create child note')
+    }
+  }
+
+  // Slash menu: default items plus "Child note".
+  function getSlashItems(query: string): DefaultReactSuggestionItem[] {
+    const childItem: DefaultReactSuggestionItem = {
+      title: 'Child note',
+      subtext: 'Insert a nested note',
+      aliases: ['child', 'subnote', 'nested'],
+      group: 'Basic blocks',
+      onItemClick: () => { void insertEmptyChild() },
+    }
+    return filterSuggestionItems(
+      [...getDefaultReactSlashMenuItems(editor), childItem],
+      query,
+    )
+  }
+
   const theme = useSettingsStore((s) => s.theme)
   const themes = useSettingsStore((s) => s.themes)
   const activeThemeId = useSettingsStore((s) => s.activeThemeId)
@@ -618,7 +699,25 @@ export default function EditorView() {
           <button className="btn-ghost p-2" onClick={goBack}>
             <ArrowLeft className="w-5 h-5" />
           </button>
+          {note?.parent_note_id && (
+            <button
+              className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
+              title="Back to parent note"
+              onClick={() => navigate(`/notes/${note.parent_note_id}`)}
+            >
+              <CornerUpLeft className="w-4 h-4" /> Parent
+            </button>
+          )}
           <div className="flex-1" />
+          {loaded && (
+            <button
+              className="btn-ghost p-2"
+              title="Send selection to a child note"
+              onClick={() => void sendSelectionToChild()}
+            >
+              <FileText className="w-4 h-4" />
+            </button>
+          )}
           {note && (
             <span ref={exportAnchorRef}>
               <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
@@ -809,7 +908,13 @@ export default function EditorView() {
                   editor={editor}
                   onChange={scheduleAutosave}
                   theme={editorTheme}
-                />
+                  slashMenu={false}
+                >
+                  <SuggestionMenuController
+                    triggerCharacter="/"
+                    getItems={async (query) => getSlashItems(query)}
+                  />
+                </BlockNoteView>
               </EditorErrorBoundary>
             )}
           </div>

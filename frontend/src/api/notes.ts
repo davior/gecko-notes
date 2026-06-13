@@ -7,6 +7,7 @@ export interface NoteListItem {
   first_image_url: string | null
   category_id: string
   folder_id: string | null
+  parent_note_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -20,6 +21,7 @@ export interface Note {
   content: string
   category_id: string
   folder_id: string | null
+  parent_note_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -109,6 +111,15 @@ export const notesApi = {
 
   move(id: string, folderId: string | null): Promise<{ data: Note }> {
     return client.patch(`/notes/${id}/move`, { folder_id: folderId }).then((r) => r.data)
+  },
+
+  // Child notes
+  listChildren(parentId: string): Promise<ListResponse<NoteListItem>> {
+    return client.get(`/notes/${parentId}/children`).then((r) => r.data)
+  },
+
+  createChild(parentId: string, payload: { title?: string; content?: string }): Promise<{ data: Note }> {
+    return client.post(`/notes/${parentId}/children`, payload).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {

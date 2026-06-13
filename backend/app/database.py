@@ -52,6 +52,12 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Child notes: a note can be nested under a parent note (null = top-level)
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN parent_note_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Per-user settings migration
         try:
             conn.execute(text("ALTER TABLE aiprovider ADD COLUMN user_id TEXT"))

@@ -10,7 +10,7 @@ from sqlmodel import Session, select, func, or_, col
 from app.database import get_session
 from app.models import Note, NoteVersion, Folder
 from app.schemas import (
-    NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest,
+    NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
     DataResponse, ListResponse, ErrorResponse
 )
@@ -83,6 +83,7 @@ def note_to_read(note: Note) -> NoteRead:
         content=note.content,
         category_id=note.category_id,
         folder_id=note.folder_id,
+        parent_note_id=note.parent_note_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -106,6 +107,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         first_image_url=extract_first_image(note.content),
         category_id=note.category_id,
         folder_id=note.folder_id,
+        parent_note_id=note.parent_note_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -199,8 +201,12 @@ def list_notes(
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    query = select(Note).where(Note.user_id == user_id)
-    count_query = select(func.count()).select_from(Note).where(Note.user_id == user_id)
+    # Child notes are embedded in their parent and never shown in list/folder views.
+    query = select(Note).where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    count_query = (
+        select(func.count()).select_from(Note)
+        .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    )
 
     if category_id:
         query = query.where(Note.category_id == category_id)
@@ -331,12 +337,62 @@ def move_note(note_id: str, payload: MoveNoteRequest, request: Request, session:
     return DataResponse(data=note_to_read(note))
 
 
+@router.get("/{note_id}/children", response_model=ListResponse[NoteListItem])
+def list_children(note_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    parent = session.get(Note, note_id)
+    if not parent or parent.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    children = session.exec(
+        select(Note)
+        .where(Note.user_id == user_id, Note.parent_note_id == note_id)
+        .order_by(Note.created_at.asc())
+    ).all()
+    return ListResponse(
+        data=[note_to_list_item(c) for c in children],
+        total=len(children),
+        limit=len(children),
+        offset=0,
+    )
+
+
+@router.post("/{note_id}/children", response_model=DataResponse[NoteRead], status_code=201)
+def create_child(note_id: str, payload: CreateChildRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    parent = session.get(Note, note_id)
+    if not parent or parent.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    now = datetime.now(timezone.utc)
+    child = Note(
+        id=str(uuid.uuid4()),
+        title=payload.title,
+        content=payload.content,
+        category_id=parent.category_id,   # inherit category
+        folder_id=parent.folder_id,       # inherit folder
+        parent_note_id=parent.id,
+        tags='[]',
+        created_at=now,
+        modified_at=now,
+        user_id=user_id,
+    )
+    session.add(child)
+    session.commit()
+    session.refresh(child)
+    return DataResponse(data=note_to_read(child))
+
+
 @router.delete("/{note_id}", status_code=204)
 def delete_note(note_id: str, request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
     note = session.get(Note, note_id)
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    # Orphan (don't cascade-delete) children so their content survives and they
+    # re-surface in the main list rather than being silently destroyed.
+    children = session.exec(select(Note).where(Note.parent_note_id == note_id)).all()
+    for child in children:
+        child.parent_note_id = None
+        session.add(child)
     versions = session.exec(select(NoteVersion).where(NoteVersion.note_id == note_id)).all()
     for version in versions:
         session.delete(version)

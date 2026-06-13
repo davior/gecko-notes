@@ -3,6 +3,7 @@ import { History, RotateCcw, FilePlus, X } from 'lucide-react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import type { PartialBlock } from '@blocknote/core'
+import { noteSchema } from '@/blocks/childNoteBlock'
 import { notesApi, type Note, type NoteVersion, type NoteVersionListItem } from '@/api/notes'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -93,7 +94,7 @@ export default function NoteHistoryModal({ noteId, currentContent, onClose, onRe
   const themes = useSettingsStore((s) => s.themes)
   const activeThemeId = useSettingsStore((s) => s.activeThemeId)
   const activeTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
-  const previewEditor = useCreateBlockNote()
+  const previewEditor = useCreateBlockNote({ schema: noteSchema })
 
   useEffect(() => {
     let active = true
