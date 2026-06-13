@@ -69,11 +69,47 @@ class CategoryRead(BaseModel):
         from_attributes = True
 
 
+# Folder schemas
+class FolderCreate(BaseModel):
+    name: str
+    parent_folder_id: Optional[str] = None
+    sort_order: int = 0
+
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+    parent_folder_id: Optional[str] = None  # set to move the folder
+    sort_order: Optional[int] = None
+
+
+class FolderRead(BaseModel):
+    id: str
+    name: str
+    parent_folder_id: Optional[str] = None
+    sort_order: int
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
+
+    class Config:
+        from_attributes = True
+
+
+class FolderContents(BaseModel):
+    folder: Optional[FolderRead] = None       # None when viewing root
+    breadcrumb: List[FolderRead] = []         # root..current ancestor chain
+    subfolders: List[FolderRead] = []
+
+
+class MoveNoteRequest(BaseModel):
+    folder_id: Optional[str] = None           # null = move to root
+
+
 # Note schemas
 class NoteCreate(BaseModel):
     title: str
     content: str = '[]'
     category_id: str
+    folder_id: Optional[str] = None
     tags: List[str] = []
 
 
@@ -81,6 +117,7 @@ class NoteUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     category_id: Optional[str] = None
+    folder_id: Optional[str] = None
     tags: Optional[List[str]] = None
     is_pinned: Optional[bool] = None
     summary: Optional[str] = None
@@ -92,6 +129,7 @@ class NoteRead(BaseModel):
     title: str
     content: str
     category_id: str
+    folder_id: Optional[str] = None
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False
@@ -111,6 +149,7 @@ class NoteListItem(BaseModel):
     content_preview: str
     first_image_url: Optional[str]
     category_id: str
+    folder_id: Optional[str] = None
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False

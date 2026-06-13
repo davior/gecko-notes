@@ -1,4 +1,4 @@
-import { Pin, Globe } from 'lucide-react'
+import { Pin, Globe, FolderInput } from 'lucide-react'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
 import CategoryBadge from './CategoryBadge'
@@ -26,10 +26,11 @@ interface Props {
   category?: Category
   onClick: (id: string) => void
   onPin?: (id: string) => void
+  onMove?: (id: string) => void
   viewMode?: 'list' | 'card'
 }
 
-export default function NoteCard({ note, category, onClick, onPin, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, onMove, viewMode = 'list' }: Props) {
   const visibleTags = note.tags.slice(0, 3)
 
   if (viewMode === 'card') {
@@ -84,11 +85,23 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
                 />
               </span>
             )}
+            {onMove && (
+              <button
+                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
+                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                title="Move to folder"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
+              >
+                <FolderInput className="w-3.5 h-3.5" />
+              </button>
+            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-400' : 'text-gray-300 hover:text-gray-500'}`}
                 style={hasImage && !note.is_pinned ? { color: 'rgba(255,255,255,0.7)' } : undefined}
                 title={note.is_pinned ? 'Unpin note' : 'Pin to top'}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
@@ -154,10 +167,21 @@ export default function NoteCard({ note, category, onClick, onPin, viewMode = 'l
             {note.is_shared && (
               <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
             )}
+            {onMove && (
+              <button
+                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
+                title="Move to folder"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
+              >
+                <FolderInput className="w-3.5 h-3.5" />
+              </button>
+            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-500' : 'text-gray-300 hover:text-gray-500'}`}
                 title={note.is_pinned ? 'Unpin note' : 'Pin to top'}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />

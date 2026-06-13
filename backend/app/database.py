@@ -46,6 +46,12 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Folders: notes can live inside a folder (null = root)
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN folder_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Per-user settings migration
         try:
             conn.execute(text("ALTER TABLE aiprovider ADD COLUMN user_id TEXT"))

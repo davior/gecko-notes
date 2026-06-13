@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
@@ -65,7 +65,11 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
 export default function EditorView() {
   const navigate = useNavigate()
   const { id: noteId } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
   const isNew = !noteId
+  // When creating a note from inside a folder view, the FAB carries ?folder=<id>
+  // so the new note is created directly in that folder.
+  const initialFolderId = useRef<string | null>(searchParams.get('folder'))
 
   const notesStore = useNotesStore()
   const categoriesStore = useCategoriesStore()
@@ -246,7 +250,7 @@ export default function EditorView() {
     }
     try {
       if (latestIsNew.current && !createdNoteId.current) {
-        const created = await notesStore.createNote(payload)
+        const created = await notesStore.createNote({ ...payload, folder_id: initialFolderId.current })
         createdNoteId.current = created.id
         // Mark the editor as already synced to the new id so the hydrate effect
         // doesn't replaceBlocks (which would reset the cursor) after navigation.

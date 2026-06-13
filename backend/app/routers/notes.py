@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, col
 
 from app.database import get_session
-from app.models import Note, NoteVersion
+from app.models import Note, NoteVersion, Folder
 from app.schemas import (
-    NoteCreate, NoteUpdate, NoteRead, NoteListItem,
+    NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
     DataResponse, ListResponse, ErrorResponse
 )
@@ -82,6 +82,7 @@ def note_to_read(note: Note) -> NoteRead:
         title=note.title,
         content=note.content,
         category_id=note.category_id,
+        folder_id=note.folder_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -104,6 +105,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         content_preview=extract_plain_text(note.content, 120),
         first_image_url=extract_first_image(note.content),
         category_id=note.category_id,
+        folder_id=note.folder_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -191,6 +193,8 @@ def list_notes(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     category_id: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    in_folder: bool = Query(False),
     search: Optional[str] = None,
     session: Session = Depends(get_session),
 ):
@@ -201,6 +205,13 @@ def list_notes(
     if category_id:
         query = query.where(Note.category_id == category_id)
         count_query = count_query.where(Note.category_id == category_id)
+
+    # When scoped to a folder view, only return notes directly in that folder
+    # (folder_id omitted ⇒ root level). Without in_folder, return notes across
+    # all folders (used by global search).
+    if in_folder:
+        query = query.where(Note.folder_id == folder_id)
+        count_query = count_query.where(Note.folder_id == folder_id)
 
     if search:
         search_term = f"%{search}%"
@@ -246,6 +257,7 @@ def create_note(payload: NoteCreate, request: Request, session: Session = Depend
         title=payload.title,
         content=payload.content,
         category_id=payload.category_id,
+        folder_id=payload.folder_id,
         tags=json.dumps(payload.tags),
         created_at=now,
         modified_at=now,
@@ -270,6 +282,8 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
         note.content = payload.content
     if payload.category_id is not None:
         note.category_id = payload.category_id
+    if payload.folder_id is not None:
+        note.folder_id = payload.folder_id or None
     if payload.tags is not None:
         note.tags = json.dumps(payload.tags)
     if payload.is_pinned is not None:
@@ -293,6 +307,24 @@ def pin_note(note_id: str, request: Request, session: Session = Depends(get_sess
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
     note.is_pinned = not note.is_pinned
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
+
+
+@router.patch("/{note_id}/move", response_model=DataResponse[NoteRead])
+def move_note(note_id: str, payload: MoveNoteRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    if payload.folder_id:
+        folder = session.get(Folder, payload.folder_id)
+        if not folder or folder.user_id != user_id:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Folder not found"})
+    note.folder_id = payload.folder_id or None
+    note.modified_at = datetime.now(timezone.utc)
     session.add(note)
     session.commit()
     session.refresh(note)

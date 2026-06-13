@@ -6,6 +6,7 @@ export interface NoteListItem {
   content_preview: string
   first_image_url: string | null
   category_id: string
+  folder_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -18,6 +19,7 @@ export interface Note {
   title: string
   content: string
   category_id: string
+  folder_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -32,6 +34,7 @@ export interface NoteCreate {
   title: string
   content?: string
   category_id: string
+  folder_id?: string | null
   tags?: string[]
 }
 
@@ -39,6 +42,7 @@ export interface NoteUpdate {
   title?: string
   content?: string
   category_id?: string
+  folder_id?: string | null
   tags?: string[]
   is_pinned?: boolean
   summary?: string | null
@@ -70,6 +74,8 @@ export interface ListNotesParams {
   limit?: number
   offset?: number
   category_id?: string
+  folder_id?: string
+  in_folder?: boolean
   search?: string
 }
 
@@ -99,6 +105,10 @@ export const notesApi = {
 
   pin(id: string): Promise<{ data: Note }> {
     return client.patch(`/notes/${id}/pin`).then((r) => r.data)
+  },
+
+  move(id: string, folderId: string | null): Promise<{ data: Note }> {
+    return client.patch(`/notes/${id}/move`, { folder_id: folderId }).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {

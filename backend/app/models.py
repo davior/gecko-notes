@@ -23,11 +23,22 @@ class Category(SQLModel, table=True):
     sort_order: int = 0
 
 
+class Folder(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    name: str
+    parent_folder_id: Optional[str] = Field(default=None, foreign_key="folder.id", index=True)  # null = top level
+    user_id: Optional[str] = Field(default=None, index=True)
+    sort_order: int = Field(default=0)
+    created_at: datetime
+    modified_at: datetime
+
+
 class Note(SQLModel, table=True):
     id: str = Field(primary_key=True)
     title: str
     content: str  # BlockNote JSON serialised as string
     category_id: str = Field(foreign_key="category.id")
+    folder_id: Optional[str] = Field(default=None, foreign_key="folder.id", index=True)  # null = root
     tags: str = Field(default='[]')  # JSON array serialised as string
     is_pinned: bool = Field(default=False)
     is_shared: bool = Field(default=False)
