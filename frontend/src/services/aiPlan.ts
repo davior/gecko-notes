@@ -158,36 +158,7 @@ function validateAction(raw: unknown): PlanAction | null {
 }
 
 export function parsePlan(raw: string): Plan {
-  const extractRespondText = (jsonStr: string): string | null => {
-    try {
-      const parsed = JSON.parse(jsonStr) as unknown
-      if (typeof parsed === 'object' && parsed !== null) {
-        const obj = parsed as Record<string, unknown>
-        // Try to extract text from a respond action in the malformed JSON
-        if (Array.isArray(obj.actions) && obj.actions.length > 0) {
-          const first = obj.actions[0] as Record<string, unknown>
-          if (first.type === 'respond' && typeof first.text === 'string') {
-            return first.text
-          }
-        }
-      }
-    } catch {
-      // Intentionally ignore — return null to fall back to raw text
-    }
-    return null
-  }
-
-  const fallback = (): Plan => {
-    // If raw looks like JSON, try to extract meaningful respond text from it.
-    // If it looks like a respond action, extract just the text to avoid displaying raw JSON.
-    const trimmed = (raw ?? '').trim()
-    if (trimmed.startsWith('{')) {
-      const extracted = extractRespondText(trimmed)
-      if (extracted) return { actions: [{ type: 'respond', text: extracted }] }
-    }
-    return { actions: [{ type: 'respond', text: trimmed || '(no response)' }] }
-  }
-
+  const fallback = (): Plan => ({ actions: [{ type: 'respond', text: (raw ?? '').trim() || '(no response)' }] })
   if (!raw || !raw.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
 
   try {
@@ -200,7 +171,11 @@ export function parsePlan(raw: string): Plan {
     s = s.slice(first, last + 1)
 
     const parsed = JSON.parse(s) as unknown
-    const actionsRaw = (parsed as { actions?: unknown }).actions
+    // The model sometimes returns a bare action object (e.g. {"type":"respond",...})
+    // instead of the {"actions":[...]} envelope — wrap it so it's validated and
+    // rendered as a normal reply rather than shown as raw JSON.
+    const isBareAction = parsed !== null && typeof parsed === 'object' && 'type' in parsed
+    const actionsRaw = isBareAction ? [parsed] : (parsed as { actions?: unknown }).actions
     if (!Array.isArray(actionsRaw)) return fallback()
 
     const actions: PlanAction[] = []
