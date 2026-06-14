@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X } from 'lucide-react'
+import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -19,6 +19,7 @@ import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel, { type ConversationMessage } from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
+import NotePickerModal from '@/components/NotePickerModal'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -119,6 +120,7 @@ export default function EditorView() {
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
+  const [showNotePicker, setShowNotePicker] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
@@ -777,7 +779,26 @@ export default function EditorView() {
     }
   }
 
-  // Slash menu: default items plus "Child note".
+  function insertNoteReference(noteId: string, noteTitle: string) {
+    if (!editor) return
+    editor.insertBlocks(
+      [{ type: 'noteReference', props: { noteId, noteTitle } }] as never,
+      editor.getTextCursorPosition().block,
+      'after',
+    )
+  }
+
+  async function handlePin() {
+    if (!note) return
+    try {
+      const updated = await notesStore.pinNote(note.id)
+      setNote(updated)
+    } catch {
+      showToast('Could not update pin')
+    }
+  }
+
+  // Slash menu: default items plus "Child note" and "Link to note".
   function getSlashItems(query: string): DefaultReactSuggestionItem[] {
     const childItem: DefaultReactSuggestionItem = {
       title: 'Child note',
@@ -786,8 +807,16 @@ export default function EditorView() {
       group: 'Basic blocks',
       onItemClick: () => { void insertEmptyChild() },
     }
+    const refItem: DefaultReactSuggestionItem = {
+      title: 'Link to note',
+      subtext: 'Insert a reference to another note',
+      aliases: ['ref', 'reference', 'link'],
+      group: 'Basic blocks',
+      icon: <Link2 className="w-4 h-4" />,
+      onItemClick: () => setShowNotePicker(true),
+    }
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem],
       query,
     )
   }
@@ -824,6 +853,14 @@ export default function EditorView() {
             </div>
           )}
           <div className="flex-1" />
+          <button
+            className={`btn-ghost p-2 ${note?.is_pinned ? 'text-blue-500' : ''}`}
+            title={note?.is_pinned ? 'Unpin note' : 'Pin to top'}
+            disabled={!note}
+            onClick={() => { void handlePin() }}
+          >
+            <Pin className="w-4 h-4" fill={note?.is_pinned ? 'currentColor' : 'none'} />
+          </button>
           {note && (
             <span ref={exportAnchorRef}>
               <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
@@ -1092,6 +1129,13 @@ export default function EditorView() {
             </div>
           </div>
         </div>
+      )}
+
+      {showNotePicker && (
+        <NotePickerModal
+          onSelect={(id, title) => { insertNoteReference(id, title); setShowNotePicker(false) }}
+          onClose={() => setShowNotePicker(false)}
+        />
       )}
     </div>
   )
