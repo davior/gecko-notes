@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { Home, Printer, Trash2, Settings, History, ArrowUp, FileText, X } from 'lucide-react'
+import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -91,7 +91,7 @@ function SendToChildToolbarButton({ onClick }: { onClick: () => void }) {
       label="Send to child"
       onClick={onClick}
     >
-      <FileText className="w-4 h-4" />
+      <Send className="w-4 h-4" />
     </Components.FormattingToolbar.Button>
   )
 }
@@ -824,15 +824,6 @@ export default function EditorView() {
             </div>
           )}
           <div className="flex-1" />
-          {loaded && (
-            <button
-              className="btn-ghost p-2"
-              title="Send selection to a child note"
-              onClick={() => void sendSelectionToChild()}
-            >
-              <FileText className="w-4 h-4" />
-            </button>
-          )}
           {note && (
             <span ref={exportAnchorRef}>
               <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
