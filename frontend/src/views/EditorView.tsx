@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History, CornerUpLeft, FileText } from 'lucide-react'
+import { Home, Printer, Trash2, Settings, History, ArrowUp, FileText, X } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -114,6 +114,7 @@ export default function EditorView() {
   const [categoryId, setCategoryId] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [newTagInput, setNewTagInput] = useState('')
+  const [parentNoteTitle, setParentNoteTitle] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -215,6 +216,7 @@ export default function EditorView() {
       setTitle('')
       setCategoryId('')
       setTags([])
+      setParentNoteTitle('')
       createdNoteId.current = null
       currentNoteContent.current = ''
       syncedEditorKey.current = null
@@ -237,6 +239,19 @@ export default function EditorView() {
         setConversation(parseConversation(data.conversation))
         conversationRef.current = data.conversation ?? '[]'
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
+
+        // Load parent note title if this is a child note
+        if (data.parent_note_id) {
+          try {
+            const parentData = await notesStore.loadNote(data.parent_note_id)
+            setParentNoteTitle(parentData.title)
+          } catch {
+            setParentNoteTitle('')
+          }
+        } else {
+          setParentNoteTitle('')
+        }
+
         setLoaded(true)
       }
     }
@@ -623,7 +638,7 @@ export default function EditorView() {
     el.style.height = `${el.scrollHeight}px`
   }
 
-  async function goBack() {
+  async function goHome() {
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current)
       autosaveTimer.current = null
@@ -634,8 +649,19 @@ export default function EditorView() {
       await doSave(true)
     }
 
-    if (window.history.length > 1) navigate(-1)
-    else navigate('/notes')
+    navigate('/notes')
+  }
+
+  async function orphanChild() {
+    if (!note) return
+    try {
+      await notesApi.update(note.id, { parent_note_id: null })
+      setNote({ ...note, parent_note_id: null })
+      setParentNoteTitle('')
+      showToast('Note removed from parent')
+    } catch {
+      showToast('Could not remove from parent')
+    }
   }
 
   function handlePrint() {
@@ -775,17 +801,26 @@ export default function EditorView() {
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
-          <button className="btn-ghost p-2" onClick={goBack}>
-            <ArrowLeft className="w-5 h-5" />
+          <button className="btn-ghost p-2" onClick={goHome} title="Go home">
+            <Home className="w-5 h-5" />
           </button>
           {note?.parent_note_id && (
-            <button
-              className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
-              title="Back to parent note"
-              onClick={() => navigate(`/notes/${note.parent_note_id}`)}
-            >
-              <CornerUpLeft className="w-4 h-4" /> Parent
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
+                title="Go to parent note"
+                onClick={() => navigate(`/notes/${note.parent_note_id}`)}
+              >
+                <ArrowUp className="w-4 h-4" /> Up to {parentNoteTitle || 'Parent'}
+              </button>
+              <button
+                className="btn-ghost p-1.5 text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                title="Remove parent link"
+                onClick={() => void orphanChild()}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           )}
           <div className="flex-1" />
           {loaded && (
