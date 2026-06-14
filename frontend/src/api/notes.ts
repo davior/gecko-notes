@@ -123,7 +123,7 @@ export const notesApi = {
   },
 
   orphanChild(childId: string): Promise<{ data: Note }> {
-    return client.put(`/notes/${childId}`, { parent_note_id: null }).then((r) => r.data)
+    return client.put(`/notes/${childId}`, { parent_note_id: null, folder_id: null }).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {

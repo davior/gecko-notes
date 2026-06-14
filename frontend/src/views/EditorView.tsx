@@ -655,10 +655,10 @@ export default function EditorView() {
   async function orphanChild() {
     if (!note) return
     try {
-      await notesApi.update(note.id, { parent_note_id: null })
-      setNote({ ...note, parent_note_id: null })
+      await notesApi.update(note.id, { parent_note_id: null, folder_id: null })
+      setNote({ ...note, parent_note_id: null, folder_id: null })
       setParentNoteTitle('')
-      showToast('Note removed from parent')
+      showToast('Note removed from parent and moved to root')
     } catch {
       showToast('Could not remove from parent')
     }
