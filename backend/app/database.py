@@ -46,6 +46,18 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Folders: notes can live inside a folder (null = root)
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN folder_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
+        # Child notes: a note can be nested under a parent note (null = top-level)
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN parent_note_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Per-user settings migration
         try:
             conn.execute(text("ALTER TABLE aiprovider ADD COLUMN user_id TEXT"))
@@ -230,6 +242,31 @@ def _run_migrations():
                     created_at TEXT
                 )
             """))
+            conn.commit()
+        except Exception:
+            pass
+        # Re-surface "dangling" child notes. A note is a child only while its parent
+        # embeds it as a childNote block. Earlier versions failed to clear
+        # parent_note_id when a child block was removed (the update endpoint ignored
+        # an explicit null), leaving such notes stuck: still flagged as children (so
+        # hidden from every list) yet no longer embedded anywhere. Detect children
+        # whose parent is gone, or whose parent's content no longer references the
+        # child's id, and orphan them so they return to the main list. Idempotent:
+        # once parent_note_id is NULL the row is no longer considered.
+        try:
+            rows = conn.execute(text(
+                "SELECT id, parent_note_id FROM note WHERE parent_note_id IS NOT NULL"
+            )).fetchall()
+            for child_id, parent_id in rows:
+                parent = conn.execute(text(
+                    "SELECT content FROM note WHERE id = :pid"
+                ), {"pid": parent_id}).fetchone()
+                # Orphan if the parent is missing, or its content doesn't embed this
+                # child id (childNote blocks store the id in their props JSON).
+                if parent is None or child_id not in (parent[0] or ""):
+                    conn.execute(text(
+                        "UPDATE note SET parent_note_id = NULL WHERE id = :cid"
+                    ), {"cid": child_id})
             conn.commit()
         except Exception:
             pass

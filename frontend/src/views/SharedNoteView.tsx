@@ -7,6 +7,7 @@ import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import type { PartialBlock } from '@blocknote/core'
+import { noteSchema } from '@/blocks/childNoteBlock'
 import { sharedApi, type SharedNote } from '@/api/shared'
 import { applyThemeToDom } from '@/stores/settings'
 
@@ -34,7 +35,7 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
 }
 
 function ReadOnlyEditor({ content, editorTheme }: { content: string; editorTheme: 'light' | 'dark' }) {
-  const editor = useCreateBlockNote({ initialContent: parseContent(content) })
+  const editor = useCreateBlockNote({ schema: noteSchema, initialContent: parseContent(content) as never })
   return (
     <EditorErrorBoundary>
       <BlockNoteView editor={editor} editable={false} theme={editorTheme} />

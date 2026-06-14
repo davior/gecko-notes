@@ -2,15 +2,16 @@ import { useState, useEffect, useRef, useCallback, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, Settings, History } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
+import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
-import { useCreateBlockNote } from '@blocknote/react'
+import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
-import type { PartialBlock } from '@blocknote/core'
+import { filterSuggestionItems, type PartialBlock } from '@blocknote/core'
+import { noteSchema, ChildNoteChainContext } from '@/blocks/childNoteBlock'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -52,6 +53,23 @@ function parseNoteContent(content: string): PartialBlock[] {
   }
 }
 
+function extractChildNoteIds(blocks: unknown[]): string[] {
+  const ids: string[] = []
+  function walk(b: unknown) {
+    if (typeof b !== 'object' || b === null) return
+    const rec = b as Record<string, unknown>
+    if (rec.type === 'childNote' && typeof rec.props === 'object' && rec.props !== null) {
+      const id = (rec.props as Record<string, unknown>).childNoteId
+      if (typeof id === 'string') ids.push(id)
+    }
+    if (Array.isArray(rec.children)) {
+      for (const child of rec.children) walk(child)
+    }
+  }
+  for (const block of blocks) walk(block)
+  return ids
+}
+
 class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false }
   static getDerivedStateFromError() { return { hasError: true } }
@@ -62,10 +80,30 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
   }
 }
 
+// Custom formatting-toolbar button (appears in the popup when text is selected)
+// that moves the current selection into a new child note. Must be rendered
+// inside the BlockNoteView so useComponentsContext resolves the styled button.
+function SendToChildToolbarButton({ onClick }: { onClick: () => void }) {
+  const Components = useComponentsContext()!
+  return (
+    <Components.FormattingToolbar.Button
+      mainTooltip="Send selection to child note"
+      label="Send to child"
+      onClick={onClick}
+    >
+      <Send className="w-4 h-4" />
+    </Components.FormattingToolbar.Button>
+  )
+}
+
 export default function EditorView() {
   const navigate = useNavigate()
   const { id: noteId } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
   const isNew = !noteId
+  // When creating a note from inside a folder view, the FAB carries ?folder=<id>
+  // so the new note is created directly in that folder.
+  const initialFolderId = useRef<string | null>(searchParams.get('folder'))
 
   const notesStore = useNotesStore()
   const categoriesStore = useCategoriesStore()
@@ -76,9 +114,11 @@ export default function EditorView() {
   const [categoryId, setCategoryId] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [newTagInput, setNewTagInput] = useState('')
+  const [parentNoteTitle, setParentNoteTitle] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
@@ -113,6 +153,7 @@ export default function EditorView() {
   const saveDraftRef = useRef<((force?: boolean) => Promise<Note | null | undefined>) | undefined>(undefined)
 
   const editor = useCreateBlockNote({
+    schema: noteSchema,
     uploadFile: async (file: File) => {
       const response = await mediaApi.upload(file)
       return response.data.url
@@ -176,6 +217,7 @@ export default function EditorView() {
       setTitle('')
       setCategoryId('')
       setTags([])
+      setParentNoteTitle('')
       createdNoteId.current = null
       currentNoteContent.current = ''
       syncedEditorKey.current = null
@@ -198,6 +240,19 @@ export default function EditorView() {
         setConversation(parseConversation(data.conversation))
         conversationRef.current = data.conversation ?? '[]'
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
+
+        // Load parent note title if this is a child note
+        if (data.parent_note_id) {
+          try {
+            const parentData = await notesStore.loadNote(data.parent_note_id)
+            setParentNoteTitle(parentData.title)
+          } catch {
+            setParentNoteTitle('')
+          }
+        } else {
+          setParentNoteTitle('')
+        }
+
         setLoaded(true)
       }
     }
@@ -207,7 +262,17 @@ export default function EditorView() {
     if (!(noteId && noteId === createdNoteId.current)) {
       init()
     }
-    return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+      // Flush any pending edits to the note we're leaving (e.g. navigating
+      // parent <-> child) so they aren't lost to the cancelled debounce. React
+      // runs all effect cleanups before any effect bodies, so the refs that
+      // doSave reads (createdNoteId / latestNoteId) still point at the departing
+      // note here. Guard against materialising an empty, never-saved draft.
+      if (hasPendingChanges.current && (latestNoteId.current || createdNoteId.current)) {
+        void saveDraftRef.current?.(true)
+      }
+    }
   }, [noteId])
 
   // Sync categoryId once categories load (for new notes)
@@ -237,6 +302,14 @@ export default function EditorView() {
     isSaving.current = true
     const content = JSON.stringify(editor.document)
     currentNoteContent.current = extractPlainText()
+
+    // Detect removed child-note blocks so we can orphan them (set parent_note_id = NULL)
+    // and re-surface them in the main list. Extract childNote IDs from the current
+    // document and the previously-saved content, then orphan any that disappeared.
+    const currentChildIds = extractChildNoteIds(editor.document as unknown[])
+    const previousChildIds = note ? extractChildNoteIds(parseNoteContent(note.content) as unknown[]) : []
+    const removedChildIds = previousChildIds.filter((id) => !currentChildIds.includes(id))
+
     const payload = {
       title: latestTitle.current || 'Untitled',
       content,
@@ -245,19 +318,26 @@ export default function EditorView() {
       conversation: conversationRef.current,
     }
     try {
+      let saved: Note
       if (latestIsNew.current && !createdNoteId.current) {
-        const created = await notesStore.createNote(payload)
+        const created = await notesStore.createNote({ ...payload, folder_id: initialFolderId.current })
         createdNoteId.current = created.id
-        // Mark the editor as already synced to the new id so the hydrate effect
-        // doesn't replaceBlocks (which would reset the cursor) after navigation.
         syncedEditorKey.current = created.id
-        setNote(created)
+        saved = created
         navigate(`/notes/${created.id}`, { replace: true })
       } else {
         const resolvedId = createdNoteId.current || latestNoteId.current!
-        const updated = await notesStore.updateNote(resolvedId, payload)
-        setNote(updated)
+        saved = await notesStore.updateNote(resolvedId, payload)
       }
+      setNote(saved)
+
+      // Orphan any child notes that were removed from the editor.
+      for (const childId of removedChildIds) {
+        void notesApi.orphanChild(childId).catch(() => {
+          // Orphaning is best-effort; don't break the save if it fails.
+        })
+      }
+
       hasPendingChanges.current = false
       setSaveStatus('All changes saved')
     } catch {
@@ -282,7 +362,17 @@ export default function EditorView() {
     const editorKey = noteId ?? 'new'
     if (syncedEditorKey.current === editorKey) return
 
-    const blocks = (isNew && !createdNoteId.current) ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
+    // Guard against a render-timing race when navigating between notes that
+    // share this route (e.g. parent <-> child): `noteId` updates immediately but
+    // the `note` state still holds the previous note until init()'s async
+    // setNote() applies. Without this gate we'd seed the editor with the previous
+    // note's content under the new note's key, then falsely mark it synced so the
+    // real content never loads. Only hydrate once the loaded note matches the
+    // route param (or it's a genuinely new, unsaved note).
+    const isNewNote = isNew && !createdNoteId.current
+    if (!isNewNote && note?.id !== noteId) return
+
+    const blocks = isNewNote ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
     isHydratingEditor.current = true
     editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
     currentNoteContent.current = extractPlainText(blocks as unknown[])
@@ -549,7 +639,7 @@ export default function EditorView() {
     el.style.height = `${el.scrollHeight}px`
   }
 
-  async function goBack() {
+  async function goHome() {
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current)
       autosaveTimer.current = null
@@ -560,8 +650,19 @@ export default function EditorView() {
       await doSave(true)
     }
 
-    if (window.history.length > 1) navigate(-1)
-    else navigate('/notes')
+    navigate('/notes')
+  }
+
+  async function orphanChild() {
+    if (!note) return
+    try {
+      await notesApi.update(note.id, { parent_note_id: null })
+      setNote({ ...note, parent_note_id: null })
+      setParentNoteTitle('')
+      showToast('Note removed from parent')
+    } catch {
+      showToast('Could not remove from parent')
+    }
   }
 
   function handlePrint() {
@@ -601,6 +702,96 @@ export default function EditorView() {
     )
   }
 
+  // Resolve (saving first if needed) the id under which a child note should be
+  // created. New notes must be persisted before they can parent a child.
+  async function ensureParentId(): Promise<string | undefined> {
+    const existing = createdNoteId.current || noteId
+    if (existing) return existing
+    await doSave(true)
+    return createdNoteId.current ?? undefined
+  }
+
+  function deriveChildTitle(blocks: unknown[]): string {
+    // Prefer the first heading block's text so the embed header shows just the
+    // heading. Fall back to the first non-empty line of text.
+    const heading = (blocks as Array<Record<string, unknown>>).find((b) => b?.type === 'heading')
+    const headingText = heading ? extractPlainText([heading]).trim() : ''
+    const text = headingText || extractPlainText(blocks).trim()
+    if (!text) return 'Untitled'
+    return text.length > 60 ? `${text.slice(0, 57)}…` : text
+  }
+
+  // Move the current selection (or the cursor's block) into a new child note and
+  // replace it with an embedded childNote block.
+  async function sendSelectionToChild() {
+    if (!editor) return
+    const ed = editor as unknown as { getSelection?: () => { blocks?: unknown[] } | undefined }
+    let blocks = ed.getSelection?.()?.blocks as PartialBlock[] | undefined
+    if (!blocks || blocks.length === 0) {
+      const cur = editor.getTextCursorPosition().block
+      blocks = cur ? [cur as PartialBlock] : []
+    }
+    if (!blocks.length) { showToast('Select some content first'); return }
+
+    const parentId = await ensureParentId()
+    if (!parentId) { showToast('Could not save note'); return }
+
+    try {
+      const child = await notesApi.createChild(parentId, {
+        title: deriveChildTitle(blocks as unknown[]),
+        content: JSON.stringify(blocks),
+      })
+      editor.insertBlocks(
+        [{ type: 'childNote', props: { childNoteId: child.data.id, title: child.data.title } }] as never,
+        blocks[0] as never,
+        'before',
+      )
+      editor.removeBlocks(blocks as never)
+      // Persist the embed reference immediately so it survives navigation,
+      // rather than relying on the 800ms autosave debounce.
+      hasPendingChanges.current = true
+      await doSave(true)
+      showToast('Moved to child note')
+    } catch {
+      showToast('Could not create child note')
+    }
+  }
+
+  // Insert an empty child note at the cursor (slash-menu entry point).
+  async function insertEmptyChild() {
+    if (!editor) return
+    const parentId = await ensureParentId()
+    if (!parentId) { showToast('Could not save note'); return }
+    try {
+      const child = await notesApi.createChild(parentId, { title: 'Untitled' })
+      editor.insertBlocks(
+        [{ type: 'childNote', props: { childNoteId: child.data.id, title: child.data.title } }] as never,
+        editor.getTextCursorPosition().block,
+        'after',
+      )
+      // Persist the embed reference immediately (see sendSelectionToChild).
+      hasPendingChanges.current = true
+      await doSave(true)
+    } catch {
+      showToast('Could not create child note')
+    }
+  }
+
+  // Slash menu: default items plus "Child note".
+  function getSlashItems(query: string): DefaultReactSuggestionItem[] {
+    const childItem: DefaultReactSuggestionItem = {
+      title: 'Child note',
+      subtext: 'Insert a nested note',
+      aliases: ['child', 'subnote', 'nested'],
+      group: 'Basic blocks',
+      onItemClick: () => { void insertEmptyChild() },
+    }
+    return filterSuggestionItems(
+      [...getDefaultReactSlashMenuItems(editor), childItem],
+      query,
+    )
+  }
+
   const theme = useSettingsStore((s) => s.theme)
   const themes = useSettingsStore((s) => s.themes)
   const activeThemeId = useSettingsStore((s) => s.activeThemeId)
@@ -611,9 +802,27 @@ export default function EditorView() {
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
-          <button className="btn-ghost p-2" onClick={goBack}>
-            <ArrowLeft className="w-5 h-5" />
+          <button className="btn-ghost p-2" onClick={goHome} title="Go home">
+            <Home className="w-5 h-5" />
           </button>
+          {note?.parent_note_id && (
+            <div className="flex items-center gap-1">
+              <button
+                className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
+                title="Go to parent note"
+                onClick={() => navigate(`/notes/${note.parent_note_id}`)}
+              >
+                <ArrowUp className="w-4 h-4" /> Up to {parentNoteTitle || 'Parent'}
+              </button>
+              <button
+                className="btn-ghost p-1.5 text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                title="Remove parent link"
+                onClick={() => setShowOrphanConfirm(true)}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           <div className="flex-1" />
           {note && (
             <span ref={exportAnchorRef}>
@@ -801,11 +1010,28 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
-                <BlockNoteView
-                  editor={editor}
-                  onChange={scheduleAutosave}
-                  theme={editorTheme}
-                />
+                <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
+                  <BlockNoteView
+                    editor={editor}
+                    onChange={scheduleAutosave}
+                    theme={editorTheme}
+                    slashMenu={false}
+                    formattingToolbar={false}
+                  >
+                    <SuggestionMenuController
+                      triggerCharacter="/"
+                      getItems={async (query) => getSlashItems(query)}
+                    />
+                    <FormattingToolbarController
+                      formattingToolbar={() => (
+                        <FormattingToolbar>
+                          {getFormattingToolbarItems()}
+                          <SendToChildToolbarButton onClick={() => void sendSelectionToChild()} />
+                        </FormattingToolbar>
+                      )}
+                    />
+                  </BlockNoteView>
+                </ChildNoteChainContext.Provider>
               </EditorErrorBoundary>
             )}
           </div>
@@ -850,6 +1076,19 @@ export default function EditorView() {
             <div className="flex gap-3">
               <button className="btn-danger flex-1" onClick={confirmDelete}>Delete</button>
               <button className="btn-secondary flex-1" onClick={() => setShowDeleteConfirm(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOrphanConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowOrphanConfirm(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Remove from Parent</h3>
+            <p className="text-gray-600 text-sm mb-6">Move &ldquo;{title}&rdquo; back to the root level and remove its link to the parent note?</p>
+            <div className="flex gap-3">
+              <button className="btn-danger flex-1" onClick={() => { void orphanChild(); setShowOrphanConfirm(false) }}>Remove</button>
+              <button className="btn-secondary flex-1" onClick={() => setShowOrphanConfirm(false)}>Cancel</button>
             </div>
           </div>
         </div>

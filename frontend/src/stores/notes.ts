@@ -36,8 +36,8 @@ interface NotesState {
   loadNotes: (params?: ListNotesParams, reset?: boolean) => Promise<void>
   loadMore: (params?: ListNotesParams) => Promise<void>
   loadNote: (id: string) => Promise<Note>
-  createNote: (payload: { title: string; content?: string; category_id: string; tags?: string[] }) => Promise<Note>
-  updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; tags?: string[]; summary?: string | null }) => Promise<Note>
+  createNote: (payload: { title: string; content?: string; category_id: string; folder_id?: string | null; tags?: string[] }) => Promise<Note>
+  updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; folder_id?: string | null; tags?: string[]; summary?: string | null }) => Promise<Note>
   pinNote: (id: string) => Promise<Note>
   shareNote: (id: string) => Promise<Note>
   unshareNote: (id: string) => Promise<Note>
@@ -95,6 +95,8 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           content_preview: extractContentPreview(response.data.content),
           first_image_url: null,
           category_id: response.data.category_id,
+          folder_id: response.data.folder_id,
+          parent_note_id: response.data.parent_note_id,
           tags: response.data.tags,
           is_pinned: response.data.is_pinned,
           is_shared: response.data.is_shared,

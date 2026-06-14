@@ -14,7 +14,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
-from app.routers import notes, categories, media, settings
+from app.routers import notes, categories, media, settings, folders
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
@@ -120,6 +120,7 @@ app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users_router.router, prefix="/api/users", tags=["users"])
 app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
+app.include_router(folders.router, prefix="/api/folders", tags=["folders"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])

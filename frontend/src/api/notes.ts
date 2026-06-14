@@ -6,6 +6,8 @@ export interface NoteListItem {
   content_preview: string
   first_image_url: string | null
   category_id: string
+  folder_id: string | null
+  parent_note_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -18,6 +20,8 @@ export interface Note {
   title: string
   content: string
   category_id: string
+  folder_id: string | null
+  parent_note_id: string | null
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
@@ -32,6 +36,7 @@ export interface NoteCreate {
   title: string
   content?: string
   category_id: string
+  folder_id?: string | null
   tags?: string[]
 }
 
@@ -39,6 +44,7 @@ export interface NoteUpdate {
   title?: string
   content?: string
   category_id?: string
+  folder_id?: string | null
   tags?: string[]
   is_pinned?: boolean
   summary?: string | null
@@ -70,6 +76,8 @@ export interface ListNotesParams {
   limit?: number
   offset?: number
   category_id?: string
+  folder_id?: string
+  in_folder?: boolean
   search?: string
 }
 
@@ -99,6 +107,23 @@ export const notesApi = {
 
   pin(id: string): Promise<{ data: Note }> {
     return client.patch(`/notes/${id}/pin`).then((r) => r.data)
+  },
+
+  move(id: string, folderId: string | null): Promise<{ data: Note }> {
+    return client.patch(`/notes/${id}/move`, { folder_id: folderId }).then((r) => r.data)
+  },
+
+  // Child notes
+  listChildren(parentId: string): Promise<ListResponse<NoteListItem>> {
+    return client.get(`/notes/${parentId}/children`).then((r) => r.data)
+  },
+
+  createChild(parentId: string, payload: { title?: string; content?: string }): Promise<{ data: Note }> {
+    return client.post(`/notes/${parentId}/children`, payload).then((r) => r.data)
+  },
+
+  orphanChild(childId: string): Promise<{ data: Note }> {
+    return client.put(`/notes/${childId}`, { parent_note_id: null }).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {

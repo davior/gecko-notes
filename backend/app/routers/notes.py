@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, col
 
 from app.database import get_session
-from app.models import Note, NoteVersion
+from app.models import Note, NoteVersion, Folder
 from app.schemas import (
-    NoteCreate, NoteUpdate, NoteRead, NoteListItem,
+    NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
     DataResponse, ListResponse, ErrorResponse
 )
@@ -82,6 +82,8 @@ def note_to_read(note: Note) -> NoteRead:
         title=note.title,
         content=note.content,
         category_id=note.category_id,
+        folder_id=note.folder_id,
+        parent_note_id=note.parent_note_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -104,6 +106,8 @@ def note_to_list_item(note: Note) -> NoteListItem:
         content_preview=extract_plain_text(note.content, 120),
         first_image_url=extract_first_image(note.content),
         category_id=note.category_id,
+        folder_id=note.folder_id,
+        parent_note_id=note.parent_note_id,
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
@@ -191,16 +195,41 @@ def list_notes(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     category_id: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    in_folder: bool = Query(False),
     search: Optional[str] = None,
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    query = select(Note).where(Note.user_id == user_id)
-    count_query = select(func.count()).select_from(Note).where(Note.user_id == user_id)
+    # Child notes are embedded in their parent and never shown in list/folder views.
+    query = select(Note).where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    count_query = (
+        select(func.count()).select_from(Note)
+        .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    )
 
     if category_id:
         query = query.where(Note.category_id == category_id)
         count_query = count_query.where(Note.category_id == category_id)
+
+    # When scoped to a folder view, only return notes directly in that folder
+    # (folder_id omitted ⇒ root level). Without in_folder, return notes across
+    # all folders (used by global search).
+    #
+    # Pinned notes are surfaced at the root regardless of which folder they live
+    # in. Inside a folder, every note belonging to that folder is shown (pinned
+    # or not) — there is no separate pinned section within a folder.
+    if in_folder:
+        if folder_id:
+            # Inside a folder: all notes directly in it, including pinned ones.
+            folder_filter = Note.folder_id == folder_id
+            query = query.where(folder_filter)
+            count_query = count_query.where(folder_filter)
+        else:
+            # Root: notes with no folder, plus all pinned notes (any folder).
+            root_filter = or_(Note.folder_id == None, Note.is_pinned == True)  # noqa: E711, E712
+            query = query.where(root_filter)
+            count_query = count_query.where(root_filter)
 
     if search:
         search_term = f"%{search}%"
@@ -246,6 +275,7 @@ def create_note(payload: NoteCreate, request: Request, session: Session = Depend
         title=payload.title,
         content=payload.content,
         category_id=payload.category_id,
+        folder_id=payload.folder_id,
         tags=json.dumps(payload.tags),
         created_at=now,
         modified_at=now,
@@ -264,12 +294,19 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
 
+    # For optional fields like parent_note_id and folder_id, check if explicitly set
+    # in the payload rather than checking if not None, so that clearing them (null)
+    # is possible. Other fields use is not None check as before.
     if payload.title is not None:
         note.title = payload.title
     if payload.content is not None:
         note.content = payload.content
     if payload.category_id is not None:
         note.category_id = payload.category_id
+    if 'folder_id' in payload.model_fields_set:
+        note.folder_id = payload.folder_id
+    if 'parent_note_id' in payload.model_fields_set:
+        note.parent_note_id = payload.parent_note_id
     if payload.tags is not None:
         note.tags = json.dumps(payload.tags)
     if payload.is_pinned is not None:
@@ -299,12 +336,80 @@ def pin_note(note_id: str, request: Request, session: Session = Depends(get_sess
     return DataResponse(data=note_to_read(note))
 
 
+@router.patch("/{note_id}/move", response_model=DataResponse[NoteRead])
+def move_note(note_id: str, payload: MoveNoteRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    if payload.folder_id:
+        folder = session.get(Folder, payload.folder_id)
+        if not folder or folder.user_id != user_id:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Folder not found"})
+    note.folder_id = payload.folder_id or None
+    note.modified_at = datetime.now(timezone.utc)
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
+
+
+@router.get("/{note_id}/children", response_model=ListResponse[NoteListItem])
+def list_children(note_id: str, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    parent = session.get(Note, note_id)
+    if not parent or parent.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    children = session.exec(
+        select(Note)
+        .where(Note.user_id == user_id, Note.parent_note_id == note_id)
+        .order_by(Note.created_at.asc())
+    ).all()
+    return ListResponse(
+        data=[note_to_list_item(c) for c in children],
+        total=len(children),
+        limit=len(children),
+        offset=0,
+    )
+
+
+@router.post("/{note_id}/children", response_model=DataResponse[NoteRead], status_code=201)
+def create_child(note_id: str, payload: CreateChildRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    parent = session.get(Note, note_id)
+    if not parent or parent.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    now = datetime.now(timezone.utc)
+    child = Note(
+        id=str(uuid.uuid4()),
+        title=payload.title,
+        content=payload.content,
+        category_id=parent.category_id,   # inherit category
+        folder_id=parent.folder_id,       # inherit folder
+        parent_note_id=parent.id,
+        tags='[]',
+        created_at=now,
+        modified_at=now,
+        user_id=user_id,
+    )
+    session.add(child)
+    session.commit()
+    session.refresh(child)
+    return DataResponse(data=note_to_read(child))
+
+
 @router.delete("/{note_id}", status_code=204)
 def delete_note(note_id: str, request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
     note = session.get(Note, note_id)
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    # Orphan (don't cascade-delete) children so their content survives and they
+    # re-surface in the main list rather than being silently destroyed.
+    children = session.exec(select(Note).where(Note.parent_note_id == note_id)).all()
+    for child in children:
+        child.parent_note_id = None
+        session.add(child)
     versions = session.exec(select(NoteVersion).where(NoteVersion.note_id == note_id)).all()
     for version in versions:
         session.delete(version)
