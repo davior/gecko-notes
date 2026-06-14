@@ -45,6 +45,7 @@ export interface NoteUpdate {
   content?: string
   category_id?: string
   folder_id?: string | null
+  parent_note_id?: string | null
   tags?: string[]
   is_pinned?: boolean
   summary?: string | null
