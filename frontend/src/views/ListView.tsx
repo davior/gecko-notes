@@ -69,6 +69,7 @@ export default function ListView() {
   })
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const categoryScrollRef = useRef<HTMLDivElement>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -117,6 +118,18 @@ export default function ListView() {
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [hasMore, loading, buildParams])
+
+  useEffect(() => {
+    const el = categoryScrollRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => {
+      if (e.deltaY === 0) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
 
   function toggleSort() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
@@ -256,13 +269,22 @@ export default function ListView() {
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
-        <div className="flex items-center gap-3 mb-3">
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+        <div className="flex items-center gap-3 mb-2">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
             <span className="text-2xl">🦎</span>
             Gecko Notes
           </h1>
-          <div className="flex-1" />
-          <Link to="/settings" className="btn-ghost p-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              type="text"
+              placeholder="Search notes..."
+              className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
+            />
+          </div>
+          <Link to="/settings" className="btn-ghost p-2 shrink-0">
             <Settings className="w-5 h-5" />
           </Link>
           <UserAvatar />
@@ -270,18 +292,7 @@ export default function ListView() {
 
         <FolderBreadcrumb breadcrumb={breadcrumb} onNavigate={openFolder} />
 
-        <div className="relative mb-3">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            type="text"
-            placeholder="Search notes..."
-            className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
+        <div ref={categoryScrollRef} className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
           <button
             className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-all ${
               activeCategoryId === null
