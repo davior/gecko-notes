@@ -53,6 +53,23 @@ function parseNoteContent(content: string): PartialBlock[] {
   }
 }
 
+function extractChildNoteIds(blocks: unknown[]): string[] {
+  const ids: string[] = []
+  function walk(b: unknown) {
+    if (typeof b !== 'object' || b === null) return
+    const rec = b as Record<string, unknown>
+    if (rec.type === 'childNote' && typeof rec.props === 'object' && rec.props !== null) {
+      const id = (rec.props as Record<string, unknown>).childNoteId
+      if (typeof id === 'string') ids.push(id)
+    }
+    if (Array.isArray(rec.children)) {
+      for (const child of rec.children) walk(child)
+    }
+  }
+  for (const block of blocks) walk(block)
+  return ids
+}
+
 class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false }
   static getDerivedStateFromError() { return { hasError: true } }
@@ -269,6 +286,14 @@ export default function EditorView() {
     isSaving.current = true
     const content = JSON.stringify(editor.document)
     currentNoteContent.current = extractPlainText()
+
+    // Detect removed child-note blocks so we can orphan them (set parent_note_id = NULL)
+    // and re-surface them in the main list. Extract childNote IDs from the current
+    // document and the previously-saved content, then orphan any that disappeared.
+    const currentChildIds = extractChildNoteIds(editor.document as unknown[])
+    const previousChildIds = note ? extractChildNoteIds(parseNoteContent(note.content) as unknown[]) : []
+    const removedChildIds = previousChildIds.filter((id) => !currentChildIds.includes(id))
+
     const payload = {
       title: latestTitle.current || 'Untitled',
       content,
@@ -277,19 +302,26 @@ export default function EditorView() {
       conversation: conversationRef.current,
     }
     try {
+      let saved: Note
       if (latestIsNew.current && !createdNoteId.current) {
         const created = await notesStore.createNote({ ...payload, folder_id: initialFolderId.current })
         createdNoteId.current = created.id
-        // Mark the editor as already synced to the new id so the hydrate effect
-        // doesn't replaceBlocks (which would reset the cursor) after navigation.
         syncedEditorKey.current = created.id
-        setNote(created)
+        saved = created
         navigate(`/notes/${created.id}`, { replace: true })
       } else {
         const resolvedId = createdNoteId.current || latestNoteId.current!
-        const updated = await notesStore.updateNote(resolvedId, payload)
-        setNote(updated)
+        saved = await notesStore.updateNote(resolvedId, payload)
       }
+      setNote(saved)
+
+      // Orphan any child notes that were removed from the editor.
+      for (const childId of removedChildIds) {
+        void notesApi.orphanChild(saved.id, childId).catch(() => {
+          // Orphaning is best-effort; don't break the save if it fails.
+        })
+      }
+
       hasPendingChanges.current = false
       setSaveStatus('All changes saved')
     } catch {
