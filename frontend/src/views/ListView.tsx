@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus } from 'lucide-react'
+import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
 import {
-  DndContext, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
-  type DragEndEvent,
+  DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
+  type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
+import { Folder as FolderIcon } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
-import FolderCard from '@/components/FolderCard'
+import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import AIBar from '@/components/AIBar'
@@ -56,11 +57,19 @@ export default function ListView() {
   )
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [aiResult, setAiResult] = useState('')
+  const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
   const [moveTarget, setMoveTarget] = useState<{ type: 'note' | 'folder'; id: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<NoteListItem | null>(null)
   const [toast, setToast] = useState('')
+  const [pinnedCollapsed, setPinnedCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('pinnedCollapsed') === 'true' } catch { return false }
+  })
+  const [notesCollapsed, setNotesCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('notesCollapsed') === 'true' } catch { return false }
+  })
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const categoryScrollRef = useRef<HTMLDivElement>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -110,6 +119,18 @@ export default function ListView() {
     return () => observer.disconnect()
   }, [hasMore, loading, buildParams])
 
+  useEffect(() => {
+    const el = categoryScrollRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => {
+      if (e.deltaY === 0) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
+
   function toggleSort() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
   }
@@ -118,6 +139,18 @@ export default function ListView() {
     const next: ViewMode = viewMode === 'list' ? 'card' : 'list'
     localStorage.setItem('viewMode', next)
     setViewMode(next)
+  }
+
+  function togglePinnedCollapsed() {
+    const next = !pinnedCollapsed
+    setPinnedCollapsed(next)
+    localStorage.setItem('pinnedCollapsed', String(next))
+  }
+
+  function toggleNotesCollapsed() {
+    const next = !notesCollapsed
+    setNotesCollapsed(next)
+    localStorage.setItem('notesCollapsed', String(next))
   }
 
   function openFolder(id: string | null) {
@@ -164,7 +197,20 @@ export default function ListView() {
     }
   }
 
+  function handleDragStart(event: DragStartEvent) {
+    const data = event.active.data.current as { type: string; noteId?: string; folderId?: string } | undefined
+    if (!data) return
+    if (data.type === 'folder' && data.folderId) {
+      const folder = subfolders.find((f) => f.id === data.folderId)
+      setActiveDrag({ type: 'folder', label: folder?.name ?? '' })
+    } else if (data.type === 'note' && data.noteId) {
+      const note = notes.find((n) => n.id === data.noteId)
+      setActiveDrag({ type: 'note', label: note?.title || 'Untitled' })
+    }
+  }
+
   async function handleDragEnd(event: DragEndEvent) {
+    setActiveDrag(null)
     const { active, over } = event
     if (!over) return
     const overId = String(over.id)
@@ -210,23 +256,12 @@ export default function ListView() {
     ))
   }
 
-  function renderFolders() {
-    if (subfolders.length === 0) return null
-    return (
-      <div className={`${gridClass} mb-4`}>
-        {subfolders.map((folder) => (
-          <FolderCard
-            key={folder.id}
-            folder={folder}
-            viewMode={viewMode}
-            onOpen={(id) => openFolder(id)}
-            onMove={(f) => setMoveTarget({ type: 'folder', id: f.id })}
-            onRename={handleRenameFolder}
-            onDelete={handleDeleteFolder}
-          />
-        ))}
-      </div>
-    )
+  const folderBarProps = {
+    folders: subfolders,
+    onOpen: openFolder,
+    onMove: (f: Folder) => setMoveTarget({ type: 'folder', id: f.id }),
+    onRename: handleRenameFolder,
+    onDelete: handleDeleteFolder,
   }
 
   const newNotePath = folderId ? `/notes/new?folder=${folderId}` : '/notes/new'
@@ -234,32 +269,27 @@ export default function ListView() {
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
-        <div className="flex items-center gap-3 mb-3">
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+        <div className="flex items-center gap-3 mb-2">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
             <span className="text-2xl">🦎</span>
             Gecko Notes
           </h1>
-          <div className="flex-1" />
-          <Link to="/settings" className="btn-ghost p-2">
-            <Settings className="w-5 h-5" />
-          </Link>
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              type="text"
+              placeholder="Search notes..."
+              className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
+            />
+          </div>
           <UserAvatar />
         </div>
 
         <FolderBreadcrumb breadcrumb={breadcrumb} onNavigate={openFolder} />
 
-        <div className="relative mb-3">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            type="text"
-            placeholder="Search notes..."
-            className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
+        <div ref={categoryScrollRef} className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
           <button
             className={`text-xs px-3 py-1.5 rounded-full border shrink-0 transition-all ${
               activeCategoryId === null
@@ -314,7 +344,7 @@ export default function ListView() {
         </div>
       </header>
 
-      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
           {loading && notes.length === 0 && subfolders.length === 0 ? (
             <div className={gridClass}>
@@ -340,21 +370,50 @@ export default function ListView() {
             </div>
           ) : (
             <>
-              {renderFolders()}
-              {pinnedNotes.length > 0 && (
+              {folderId !== null ? (
                 <>
-                  <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2">Pinned</p>
-                  <div className={`${gridClass} mb-4`}>
-                    {renderNotes(pinnedNotes)}
+                  <FolderIconBar {...folderBarProps} />
+                  <div className={gridClass}>
+                    {renderNotes(unpinnedNotes)}
                   </div>
+                </>
+              ) : (
+                <>
+                  {pinnedNotes.length > 0 && (
+                    <>
+                      <button
+                        className="flex items-center gap-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                        onClick={togglePinnedCollapsed}
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${pinnedCollapsed ? '-rotate-90' : ''}`} />
+                        Pinned
+                      </button>
+                      {!pinnedCollapsed && (
+                        <div className={`${gridClass} mb-4`}>
+                          {renderNotes(pinnedNotes)}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <FolderIconBar {...folderBarProps} />
                   {unpinnedNotes.length > 0 && (
-                    <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2">Notes</p>
+                    <>
+                      <button
+                        className="flex items-center gap-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                        onClick={toggleNotesCollapsed}
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${notesCollapsed ? '-rotate-90' : ''}`} />
+                        Notes
+                      </button>
+                      {!notesCollapsed && (
+                        <div className={gridClass}>
+                          {renderNotes(unpinnedNotes)}
+                        </div>
+                      )}
+                    </>
                   )}
                 </>
               )}
-              <div className={gridClass}>
-                {renderNotes(unpinnedNotes)}
-              </div>
               <div ref={sentinelRef} className="h-2" />
               {loading && (
                 <div className="text-center py-4">
@@ -367,6 +426,19 @@ export default function ListView() {
             </>
           )}
         </main>
+        <DragOverlay dropAnimation={null}>
+          {activeDrag?.type === 'folder' && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white dark:bg-gray-800 border-blue-400 shadow-xl cursor-grabbing">
+              <FolderIcon className="w-4 h-4 text-blue-500 shrink-0" fill="currentColor" fillOpacity={0.15} />
+              <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{activeDrag.label}</span>
+            </div>
+          )}
+          {activeDrag?.type === 'note' && (
+            <div className="card dark:bg-gray-800 dark:border-gray-700 px-4 py-3 shadow-xl cursor-grabbing max-w-xs opacity-90">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{activeDrag.label}</p>
+            </div>
+          )}
+        </DragOverlay>
       </DndContext>
 
       {/* AI result pane */}

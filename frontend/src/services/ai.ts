@@ -55,7 +55,7 @@ class AnthropicProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 4096,
+      max_tokens: 16384,
       messages,
     }
     if (systemPrompt) body.system = systemPrompt
@@ -130,7 +130,7 @@ class OpenAIProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 4096,
+      max_tokens: 16384,
       messages,
     }
     if (temperature !== undefined) body.temperature = temperature
