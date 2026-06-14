@@ -204,7 +204,7 @@ export default function AIConversationPanel({
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -270,7 +270,13 @@ export default function AIConversationPanel({
   }, [contextScope, useSummaries, includeLinkedFiles])
 
   useEffect(() => {
-    if (isOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!isOpen) return
+    // Scroll the message list itself rather than scrollIntoView on an anchor:
+    // scrollIntoView walks up and scrolls every scrollable ancestor (even an
+    // overflow-hidden one is programmatically scrollable), which would scroll
+    // the whole page and clip the note header.
+    const el = messagesContainerRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, loading, isOpen])
 
   useEffect(() => {
@@ -671,7 +677,7 @@ export default function AIConversationPanel({
       </div>
 
       {/* Message list */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">
         {!aiService && (
           <div className="text-center py-8 text-sm text-gray-400 space-y-2">
             <Sparkles className="w-8 h-8 mx-auto text-gray-300" />
@@ -819,7 +825,6 @@ export default function AIConversationPanel({
           </div>
         )}
 
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}

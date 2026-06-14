@@ -825,7 +825,7 @@ export default function EditorView() {
   const editorTheme: 'light' | 'dark' = activeGlassTheme ? activeGlassTheme.mode : theme
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
+    <div className="flex flex-col h-screen overflow-hidden bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
           <button className="btn-ghost p-2" onClick={goHome} title="Go home">
