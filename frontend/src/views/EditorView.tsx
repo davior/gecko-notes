@@ -213,14 +213,31 @@ export default function EditorView() {
     if (!(noteId && noteId === createdNoteId.current)) {
       init()
     }
+    // Capture the departing note ID at effect creation time so cleanup uses the
+    // correct ID. If we navigate parent -> child, latestNoteId gets updated by
+    // the next effect run, so we'd save the parent's content (containing the child
+    // embed) to the child's ID, corrupting it. Capture here to keep them in sync.
+    const departingNoteId = noteId
+    const departingCreatedId = createdNoteId.current
     return () => {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
       // Flush any pending edits to the note we're leaving (e.g. navigating
-      // parent <-> child) so they aren't lost to the cancelled debounce. Refs
-      // still point at the departing note here (effect bodies run after
-      // cleanups). Guard against materialising an empty, never-saved draft.
-      if (hasPendingChanges.current && (latestNoteId.current || createdNoteId.current)) {
-        void saveDraftRef.current?.(true)
+      // parent <-> child) so they aren't lost to the cancelled debounce.
+      // Guard against materialising an empty, never-saved draft.
+      if (hasPendingChanges.current && (departingNoteId || departingCreatedId)) {
+        const noteIdToSave = departingNoteId || departingCreatedId
+        const content = JSON.stringify(editor?.document ?? [])
+        // Save directly with the departing note's ID, not via saveDraftRef which
+        // uses latestNoteId (now updated to the new noteId).
+        void notesStore.updateNote(noteIdToSave, {
+          title: latestTitle.current,
+          content,
+          category_id: latestCategoryId.current,
+          tags: latestTags.current,
+          conversation: conversationRef.current,
+        }).catch(() => {
+          // Swallow errors; we tried our best to flush.
+        })
       }
     }
   }, [noteId])
