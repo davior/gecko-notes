@@ -317,7 +317,7 @@ export default function EditorView() {
 
       // Orphan any child notes that were removed from the editor.
       for (const childId of removedChildIds) {
-        void notesApi.orphanChild(saved.id, childId).catch(() => {
+        void notesApi.orphanChild(childId).catch(() => {
           // Orphaning is best-effort; don't break the save if it fails.
         })
       }

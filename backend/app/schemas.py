@@ -123,6 +123,7 @@ class NoteUpdate(BaseModel):
     content: Optional[str] = None
     category_id: Optional[str] = None
     folder_id: Optional[str] = None
+    parent_note_id: Optional[str] = None
     tags: Optional[List[str]] = None
     is_pinned: Optional[bool] = None
     summary: Optional[str] = None

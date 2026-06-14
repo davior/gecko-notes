@@ -290,6 +290,8 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
         note.category_id = payload.category_id
     if payload.folder_id is not None:
         note.folder_id = payload.folder_id or None
+    if payload.parent_note_id is not None:
+        note.parent_note_id = payload.parent_note_id or None
     if payload.tags is not None:
         note.tags = json.dumps(payload.tags)
     if payload.is_pinned is not None:

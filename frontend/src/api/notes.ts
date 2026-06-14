@@ -122,8 +122,8 @@ export const notesApi = {
     return client.post(`/notes/${parentId}/children`, payload).then((r) => r.data)
   },
 
-  orphanChild(parentId: string, childId: string): Promise<{ data: Note }> {
-    return client.patch(`/notes/${childId}`, { parent_note_id: null }).then((r) => r.data)
+  orphanChild(childId: string): Promise<{ data: Note }> {
+    return client.put(`/notes/${childId}`, { parent_note_id: null }).then((r) => r.data)
   },
 
   delete(id: string): Promise<void> {
