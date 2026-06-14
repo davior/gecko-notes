@@ -402,12 +402,10 @@ def delete_note(note_id: str, request: Request, session: Session = Depends(get_s
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
     # Orphan (don't cascade-delete) children so their content survives and they
-    # re-surface at root rather than being silently destroyed. Also clear folder_id
-    # to return them to root level (they inherited it from the parent).
+    # re-surface in the main list rather than being silently destroyed.
     children = session.exec(select(Note).where(Note.parent_note_id == note_id)).all()
     for child in children:
         child.parent_note_id = None
-        child.folder_id = None
         session.add(child)
     versions = session.exec(select(NoteVersion).where(NoteVersion.note_id == note_id)).all()
     for version in versions:
