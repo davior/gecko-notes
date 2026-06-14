@@ -50,22 +50,36 @@ function Spinner() {
   )
 }
 
-async function fileToAttachment(file: File): Promise<FileAttachment> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      const base64 = dataUrl.split(',')[1]
-      resolve({
-        type: file.type.startsWith('image/') ? 'image' : 'document',
-        mimeType: file.type || 'application/octet-stream',
-        data: base64,
-        name: file.name,
-      })
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
+type ProcessedFile =
+  | { kind: 'image'; attachment: FileAttachment; name: string }
+  | { kind: 'text'; content: string; name: string }
+  | { kind: 'unsupported'; name: string }
+
+async function processFile(file: File): Promise<ProcessedFile> {
+  if (file.type.startsWith('image/')) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1]
+        resolve({ kind: 'image', name: file.name, attachment: { type: 'image', mimeType: file.type, data: base64, name: file.name } })
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+  const isText =
+    file.type.startsWith('text/') ||
+    ['application/json', 'application/xml'].includes(file.type) ||
+    /\.(md|txt|json|csv|yaml|yml|toml|xml|js|ts|py|sh|sql)$/i.test(file.name)
+  if (isText) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve({ kind: 'text', name: file.name, content: reader.result as string })
+      reader.onerror = reject
+      reader.readAsText(file)
+    })
+  }
+  return { kind: 'unsupported', name: file.name }
 }
 
 async function urlToAttachment(url: string): Promise<FileAttachment | null> {
@@ -73,18 +87,12 @@ async function urlToAttachment(url: string): Promise<FileAttachment | null> {
     const resp = await fetch(url)
     if (!resp.ok) return null
     const blob = await resp.blob()
+    if (!blob.type.startsWith('image/')) return null
     return new Promise((resolve) => {
       const reader = new FileReader()
       reader.onload = () => {
-        const dataUrl = reader.result as string
-        const base64 = dataUrl.split(',')[1]
-        const isImage = blob.type.startsWith('image/')
-        resolve({
-          type: isImage ? 'image' : 'document',
-          mimeType: blob.type || 'application/octet-stream',
-          data: base64,
-          name: url.split('/').pop() ?? 'file',
-        })
+        const base64 = (reader.result as string).split(',')[1]
+        resolve({ type: 'image', mimeType: blob.type, data: base64, name: url.split('/').pop() ?? 'file' })
       }
       reader.onerror = () => resolve(null)
       reader.readAsDataURL(blob)
@@ -252,8 +260,9 @@ export default function AIConversationPanel({
     const fileAttachments: FileAttachment[] = []
 
     if (contextScope === 'none') {
-      const pendingAttachments = await Promise.all(pendingFiles.map(fileToAttachment))
-      return { contextText: '', attachments: pendingAttachments }
+      const processed = await Promise.all(pendingFiles.map(processFile))
+      const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
+      return { contextText: '', attachments: imgs.map(p => p.attachment) }
     }
 
     let notes: { title: string; content: string; summary?: string | null; blocks: unknown[] }[] = []
@@ -312,18 +321,31 @@ export default function AIConversationPanel({
       const body = (useSummaries && n.summary) ? n.summary : n.content
       return n.title ? `## ${n.title}\n\n${body}` : body
     })
-    const contextText = parts.join('\n\n---\n\n')
 
-    // Collect linked file URLs
+    // Collect linked file URLs (images only — others not supported as content blocks)
     if (includeLinkedFiles) {
       const allUrls = notes.flatMap((n) => extractLinkedFileUrls(n.blocks))
       const fetched = await Promise.all(allUrls.map(urlToAttachment))
       fileAttachments.push(...(fetched.filter(Boolean) as FileAttachment[]))
     }
 
-    // Pending uploaded files
-    const pendingAttachments = await Promise.all(pendingFiles.map(fileToAttachment))
-    fileAttachments.push(...pendingAttachments)
+    // Pending uploaded files — images go as content blocks, text as context, others as placeholders
+    let contextText = parts.join('\n\n---\n\n')
+    const processed = await Promise.all(pendingFiles.map(processFile))
+    const fileTextParts: string[] = []
+    for (const p of processed) {
+      if (p.kind === 'image') {
+        fileAttachments.push(p.attachment)
+      } else if (p.kind === 'text') {
+        fileTextParts.push(`### ${p.name}\n\`\`\`\n${p.content}\n\`\`\``)
+      } else {
+        fileTextParts.push(`### ${p.name}\n*(file type not supported for AI context)*`)
+      }
+    }
+    if (fileTextParts.length > 0) {
+      const fileSection = `**Attached files:**\n\n${fileTextParts.join('\n\n')}`
+      contextText = contextText ? `${contextText}\n\n---\n${fileSection}` : fileSection
+    }
 
     return { contextText, attachments: fileAttachments }
   }
@@ -391,8 +413,21 @@ export default function AIConversationPanel({
       }
       onConversationChange([...withUser, assistantMsg])
       setPendingFiles([])
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'An error occurred')
+    } catch (e: unknown) {
+      let msg = e instanceof Error ? e.message : 'An error occurred'
+      // Axios errors: the backend wraps the upstream API error body in `detail`
+      const axiosErr = e as { response?: { data?: Record<string, unknown> } }
+      const detail = axiosErr.response?.data?.detail
+      if (typeof detail === 'string') {
+        try {
+          const parsed = JSON.parse(detail) as { error?: { message?: string } }
+          msg = parsed?.error?.message ?? detail
+        } catch { msg = detail }
+      } else if (typeof detail === 'object' && detail !== null) {
+        const d = detail as Record<string, unknown>
+        if (typeof d.message === 'string') msg = d.message
+      }
+      setError(msg)
       onConversationChange(priorMessages)
     } finally {
       setLoading(false)
