@@ -213,31 +213,15 @@ export default function EditorView() {
     if (!(noteId && noteId === createdNoteId.current)) {
       init()
     }
-    // Capture the departing note ID at effect creation time so cleanup uses the
-    // correct ID. If we navigate parent -> child, latestNoteId gets updated by
-    // the next effect run, so we'd save the parent's content (containing the child
-    // embed) to the child's ID, corrupting it. Capture here to keep them in sync.
-    const departingNoteId = noteId
-    const departingCreatedId = createdNoteId.current
     return () => {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
       // Flush any pending edits to the note we're leaving (e.g. navigating
-      // parent <-> child) so they aren't lost to the cancelled debounce.
-      // Guard against materialising an empty, never-saved draft.
-      if (hasPendingChanges.current && (departingNoteId || departingCreatedId)) {
-        const noteIdToSave = departingNoteId || departingCreatedId
-        const content = JSON.stringify(editor?.document ?? [])
-        // Save directly with the departing note's ID, not via saveDraftRef which
-        // uses latestNoteId (now updated to the new noteId).
-        void notesStore.updateNote(noteIdToSave, {
-          title: latestTitle.current,
-          content,
-          category_id: latestCategoryId.current,
-          tags: latestTags.current,
-          conversation: conversationRef.current,
-        }).catch(() => {
-          // Swallow errors; we tried our best to flush.
-        })
+      // parent <-> child) so they aren't lost to the cancelled debounce. React
+      // runs all effect cleanups before any effect bodies, so the refs that
+      // doSave reads (createdNoteId / latestNoteId) still point at the departing
+      // note here. Guard against materialising an empty, never-saved draft.
+      if (hasPendingChanges.current && (latestNoteId.current || createdNoteId.current)) {
+        void saveDraftRef.current?.(true)
       }
     }
   }, [noteId])
@@ -314,7 +298,17 @@ export default function EditorView() {
     const editorKey = noteId ?? 'new'
     if (syncedEditorKey.current === editorKey) return
 
-    const blocks = (isNew && !createdNoteId.current) ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
+    // Guard against a render-timing race when navigating between notes that
+    // share this route (e.g. parent <-> child): `noteId` updates immediately but
+    // the `note` state still holds the previous note until init()'s async
+    // setNote() applies. Without this gate we'd seed the editor with the previous
+    // note's content under the new note's key, then falsely mark it synced so the
+    // real content never loads. Only hydrate once the loaded note matches the
+    // route param (or it's a genuinely new, unsaved note).
+    const isNewNote = isNew && !createdNoteId.current
+    if (!isNewNote && note?.id !== noteId) return
+
+    const blocks = isNewNote ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
     isHydratingEditor.current = true
     editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
     currentNoteContent.current = extractPlainText(blocks as unknown[])
