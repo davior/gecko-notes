@@ -1,4 +1,4 @@
-import { Pin, Globe, FolderInput } from 'lucide-react'
+import { Pin, Globe, FolderInput, Trash2 } from 'lucide-react'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
 import CategoryBadge from './CategoryBadge'
@@ -27,10 +27,11 @@ interface Props {
   onClick: (id: string) => void
   onPin?: (id: string) => void
   onMove?: (id: string) => void
+  onDelete?: (id: string) => void
   viewMode?: 'list' | 'card'
 }
 
-export default function NoteCard({ note, category, onClick, onPin, onMove, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, onMove, onDelete, viewMode = 'list' }: Props) {
   const visibleTags = note.tags.slice(0, 3)
 
   if (viewMode === 'card') {
@@ -105,6 +106,17 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, viewM
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
+              </button>
+            )}
+            {onDelete && (
+              <button
+                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
+                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                title="Delete note"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -185,6 +197,16 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, viewM
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
+              </button>
+            )}
+            {onDelete && (
+              <button
+                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
+                title="Delete note"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>

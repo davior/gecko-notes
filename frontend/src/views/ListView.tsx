@@ -42,7 +42,7 @@ export default function ListView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
 
-  const { notes, loading, hasMore, loadNotes, loadMore, pinNote } = useNotesStore()
+  const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote } = useNotesStore()
   const foldersStore = useFoldersStore()
   const { breadcrumb, subfolders } = foldersStore
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
@@ -57,6 +57,7 @@ export default function ListView() {
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [aiResult, setAiResult] = useState('')
   const [moveTarget, setMoveTarget] = useState<{ type: 'note' | 'folder'; id: string } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<NoteListItem | null>(null)
   const [toast, setToast] = useState('')
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -202,6 +203,7 @@ export default function ListView() {
           onClick={(id) => navigate(`/notes/${id}`)}
           onPin={pinNote}
           onMove={(id) => setMoveTarget({ type: 'note', id })}
+          onDelete={(id) => setDeleteTarget(notes.find((n) => n.id === id) ?? null)}
           viewMode={viewMode}
         />
       </DraggableNote>
@@ -414,6 +416,24 @@ export default function ListView() {
           onSelect={handleMoveSelect}
           onClose={() => setMoveTarget(null)}
         />
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setDeleteTarget(null)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Note</h3>
+            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">Are you sure you want to delete &ldquo;{deleteTarget.title || 'Untitled'}&rdquo;? This cannot be undone.</p>
+            <div className="flex gap-3">
+              <button
+                className="btn-danger flex-1"
+                onClick={async () => { await deleteNote(deleteTarget.id); setDeleteTarget(null) }}
+              >
+                Delete
+              </button>
+              <button className="btn-secondary flex-1" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
 
       <Link
