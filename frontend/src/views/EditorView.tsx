@@ -29,6 +29,7 @@ import { settingsApi } from '@/api/settings'
 import { notesApi, configApi, type Note } from '@/api/notes'
 import { useDictation } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
+import { extractPlainText } from '@/utils/blocks'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -288,7 +289,7 @@ export default function EditorView() {
     if (isHydratingEditor.current) return
     hasPendingChanges.current = true
     dirtySinceSnapshot.current = true
-    currentNoteContent.current = extractPlainText()
+    currentNoteContent.current = extractPlainText(editor?.document as unknown[] ?? [])
     setSaveStatus('Unsaved changes')
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
     autosaveTimer.current = setTimeout(() => {
@@ -303,7 +304,7 @@ export default function EditorView() {
     setSaveStatus('Saving...')
     isSaving.current = true
     const content = JSON.stringify(editor.document)
-    currentNoteContent.current = extractPlainText()
+    currentNoteContent.current = extractPlainText(editor.document as unknown[])
 
     // Detect removed child-note blocks so we can orphan them (set parent_note_id = NULL)
     // and re-surface them in the main list. Extract childNote IDs from the current
@@ -455,28 +456,6 @@ export default function EditorView() {
     navigate(`/notes/${newNote.id}`)
   }
 
-  function extractPlainText(blocks: unknown[] | undefined = editor?.document): string {
-    if (!blocks) return ''
-    try {
-      const texts: string[] = []
-      function processBlock(block: Record<string, unknown>) {
-        const content = block.content
-        if (Array.isArray(content)) {
-          for (const item of content) {
-            if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-              texts.push(String((item as Record<string, unknown>).text ?? ''))
-            }
-          }
-        }
-        if (Array.isArray(block.children)) {
-          for (const child of block.children) processBlock(child as Record<string, unknown>)
-        }
-      }
-      for (const block of blocks) { processBlock(block as unknown as Record<string, unknown>); texts.push('\n') }
-      return texts.join('').trim()
-    } catch { return '' }
-  }
-
   // Build well-punctuated text for text-to-speech. Unlike extractPlainText (used
   // for AI context), this terminates list items, table rows and headings with
   // punctuation so the TTS engine inserts natural pauses instead of reading the
@@ -603,7 +582,7 @@ export default function EditorView() {
     if (!settingsStore.aiService) { showToast('No AI provider configured'); return }
     setGeneratingTags(true)
     try {
-      const content = extractPlainText()
+      const content = extractPlainText(editor?.document as unknown[] ?? [])
       const generated = await settingsStore.aiService.generateTags(`${title}\n\n${content}`)
       onTagsGenerated(generated)
     } catch { showToast('Failed to generate tags') }
@@ -618,7 +597,7 @@ export default function EditorView() {
     if (!settingsStore.aiService) { showToast('No AI provider configured'); return }
     setGeneratingSummary(true)
     try {
-      const content = extractPlainText()
+      const content = extractPlainText(editor?.document as unknown[] ?? [])
       const generated = await settingsStore.aiService.generateSummary(
         `${title}\n\n${content}`,
         settingsStore.summaryPrompt,
@@ -647,7 +626,7 @@ export default function EditorView() {
       autosaveTimer.current = null
     }
 
-    const hasDraftContent = Boolean(title.trim() || extractPlainText() || tags.length)
+    const hasDraftContent = Boolean(title.trim() || extractPlainText(editor?.document as unknown[] ?? []) || tags.length)
     if ((hasPendingChanges.current || (isNew && !createdNoteId.current && hasDraftContent)) && categoryId) {
       await doSave(true)
     }
@@ -1080,6 +1059,10 @@ export default function EditorView() {
           isOpen={panelOpen}
           onToggle={() => setPanelOpen((o) => !o)}
           getNoteContext={() => currentNoteContent.current}
+          noteId={createdNoteId.current ?? noteId}
+          noteFolderId={note?.folder_id ?? null}
+          noteSummary={note?.summary ?? null}
+          getNoteDocument={() => editor?.document as unknown[] ?? []}
           conversation={conversation}
           onConversationChange={handleConversationChange}
           onAddToNote={insertAIText}

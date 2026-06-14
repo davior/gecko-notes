@@ -80,6 +80,8 @@ export interface ListNotesParams {
   folder_id?: string
   in_folder?: boolean
   search?: string
+  recursive?: boolean
+  include_children?: boolean
 }
 
 export interface ListResponse<T> {

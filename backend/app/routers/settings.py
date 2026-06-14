@@ -4,7 +4,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timedelta
 import httpx
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -390,7 +390,7 @@ class AnthropicProxyRequest(BaseModel):
     model: str
     max_tokens: int
     messages: List[Dict[str, Any]]
-    system: Optional[str] = None
+    system: Optional[Union[str, List[Dict[str, Any]]]] = None
     temperature: Optional[float] = None
     prefill: Optional[str] = None
 
@@ -424,6 +424,7 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
             headers={
                 "x-api-key": decrypt_api_key(provider.api_key),
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "pdfs-2024-09-25",
                 "content-type": "application/json",
             },
             json=body,

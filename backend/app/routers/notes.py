@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, col
 
@@ -16,6 +16,25 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+
+def get_folder_subtree(folder_id: str, user_id: str, session: Session, max_depth: int = 50) -> List[str]:
+    """BFS walk returning folder_id and all descendant folder IDs owned by user_id."""
+    result = [folder_id]
+    queue = [folder_id]
+    for _ in range(max_depth):
+        if not queue:
+            break
+        next_queue = []
+        for fid in queue:
+            children = session.exec(
+                select(Folder).where(Folder.user_id == user_id, Folder.parent_folder_id == fid)
+            ).all()
+            for child in children:
+                result.append(child.id)
+                next_queue.append(child.id)
+        queue = next_queue
+    return result
 
 
 def _version_max_count() -> int:
@@ -198,15 +217,22 @@ def list_notes(
     folder_id: Optional[str] = None,
     in_folder: bool = Query(False),
     search: Optional[str] = None,
+    recursive: bool = Query(False),
+    include_children: bool = Query(False),
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    # Child notes are embedded in their parent and never shown in list/folder views.
-    query = select(Note).where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
-    count_query = (
-        select(func.count()).select_from(Note)
-        .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
-    )
+    # Child notes are embedded in their parent and never shown in normal list/folder views.
+    # include_children=True opts out of this filter for AI context scope fetches.
+    if include_children:
+        query = select(Note).where(Note.user_id == user_id)
+        count_query = select(func.count()).select_from(Note).where(Note.user_id == user_id)
+    else:
+        query = select(Note).where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+        count_query = (
+            select(func.count()).select_from(Note)
+            .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+        )
 
     if category_id:
         query = query.where(Note.category_id == category_id)
@@ -221,8 +247,12 @@ def list_notes(
     # or not) — there is no separate pinned section within a folder.
     if in_folder:
         if folder_id:
-            # Inside a folder: all notes directly in it, including pinned ones.
-            folder_filter = Note.folder_id == folder_id
+            if recursive:
+                # Recursive: include notes in this folder and all descendant folders.
+                folder_ids = get_folder_subtree(folder_id, user_id, session)
+                folder_filter = col(Note.folder_id).in_(folder_ids)
+            else:
+                folder_filter = Note.folder_id == folder_id
             query = query.where(folder_filter)
             count_query = count_query.where(folder_filter)
         else:
