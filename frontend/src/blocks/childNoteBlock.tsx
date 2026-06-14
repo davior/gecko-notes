@@ -1,4 +1,5 @@
-import { useState, useCallback, useContext, createContext } from 'react'
+import { useState, useCallback, useContext, createContext, Component } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createReactBlockSpec } from '@blocknote/react'
 import { useCreateBlockNote } from '@blocknote/react'
@@ -21,6 +22,16 @@ function parseContent(content: string): PartialBlock[] {
   }
 }
 
+class PreviewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  render() {
+    if (this.state.hasError)
+      return <div className="text-xs text-gray-400 px-2 py-3">Could not render child note content.</div>
+    return this.props.children
+  }
+}
+
 // Read-only embedded render of the child note's content. Created lazily (only
 // when the panel is expanded) so collapsed children cost nothing. Uses the full
 // note schema so nested child-note blocks render too. `noteSchema` is defined
@@ -32,9 +43,11 @@ function ChildNotePreview({ content, chain }: { content: string; chain: string[]
   })
   // Propagate the ancestor chain so nested child blocks can detect cycles.
   return (
-    <ChildNoteChainContext.Provider value={chain}>
-      <BlockNoteView editor={editor} editable={false} />
-    </ChildNoteChainContext.Provider>
+    <PreviewErrorBoundary>
+      <ChildNoteChainContext.Provider value={chain}>
+        <BlockNoteView editor={editor} editable={false} />
+      </ChildNoteChainContext.Provider>
+    </PreviewErrorBoundary>
   )
 }
 
