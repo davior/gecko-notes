@@ -3,10 +3,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { Home, Printer, Trash2, Settings, History, ArrowUp, FileText, X } from 'lucide-react'
+import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
-import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
+import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, type DefaultReactSuggestionItem } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
@@ -78,22 +78,6 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
       return <div className="p-8 text-gray-500 text-sm">This note could not be rendered. The content may be corrupted.</div>
     return this.props.children
   }
-}
-
-// Custom formatting-toolbar button (appears in the popup when text is selected)
-// that moves the current selection into a new child note. Must be rendered
-// inside the BlockNoteView so useComponentsContext resolves the styled button.
-function SendToChildToolbarButton({ onClick }: { onClick: () => void }) {
-  const Components = useComponentsContext()!
-  return (
-    <Components.FormattingToolbar.Button
-      mainTooltip="Send selection to child note"
-      label="Send to child"
-      onClick={onClick}
-    >
-      <FileText className="w-4 h-4" />
-    </Components.FormattingToolbar.Button>
-  )
 }
 
 export default function EditorView() {
@@ -830,7 +814,7 @@ export default function EditorView() {
               title="Send selection to a child note"
               onClick={() => void sendSelectionToChild()}
             >
-              <FileText className="w-4 h-4" />
+              <Send className="w-4 h-4" />
             </button>
           )}
           {note && (
@@ -1035,7 +1019,6 @@ export default function EditorView() {
                       formattingToolbar={() => (
                         <FormattingToolbar>
                           {getFormattingToolbarItems()}
-                          <SendToChildToolbarButton onClick={() => void sendSelectionToChild()} />
                         </FormattingToolbar>
                       )}
                     />
