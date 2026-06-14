@@ -503,7 +503,8 @@ export default function AIConversationPanel({
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
       })
 
-      onConversationChange([...baseMessages, assistantMsg(buildResultSummary(results))])
+      const withResults = [...baseMessages, assistantMsg(buildResultSummary(results))]
+      onConversationChange([...withResults, assistantMsg('_Plan completed._')])
 
       if (results.some((r) => r.notesChanged)) onNotesChanged?.()
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
