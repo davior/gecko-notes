@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Check, LogOut } from 'lucide-react'
+import { Check, LogOut, Settings } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useDropdown } from '@/hooks/useDropdown'
@@ -189,8 +189,15 @@ export default function UserAvatar() {
               )}
             </div>
 
-            {/* Sign out */}
+            {/* Settings + Sign out */}
             <div className="p-1">
+              <button
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-left"
+                onClick={() => { navigate('/settings'); setOpen(false) }}
+              >
+                <Settings className="w-4 h-4 shrink-0" />
+                <span>Settings</span>
+              </button>
               <button
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-left"
                 onClick={handleLogout}

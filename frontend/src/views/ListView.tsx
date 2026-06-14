@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
+import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
@@ -284,9 +284,6 @@ export default function ListView() {
               className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
             />
           </div>
-          <Link to="/settings" className="btn-ghost p-2 shrink-0">
-            <Settings className="w-5 h-5" />
-          </Link>
           <UserAvatar />
         </div>
 

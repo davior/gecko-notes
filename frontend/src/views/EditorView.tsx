@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { Home, Printer, Trash2, Settings, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
+import { Home, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -886,9 +886,6 @@ export default function EditorView() {
           >
             <Trash2 className="w-4 h-4" />
           </button>
-          <Link to="/settings" className="btn-ghost p-2" title="Settings">
-            <Settings className="w-5 h-5" />
-          </Link>
           <UserAvatar />
         </div>
       </header>
