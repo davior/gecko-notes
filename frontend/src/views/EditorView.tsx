@@ -685,7 +685,11 @@ export default function EditorView() {
   }
 
   function deriveChildTitle(blocks: unknown[]): string {
-    const text = extractPlainText(blocks).trim()
+    // Prefer the first heading block's text so the embed header shows just the
+    // heading. Fall back to the first non-empty line of text.
+    const heading = (blocks as Array<Record<string, unknown>>).find((b) => b?.type === 'heading')
+    const headingText = heading ? extractPlainText([heading]).trim() : ''
+    const text = headingText || extractPlainText(blocks).trim()
     if (!text) return 'Untitled'
     return text.length > 60 ? `${text.slice(0, 57)}…` : text
   }

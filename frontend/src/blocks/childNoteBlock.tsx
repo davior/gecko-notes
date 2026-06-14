@@ -108,11 +108,11 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
           {isCircular && <span className="text-xs text-amber-500 shrink-0">(circular reference)</span>}
         </button>
         <button
-          className="shrink-0 flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+          className="shrink-0 flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
           title="Open child note"
           onClick={() => navigate(`/notes/${childNoteId}`)}
         >
-          <ExternalLink className="w-3.5 h-3.5" /> Open
+          <ExternalLink className="w-4 h-4" />
         </button>
       </div>
       {open && !isCircular && (
