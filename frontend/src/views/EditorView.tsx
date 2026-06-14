@@ -118,6 +118,7 @@ export default function EditorView() {
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
@@ -816,7 +817,7 @@ export default function EditorView() {
               <button
                 className="btn-ghost p-1.5 text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400"
                 title="Remove parent link"
-                onClick={() => void orphanChild()}
+                onClick={() => setShowOrphanConfirm(true)}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1084,6 +1085,19 @@ export default function EditorView() {
             <div className="flex gap-3">
               <button className="btn-danger flex-1" onClick={confirmDelete}>Delete</button>
               <button className="btn-secondary flex-1" onClick={() => setShowDeleteConfirm(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOrphanConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowOrphanConfirm(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Remove from Parent</h3>
+            <p className="text-gray-600 text-sm mb-6">Move &ldquo;{title}&rdquo; back to the root level and remove its link to the parent note?</p>
+            <div className="flex gap-3">
+              <button className="btn-danger flex-1" onClick={() => { void orphanChild(); setShowOrphanConfirm(false) }}>Remove</button>
+              <button className="btn-secondary flex-1" onClick={() => setShowOrphanConfirm(false)}>Cancel</button>
             </div>
           </div>
         </div>
