@@ -67,6 +67,17 @@ async function processFile(file: File): Promise<ProcessedFile> {
       reader.readAsDataURL(file)
     })
   }
+  if (file.type === 'application/pdf') {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1]
+        resolve({ kind: 'image', name: file.name, attachment: { type: 'document', mimeType: 'application/pdf', data: base64, name: file.name } })
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
   const isText =
     file.type.startsWith('text/') ||
     ['application/json', 'application/xml'].includes(file.type) ||

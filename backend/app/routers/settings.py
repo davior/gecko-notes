@@ -424,6 +424,7 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
             headers={
                 "x-api-key": decrypt_api_key(provider.api_key),
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "pdfs-2024-09-25",
                 "content-type": "application/json",
             },
             json=body,
