@@ -42,8 +42,13 @@ function ChildNotePreview({ content }: { content: string }) {
   }
   return (
     <div
-      className="bn-container child-note-preview text-sm text-gray-800 dark:text-gray-100 px-1 py-1"
+      className="child-note-preview text-sm text-gray-800 dark:text-gray-100 px-1 py-1"
+      style={{ pointerEvents: 'none' }}
       // First-party content, serialized by BlockNote's own HTML exporter.
+      // Static HTML is read-only and not part of the parent editor's interaction
+      // surface, so disable pointer events to prevent the parent's hover handlers
+      // from trying to resolve coordinates inside this DOM (which would fail
+      // since it's not part of the parent's document model).
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )
