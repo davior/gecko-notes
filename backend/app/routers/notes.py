@@ -294,16 +294,19 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
 
+    # For optional fields like parent_note_id and folder_id, check if explicitly set
+    # in the payload rather than checking if not None, so that clearing them (null)
+    # is possible. Other fields use is not None check as before.
     if payload.title is not None:
         note.title = payload.title
     if payload.content is not None:
         note.content = payload.content
     if payload.category_id is not None:
         note.category_id = payload.category_id
-    if payload.folder_id is not None:
-        note.folder_id = payload.folder_id or None
-    if payload.parent_note_id is not None:
-        note.parent_note_id = payload.parent_note_id or None
+    if 'folder_id' in payload.model_fields_set:
+        note.folder_id = payload.folder_id
+    if 'parent_note_id' in payload.model_fields_set:
+        note.parent_note_id = payload.parent_note_id
     if payload.tags is not None:
         note.tags = json.dumps(payload.tags)
     if payload.is_pinned is not None:
