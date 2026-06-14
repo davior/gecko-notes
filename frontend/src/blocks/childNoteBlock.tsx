@@ -1,9 +1,7 @@
-import { useState, useCallback, useContext, createContext, Component } from 'react'
-import type { ReactNode } from 'react'
+import { useState, useCallback, useContext, createContext } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createReactBlockSpec } from '@blocknote/react'
 import { useCreateBlockNote } from '@blocknote/react'
-import { BlockNoteView } from '@blocknote/mantine'
 import { BlockNoteSchema, defaultBlockSpecs, type PartialBlock } from '@blocknote/core'
 import { ChevronRight, ChevronDown, FileText, ExternalLink, Repeat } from 'lucide-react'
 import { notesApi } from '@/api/notes'
@@ -22,32 +20,32 @@ function parseContent(content: string): PartialBlock[] {
   }
 }
 
-class PreviewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
-  state = { hasError: false }
-  static getDerivedStateFromError() { return { hasError: true } }
-  render() {
-    if (this.state.hasError)
-      return <div className="text-xs text-gray-400 px-2 py-3">Could not render child note content.</div>
-    return this.props.children
+// Read-only embedded render of the child note's content. Rendered as STATIC
+// HTML (via blocksToFullHTML) rather than a nested live BlockNoteView: nesting
+// an editor inside the parent's editable editor breaks the parent's pointer
+// features (hovering the nested editor makes the parent's drag-handle/side-menu
+// call posAtCoords, which lands in the child editor's DOM, maps to an invalid
+// position, and throws — wiping the whole parent note). Static HTML has no
+// ProseMirror instance, so there's nothing for the parent to collide with.
+function ChildNotePreview({ content }: { content: string }) {
+  // The editor instance is used only to serialize blocks -> HTML; it is never
+  // mounted as a BlockNoteView, so it never participates in the DOM/event tree.
+  const editor = useCreateBlockNote({ schema: noteSchema })
+  let html = ''
+  try {
+    html = editor.blocksToFullHTML(parseContent(content) as never)
+  } catch {
+    html = ''
   }
-}
-
-// Read-only embedded render of the child note's content. Created lazily (only
-// when the panel is expanded) so collapsed children cost nothing. Uses the full
-// note schema so nested child-note blocks render too. `noteSchema` is defined
-// below in this module and resolved at render time.
-function ChildNotePreview({ content, chain }: { content: string; chain: string[] }) {
-  const editor = useCreateBlockNote({
-    schema: noteSchema,
-    initialContent: parseContent(content) as never,
-  })
-  // Propagate the ancestor chain so nested child blocks can detect cycles.
+  if (!html) {
+    return <div className="text-xs text-gray-400 px-2 py-3">No preview available.</div>
+  }
   return (
-    <PreviewErrorBoundary>
-      <ChildNoteChainContext.Provider value={chain}>
-        <BlockNoteView editor={editor} editable={false} />
-      </ChildNoteChainContext.Provider>
-    </PreviewErrorBoundary>
+    <div
+      className="bn-container child-note-preview text-sm text-gray-800 dark:text-gray-100 px-1 py-1"
+      // First-party content, serialized by BlockNote's own HTML exporter.
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   )
 }
 
@@ -119,7 +117,7 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
           ) : error ? (
             <p className="text-xs text-gray-400 px-2 py-3">Embedded note unavailable.</p>
           ) : content !== null ? (
-            <ChildNotePreview content={content} chain={[...chain, childNoteId]} />
+            <ChildNotePreview content={content} />
           ) : null}
         </div>
       )}
