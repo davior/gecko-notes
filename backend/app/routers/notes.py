@@ -217,13 +217,12 @@ def list_notes(
     # all folders (used by global search).
     #
     # Pinned notes are surfaced at the root regardless of which folder they live
-    # in, and are correspondingly hidden from their folder view, so a pinned note
-    # is always reachable from the top level.
+    # in. Inside a folder, every note belonging to that folder is shown (pinned
+    # or not) — there is no separate pinned section within a folder.
     if in_folder:
         if folder_id:
-            # Inside a folder: notes directly in it, excluding pinned ones
-            # (those are shown at the root instead).
-            folder_filter = (Note.folder_id == folder_id) & (Note.is_pinned == False)  # noqa: E712
+            # Inside a folder: all notes directly in it, including pinned ones.
+            folder_filter = Note.folder_id == folder_id
             query = query.where(folder_filter)
             count_query = count_query.where(folder_filter)
         else:

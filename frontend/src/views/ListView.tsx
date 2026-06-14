@@ -184,8 +184,10 @@ export default function ListView() {
     }
   }
 
-  const pinnedNotes = notes.filter((n) => n.is_pinned)
-  const unpinnedNotes = notes.filter((n) => !n.is_pinned)
+  // The "Pinned" section only exists at the root. Inside a folder every note in
+  // that folder is shown together, with no separate pinned grouping.
+  const pinnedNotes = folderId ? [] : notes.filter((n) => n.is_pinned)
+  const unpinnedNotes = folderId ? notes : notes.filter((n) => !n.is_pinned)
 
   const gridClass = viewMode === 'card'
     ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3'
