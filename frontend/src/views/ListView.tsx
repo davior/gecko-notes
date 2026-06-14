@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus } from 'lucide-react'
+import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
 import {
   DndContext, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import NoteCard from '@/components/NoteCard'
-import FolderCard from '@/components/FolderCard'
+import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import AIBar from '@/components/AIBar'
@@ -59,6 +59,12 @@ export default function ListView() {
   const [moveTarget, setMoveTarget] = useState<{ type: 'note' | 'folder'; id: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<NoteListItem | null>(null)
   const [toast, setToast] = useState('')
+  const [pinnedCollapsed, setPinnedCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('pinnedCollapsed') === 'true' } catch { return false }
+  })
+  const [notesCollapsed, setNotesCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('notesCollapsed') === 'true' } catch { return false }
+  })
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -118,6 +124,18 @@ export default function ListView() {
     const next: ViewMode = viewMode === 'list' ? 'card' : 'list'
     localStorage.setItem('viewMode', next)
     setViewMode(next)
+  }
+
+  function togglePinnedCollapsed() {
+    const next = !pinnedCollapsed
+    setPinnedCollapsed(next)
+    localStorage.setItem('pinnedCollapsed', String(next))
+  }
+
+  function toggleNotesCollapsed() {
+    const next = !notesCollapsed
+    setNotesCollapsed(next)
+    localStorage.setItem('notesCollapsed', String(next))
   }
 
   function openFolder(id: string | null) {
@@ -210,23 +228,12 @@ export default function ListView() {
     ))
   }
 
-  function renderFolders() {
-    if (subfolders.length === 0) return null
-    return (
-      <div className={`${gridClass} mb-4`}>
-        {subfolders.map((folder) => (
-          <FolderCard
-            key={folder.id}
-            folder={folder}
-            viewMode={viewMode}
-            onOpen={(id) => openFolder(id)}
-            onMove={(f) => setMoveTarget({ type: 'folder', id: f.id })}
-            onRename={handleRenameFolder}
-            onDelete={handleDeleteFolder}
-          />
-        ))}
-      </div>
-    )
+  const folderBarProps = {
+    folders: subfolders,
+    onOpen: openFolder,
+    onMove: (f: Folder) => setMoveTarget({ type: 'folder', id: f.id }),
+    onRename: handleRenameFolder,
+    onDelete: handleDeleteFolder,
   }
 
   const newNotePath = folderId ? `/notes/new?folder=${folderId}` : '/notes/new'
@@ -340,21 +347,50 @@ export default function ListView() {
             </div>
           ) : (
             <>
-              {renderFolders()}
-              {pinnedNotes.length > 0 && (
+              {folderId !== null ? (
                 <>
-                  <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2">Pinned</p>
-                  <div className={`${gridClass} mb-4`}>
-                    {renderNotes(pinnedNotes)}
+                  <FolderIconBar {...folderBarProps} />
+                  <div className={gridClass}>
+                    {renderNotes(unpinnedNotes)}
                   </div>
+                </>
+              ) : (
+                <>
+                  {pinnedNotes.length > 0 && (
+                    <>
+                      <button
+                        className="flex items-center gap-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                        onClick={togglePinnedCollapsed}
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${pinnedCollapsed ? '-rotate-90' : ''}`} />
+                        Pinned
+                      </button>
+                      {!pinnedCollapsed && (
+                        <div className={`${gridClass} mb-4`}>
+                          {renderNotes(pinnedNotes)}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <FolderIconBar {...folderBarProps} />
                   {unpinnedNotes.length > 0 && (
-                    <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2">Notes</p>
+                    <>
+                      <button
+                        className="flex items-center gap-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-1 mb-2 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                        onClick={toggleNotesCollapsed}
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${notesCollapsed ? '-rotate-90' : ''}`} />
+                        Notes
+                      </button>
+                      {!notesCollapsed && (
+                        <div className={gridClass}>
+                          {renderNotes(unpinnedNotes)}
+                        </div>
+                      )}
+                    </>
                   )}
                 </>
               )}
-              <div className={gridClass}>
-                {renderNotes(unpinnedNotes)}
-              </div>
               <div ref={sentinelRef} className="h-2" />
               {loading && (
                 <div className="text-center py-4">
