@@ -1,10 +1,19 @@
 import type { AIProvider } from '@/api/settings'
 import client from '@/api/client'
 
+export interface FileAttachment {
+  type: 'image' | 'document'
+  mimeType: string
+  data: string  // base64-encoded
+  name: string
+}
+
 export interface AICompleteOptions {
   systemPrompt?: string
   temperature?: number
   prefill?: string
+  attachments?: FileAttachment[]
+  cacheSystem?: boolean  // When true: mark system prompt for Anthropic prompt cache
 }
 
 export interface AIService {
@@ -46,8 +55,27 @@ class AnthropicProvider implements AIService {
   constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill } = options
-    const messages: { role: string; content: string }[] = [{ role: 'user', content: prompt }]
+    const { systemPrompt, temperature, prefill, attachments, cacheSystem } = options
+
+    type AnthropicContentBlock =
+      | { type: 'text'; text: string }
+      | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+      | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string }
+
+    let userContent: string | AnthropicContentBlock[]
+    if (attachments?.length) {
+      const blocks: AnthropicContentBlock[] = attachments.map((a) =>
+        a.type === 'image'
+          ? { type: 'image', source: { type: 'base64', media_type: a.mimeType, data: a.data } }
+          : { type: 'document', source: { type: 'base64', media_type: a.mimeType, data: a.data }, title: a.name }
+      )
+      blocks.push({ type: 'text', text: prompt })
+      userContent = blocks
+    } else {
+      userContent = prompt
+    }
+
+    const messages: { role: string; content: unknown }[] = [{ role: 'user', content: userContent }]
     if (prefill) {
       messages.push({ role: 'assistant', content: prefill })
     }
@@ -58,7 +86,11 @@ class AnthropicProvider implements AIService {
       max_tokens: 16384,
       messages,
     }
-    if (systemPrompt) body.system = systemPrompt
+    if (systemPrompt) {
+      body.system = cacheSystem
+        ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
+        : systemPrompt
+    }
     if (temperature !== undefined) body.temperature = temperature
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
@@ -121,10 +153,23 @@ class OpenAIProvider implements AIService {
   constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill } = options
-    const messages: { role: string; content: string }[] = []
+    const { systemPrompt, temperature, prefill, attachments } = options
+    const messages: { role: string; content: unknown }[] = []
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
-    messages.push({ role: 'user', content: prompt })
+
+    if (attachments?.length) {
+      const contentBlocks = [
+        ...attachments.map((a) => ({
+          type: 'image_url' as const,
+          image_url: { url: `data:${a.mimeType};base64,${a.data}` },
+        })),
+        { type: 'text' as const, text: prompt },
+      ]
+      messages.push({ role: 'user', content: contentBlocks })
+    } else {
+      messages.push({ role: 'user', content: prompt })
+    }
+
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {
@@ -195,10 +240,23 @@ class OllamaProvider implements AIService {
   constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill } = options
-    const messages: { role: string; content: string }[] = []
+    const { systemPrompt, temperature, prefill, attachments } = options
+    const messages: { role: string; content: unknown }[] = []
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
-    messages.push({ role: 'user', content: prompt })
+
+    if (attachments?.length) {
+      const contentBlocks = [
+        ...attachments.map((a) => ({
+          type: 'image_url' as const,
+          image_url: { url: `data:${a.mimeType};base64,${a.data}` },
+        })),
+        { type: 'text' as const, text: prompt },
+      ]
+      messages.push({ role: 'user', content: contentBlocks })
+    } else {
+      messages.push({ role: 'user', content: prompt })
+    }
+
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {

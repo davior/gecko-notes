@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useDictation } from '@/hooks/useDictation'
 import { settingsApi } from '@/api/settings'
+import { notesApi } from '@/api/notes'
+import { extractPlainText, extractLinkedFileUrls } from '@/utils/blocks'
+import type { FileAttachment } from '@/services/ai'
 
 export interface ConversationMessage {
   id: string
@@ -14,10 +17,21 @@ export interface ConversationMessage {
   timestamp: string
 }
 
+type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
+
+interface FrozenContext {
+  text: string
+  attachments: FileAttachment[]
+}
+
 interface AIConversationPanelProps {
   isOpen: boolean
   onToggle: () => void
   getNoteContext: () => string
+  noteId?: string | null
+  noteFolderId?: string | null
+  noteSummary?: string | null
+  getNoteDocument?: () => unknown[]
   conversation: ConversationMessage[]
   onConversationChange: (messages: ConversationMessage[]) => void
   onAddToNote: (text: string) => Promise<void>
@@ -36,10 +50,58 @@ function Spinner() {
   )
 }
 
+async function fileToAttachment(file: File): Promise<FileAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      const base64 = dataUrl.split(',')[1]
+      resolve({
+        type: file.type.startsWith('image/') ? 'image' : 'document',
+        mimeType: file.type || 'application/octet-stream',
+        data: base64,
+        name: file.name,
+      })
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+async function urlToAttachment(url: string): Promise<FileAttachment | null> {
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const blob = await resp.blob()
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.split(',')[1]
+        const isImage = blob.type.startsWith('image/')
+        resolve({
+          type: isImage ? 'image' : 'document',
+          mimeType: blob.type || 'application/octet-stream',
+          data: base64,
+          name: url.split('/').pop() ?? 'file',
+        })
+      }
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
 export default function AIConversationPanel({
   isOpen,
   onToggle,
   getNoteContext,
+  noteId,
+  noteFolderId,
+  noteSummary,
+  getNoteDocument,
   conversation,
   onConversationChange,
   onAddToNote,
@@ -61,18 +123,31 @@ export default function AIConversationPanel({
     try { return parseInt(localStorage.getItem('ai-panel-height') || '288') } catch { return 288 }
   })
 
+  // Context scope state
+  const [contextScope, setContextScope] = useState<ContextScope>(() => {
+    try { return (localStorage.getItem('ai-context-scope') as ContextScope) ?? 'note' } catch { return 'note' }
+  })
+  const [useSummaries, setUseSummaries] = useState(() => {
+    try { return localStorage.getItem('ai-use-summaries') === 'true' } catch { return false }
+  })
+  const [includeLinkedFiles, setIncludeLinkedFiles] = useState(() => {
+    try { return localStorage.getItem('ai-include-linked-files') === 'true' } catch { return false }
+  })
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [frozenContext, setFrozenContext] = useState<FrozenContext | null>(null)
+  const [freezing, setFreezing] = useState(false)
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const isMobileRef = useRef(isMobile)
   const panelWidthRef = useRef(panelWidth)
   const panelHeightRef = useRef(panelHeight)
 
   const handleDictationResult = useCallback((text: string) => {
-    // Append dictated text to input and submit immediately
     const newInput = input.trim() ? `${input.trim()} ${text}` : text
     setInput(newInput)
-    // Use setTimeout to ensure state updates before calling handleSend
     setTimeout(() => {
       if (newInput.trim() && !loading && aiService) {
         void handleSend(newInput, conversation)
@@ -105,6 +180,23 @@ export default function AIConversationPanel({
   useEffect(() => {
     try { localStorage.setItem('ai-panel-height', String(panelHeight)) } catch { /* noop */ }
   }, [panelHeight])
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-context-scope', contextScope) } catch { /* noop */ }
+  }, [contextScope])
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-use-summaries', String(useSummaries)) } catch { /* noop */ }
+  }, [useSummaries])
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-include-linked-files', String(includeLinkedFiles)) } catch { /* noop */ }
+  }, [includeLinkedFiles])
+
+  // Auto-unfreeze when scope settings change — frozen context is now stale
+  useEffect(() => {
+    setFrozenContext(null)
+  }, [contextScope, useSummaries, includeLinkedFiles])
 
   useEffect(() => {
     if (isOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -156,6 +248,102 @@ export default function AIConversationPanel({
     window.addEventListener('mouseup', onMouseUp)
   }
 
+  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[] }> {
+    const fileAttachments: FileAttachment[] = []
+
+    if (contextScope === 'none') {
+      const pendingAttachments = await Promise.all(pendingFiles.map(fileToAttachment))
+      return { contextText: '', attachments: pendingAttachments }
+    }
+
+    let notes: { title: string; content: string; summary?: string | null; blocks: unknown[] }[] = []
+
+    if (contextScope === 'note') {
+      const blocks = getNoteDocument?.() ?? []
+      notes = [{ title: '', content: getNoteContext(), summary: noteSummary, blocks }]
+    } else {
+      // Fetch list items, then get full content for each (NoteListItem only has content_preview)
+      let listItems: { id: string }[] = []
+
+      if (contextScope === 'children' && noteId) {
+        const res = await notesApi.listChildren(noteId)
+        listItems = res.data.slice(0, 50)
+      } else if (contextScope === 'folder') {
+        const res = await notesApi.list({
+          folder_id: noteFolderId ?? undefined,
+          in_folder: true,
+          include_children: true,
+          limit: 50,
+        })
+        listItems = res.data
+      } else if (contextScope === 'subfolder') {
+        const res = await notesApi.list({
+          folder_id: noteFolderId ?? undefined,
+          in_folder: true,
+          recursive: true,
+          include_children: true,
+          limit: 50,
+        })
+        listItems = res.data
+      }
+
+      // Fetch full note content in parallel
+      const fetched = await Promise.all(listItems.map((item) => notesApi.get(item.id)))
+      notes = fetched.map((r) => {
+        let blocks: unknown[] = []
+        try { blocks = JSON.parse(r.data.content) } catch { /* ignore */ }
+        return {
+          title: r.data.title,
+          content: extractPlainText(blocks),
+          summary: r.data.summary,
+          blocks,
+        }
+      })
+
+      // Prepend current note for children scope
+      if (contextScope === 'children') {
+        const curBlocks = getNoteDocument?.() ?? []
+        notes.unshift({ title: '', content: getNoteContext(), summary: noteSummary, blocks: curBlocks })
+      }
+    }
+
+    // Build context text
+    const parts = notes.map((n) => {
+      const body = (useSummaries && n.summary) ? n.summary : n.content
+      return n.title ? `## ${n.title}\n\n${body}` : body
+    })
+    const contextText = parts.join('\n\n---\n\n')
+
+    // Collect linked file URLs
+    if (includeLinkedFiles) {
+      const allUrls = notes.flatMap((n) => extractLinkedFileUrls(n.blocks))
+      const fetched = await Promise.all(allUrls.map(urlToAttachment))
+      fileAttachments.push(...(fetched.filter(Boolean) as FileAttachment[]))
+    }
+
+    // Pending uploaded files
+    const pendingAttachments = await Promise.all(pendingFiles.map(fileToAttachment))
+    fileAttachments.push(...pendingAttachments)
+
+    return { contextText, attachments: fileAttachments }
+  }
+
+  async function handleFreeze() {
+    if (frozenContext) {
+      setFrozenContext(null)
+      return
+    }
+    setFreezing(true)
+    try {
+      const ctx = await buildScopeContext()
+      setFrozenContext({ text: ctx.contextText, attachments: ctx.attachments })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to freeze context')
+    } finally {
+      setFreezing(false)
+    }
+  }
+
   async function handleSend(userContent: string, priorMessages: ConversationMessage[]) {
     if (!userContent.trim() || !aiService || loading) return
     setError('')
@@ -179,12 +367,21 @@ export default function AIConversationPanel({
         ? `${transcript}\n\nHuman: ${userContent.trim()}`
         : userContent.trim()
 
-      const noteContext = getNoteContext()
-      const systemPrompt = noteContext
-        ? `You are an AI assistant helping the user with their note.\n\nNote content:\n${noteContext}`
+      // Use frozen context if locked; otherwise build fresh from current scope
+      const isFrozen = frozenContext !== null
+      const { contextText, attachments } = isFrozen
+        ? { contextText: frozenContext!.text, attachments: frozenContext!.attachments }
+        : await buildScopeContext()
+
+      const systemPrompt = contextText
+        ? `You are an AI assistant helping the user with their notes.\n\nContext:\n${contextText}`
         : 'You are an AI assistant helping the user.'
 
-      const result = await aiService.complete(fullPrompt, { systemPrompt })
+      const result = await aiService.complete(fullPrompt, {
+        systemPrompt,
+        attachments: attachments.length ? attachments : undefined,
+        cacheSystem: isFrozen,
+      })
 
       const assistantMsg: ConversationMessage = {
         id: uid(),
@@ -193,6 +390,7 @@ export default function AIConversationPanel({
         timestamp: new Date().toISOString(),
       }
       onConversationChange([...withUser, assistantMsg])
+      setPendingFiles([])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An error occurred')
       onConversationChange(priorMessages)
@@ -433,50 +631,145 @@ export default function AIConversationPanel({
 
       {/* Input */}
       {aiService && (
-        <div className="shrink-0 border-t border-gray-100 dark:border-gray-700 p-2">
-          <div className="flex items-end gap-2">
-            {dictation.isSupported && (
-              <button
-                className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
-                onClick={dictation.toggleDictation}
-                // Keep input focus when toggling dictation so text lands in the input
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={loading}
-                title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
-                aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+        <div className="shrink-0 border-t border-gray-100 dark:border-gray-700">
+          {/* Context scope controls */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1.5 pb-1 text-xs text-gray-500 dark:text-gray-400">
+            <label className="flex items-center gap-1 shrink-0">
+              <span className="text-gray-400 dark:text-gray-500">Context:</span>
+              <select
+                value={contextScope}
+                onChange={(e) => setContextScope(e.target.value as ContextScope)}
+                disabled={!!frozenContext}
+                className="text-xs border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 disabled:opacity-50"
               >
-                {dictation.status === 'recording' ? (
-                  <MicOff className="w-4 h-4 text-red-500" />
-                ) : (
-                  <Mic className="w-4 h-4" />
-                )}
-              </button>
-            )}
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void handleSend(input, conversation)
-                }
-              }}
-              placeholder="Ask about this note…"
-              rows={1}
-              className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
-              disabled={loading}
-            />
+                <option value="none">None</option>
+                <option value="note">This note</option>
+                <option value="children" disabled={!noteId}>+ Children</option>
+                <option value="folder" disabled={!noteFolderId}>Folder</option>
+                <option value="subfolder" disabled={!noteFolderId}>Subfolder</option>
+              </select>
+            </label>
+
+            <label className="flex items-center gap-1 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={useSummaries}
+                onChange={(e) => setUseSummaries(e.target.checked)}
+                disabled={!!frozenContext}
+                className="rounded"
+              />
+              Summaries
+            </label>
+
+            <label className="flex items-center gap-1 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeLinkedFiles}
+                onChange={(e) => setIncludeLinkedFiles(e.target.checked)}
+                disabled={!!frozenContext}
+                className="rounded"
+              />
+              Files
+            </label>
+
             <button
-              className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-              disabled={loading || !input.trim()}
-              onClick={() => void handleSend(input, conversation)}
-              type="button"
+              onClick={() => void handleFreeze()}
+              disabled={freezing || contextScope === 'none'}
+              title={frozenContext ? 'Context frozen — click to unfreeze' : 'Freeze context for prompt caching'}
+              className={`flex items-center gap-0.5 transition-colors disabled:opacity-40 ${
+                frozenContext ? 'text-amber-500 hover:text-amber-600' : 'text-gray-400 hover:text-blue-500'
+              }`}
             >
-              {loading ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
+              {freezing ? <Spinner /> : frozenContext ? <Lock className="w-3 h-3" /> : <LockOpen className="w-3 h-3" />}
             </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!!frozenContext}
+              title="Attach files to next message"
+              className="flex items-center gap-0.5 text-gray-400 hover:text-blue-500 transition-colors disabled:opacity-40"
+            >
+              <Paperclip className="w-3 h-3" />
+              {pendingFiles.length > 0 && (
+                <span className="text-blue-500 font-medium">{pendingFiles.length}</span>
+              )}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) setPendingFiles((prev) => [...prev, ...Array.from(e.target.files!)])
+                e.target.value = ''
+              }}
+            />
           </div>
-          <p className="text-xs text-gray-400 mt-0.5">Shift+Enter for new line</p>
+
+          {/* Pending file pills */}
+          {pendingFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1 px-2 pb-1">
+              {pendingFiles.map((file, i) => (
+                <span
+                  key={i}
+                  className="flex items-center gap-1 text-xs bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded px-1.5 py-0.5"
+                >
+                  {file.name.length > 16 ? `${file.name.slice(0, 14)}…` : file.name}
+                  <button
+                    onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                    className="hover:text-red-500 transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="p-2">
+            <div className="flex items-end gap-2">
+              {dictation.isSupported && (
+                <button
+                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
+                  onClick={dictation.toggleDictation}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={loading}
+                  title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+                  aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+                >
+                  {dictation.status === 'recording' ? (
+                    <MicOff className="w-4 h-4 text-red-500" />
+                  ) : (
+                    <Mic className="w-4 h-4" />
+                  )}
+                </button>
+              )}
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void handleSend(input, conversation)
+                  }
+                }}
+                placeholder="Ask about this note…"
+                rows={1}
+                className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
+                disabled={loading}
+              />
+              <button
+                className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+                disabled={loading || !input.trim()}
+                onClick={() => void handleSend(input, conversation)}
+                type="button"
+              >
+                {loading ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">Shift+Enter for new line</p>
+          </div>
         </div>
       )}
     </div>
