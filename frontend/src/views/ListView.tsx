@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Search, Settings, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
 import {
-  DndContext, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
-  type DragEndEvent,
+  DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
+  type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
+import { Folder as FolderIcon } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
 import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
@@ -56,6 +57,7 @@ export default function ListView() {
   )
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [aiResult, setAiResult] = useState('')
+  const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
   const [moveTarget, setMoveTarget] = useState<{ type: 'note' | 'folder'; id: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<NoteListItem | null>(null)
   const [toast, setToast] = useState('')
@@ -182,7 +184,20 @@ export default function ListView() {
     }
   }
 
+  function handleDragStart(event: DragStartEvent) {
+    const data = event.active.data.current as { type: string; noteId?: string; folderId?: string } | undefined
+    if (!data) return
+    if (data.type === 'folder' && data.folderId) {
+      const folder = subfolders.find((f) => f.id === data.folderId)
+      setActiveDrag({ type: 'folder', label: folder?.name ?? '' })
+    } else if (data.type === 'note' && data.noteId) {
+      const note = notes.find((n) => n.id === data.noteId)
+      setActiveDrag({ type: 'note', label: note?.title || 'Untitled' })
+    }
+  }
+
   async function handleDragEnd(event: DragEndEvent) {
+    setActiveDrag(null)
     const { active, over } = event
     if (!over) return
     const overId = String(over.id)
@@ -321,7 +336,7 @@ export default function ListView() {
         </div>
       </header>
 
-      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
           {loading && notes.length === 0 && subfolders.length === 0 ? (
             <div className={gridClass}>
@@ -403,6 +418,19 @@ export default function ListView() {
             </>
           )}
         </main>
+        <DragOverlay dropAnimation={null}>
+          {activeDrag?.type === 'folder' && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white dark:bg-gray-800 border-blue-400 shadow-xl cursor-grabbing">
+              <FolderIcon className="w-4 h-4 text-blue-500 shrink-0" fill="currentColor" fillOpacity={0.15} />
+              <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{activeDrag.label}</span>
+            </div>
+          )}
+          {activeDrag?.type === 'note' && (
+            <div className="card dark:bg-gray-800 dark:border-gray-700 px-4 py-3 shadow-xl cursor-grabbing max-w-xs opacity-90">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{activeDrag.label}</p>
+            </div>
+          )}
+        </DragOverlay>
       </DndContext>
 
       {/* AI result pane */}
