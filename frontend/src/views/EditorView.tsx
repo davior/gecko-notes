@@ -456,6 +456,24 @@ export default function EditorView() {
     navigate(`/notes/${newNote.id}`)
   }
 
+  // Re-fetch and re-hydrate the open note after the AI assistant mutated it via
+  // the API, reusing the same "force hydrate" mechanism as history restore.
+  async function refreshOpenNote() {
+    const id = createdNoteId.current ?? noteId
+    if (!id) return
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
+    hasPendingChanges.current = false
+    try {
+      const fresh = await notesStore.loadNote(id)
+      setNote(fresh)
+      setTitle(fresh.title)
+      setCategoryId(fresh.category_id)
+      setTags([...fresh.tags])
+      setSummary(fresh.summary ?? '')
+      syncedEditorKey.current = null // force the hydrate effect to reload editor content
+    } catch { /* best-effort refresh */ }
+  }
+
   // Build well-punctuated text for text-to-speech. Unlike extractPlainText (used
   // for AI context), this terminates list items, table rows and headings with
   // punctuation so the TTS engine inserts natural pauses instead of reading the
@@ -1060,12 +1078,19 @@ export default function EditorView() {
           onToggle={() => setPanelOpen((o) => !o)}
           getNoteContext={() => currentNoteContent.current}
           noteId={createdNoteId.current ?? noteId}
+          noteTitle={title}
           noteFolderId={note?.folder_id ?? null}
           noteSummary={note?.summary ?? null}
           getNoteDocument={() => editor?.document as unknown[] ?? []}
           conversation={conversation}
           onConversationChange={handleConversationChange}
           onAddToNote={insertAIText}
+          editor={editor}
+          defaultCategoryId={defaultCategoryId}
+          currentFolderId={note?.folder_id ?? null}
+          onBeforeExecute={async () => { if (hasPendingChanges.current) await doSave(true) }}
+          onCurrentNoteEdited={refreshOpenNote}
+          onNotesChanged={() => { void notesStore.loadNotes() }}
         />
       </div>
 
