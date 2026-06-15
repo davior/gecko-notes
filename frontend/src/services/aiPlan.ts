@@ -13,6 +13,7 @@ export type PlanAction =
   | { type: 'respond'; text: string; description?: string }
   | { type: 'create_note'; title: string; content: string; ref?: string; description?: string }
   | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; description?: string }
+  | { type: 'edit_section'; noteId: string; section: string; content: string; description?: string }
   | { type: 'append_note'; noteId: string; content: string; description?: string }
   | { type: 'rename_note'; noteId: string; title: string; description?: string }
   | { type: 'create_child_note'; parentId: string; title: string; content: string; ref?: string; description?: string }
@@ -54,6 +55,7 @@ Action types (every action MAY also include an optional "description": one short
 - respond:           { "type":"respond", "text":"<markdown>" }
 - create_note:       { "type":"create_note", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
 - edit_note:         { "type":"edit_note", "noteId":"<id>", "mode":"replace"|"amend", "content":"<markdown>" }
+- edit_section:       { "type":"edit_section", "noteId":"<id>", "section":"<heading text>", "content":"<markdown incl. the section heading>" }
 - append_note:       { "type":"append_note", "noteId":"<id>", "content":"<markdown>" }
 - rename_note:       { "type":"rename_note", "noteId":"<id>", "title":"<new title>" }
 - create_child_note: { "type":"create_child_note", "parentId":"<id>", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
@@ -64,11 +66,14 @@ Action types (every action MAY also include an optional "description": one short
 - add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "insertAfterSection":"<optional heading>" }
 
 Rules:
-- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body.
+- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies below are also given to you as Markdown — preserve their existing formatting (headings, bold, lists, links) when editing.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
 - Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
-- Use edit_note "amend" (or append_note) to ADD to a note while preserving its existing content, including embedded child notes, note references, links and images. Use "replace" ONLY when the user explicitly asks to rewrite/replace the whole note — it overwrites embedded blocks.
+- Choosing how to edit (IMPORTANT — preserve formatting and embedded blocks):
+  - To ADD content, use append_note or edit_note "amend". These keep ALL existing content, including embedded child notes, note references, links and images.
+  - To CHANGE an existing section, use edit_section: set "section" to that section's heading text and "content" to the new Markdown for the whole section (include the heading). Only that section is rewritten; every other section is preserved untouched.
+  - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.
 
@@ -116,6 +121,12 @@ function validateAction(raw: unknown): PlanAction | null {
       const noteId = asString(a.noteId)
       if (!noteId) return null
       return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...d }
+    }
+    case 'edit_section': {
+      const noteId = asString(a.noteId)
+      const section = asString(a.section)
+      if (!noteId || !section) return null
+      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...d }
     }
     case 'append_note': {
       const noteId = asString(a.noteId)
@@ -220,6 +231,7 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'respond': return `Reply: ${truncate(action.text)}`
     case 'create_note': return `Create note “${action.title || 'Untitled'}”`
     case 'edit_note': return `${action.mode === 'amend' ? 'Amend' : 'Replace'} note “${name(action.noteId)}”`
+    case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`
     case 'append_note': return `Append to note “${name(action.noteId)}”`
     case 'rename_note': return `Rename “${name(action.noteId)}” → “${action.title}”`
     case 'create_child_note': return `Create child note “${action.title || 'Untitled'}” under “${name(action.parentId)}”`

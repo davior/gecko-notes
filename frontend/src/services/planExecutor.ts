@@ -7,10 +7,14 @@ import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import type { Plan, PlanAction } from './aiPlan'
 
-// Minimal structural view of the BlockNote editor — we only use it to convert the
-// model's markdown into BlockNote blocks. The same instance powers the open editor.
+// Minimal structural view of the BlockNote editor — we use it to convert the model's
+// markdown into BlockNote blocks, and (for AI context) blocks back into markdown. The
+// same instance powers the open editor.
 export interface PlanEditor {
-  tryParseMarkdownToBlocks: (markdown: string) => Promise<unknown[]>
+  // Method signatures (not arrow properties) so the real editor's more specifically
+  // typed block params remain assignable to this structural view.
+  tryParseMarkdownToBlocks(markdown: string): Promise<unknown[]>
+  blocksToMarkdownLossy(blocks?: unknown[]): string
 }
 
 export interface PlanExecContext {
@@ -112,6 +116,60 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         return {
           ok: true,
           message: `${action.mode === 'amend' ? 'Amended' : 'Replaced'} note “${cur.data.title}”.`,
+          notesChanged: true,
+          touchedCurrentNote: touchesCurrent(r.id),
+        }
+      }
+
+      case 'edit_section': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        await notesApi.createVersion(r.id).catch(() => null)
+        const cur = await notesApi.get(r.id)
+        const blocks = parseBlocks(cur.data.content)
+        const newBlocks = await mdToBlocks(action.content)
+
+        const isHeading = (b: unknown) => (b as Record<string, unknown>)?.type === 'heading'
+        const headingLevel = (b: unknown) =>
+          Number(((b as Record<string, unknown>)?.props as Record<string, unknown> | undefined)?.level ?? 1)
+        const headingText = (b: unknown) => {
+          const content = (b as Record<string, unknown>)?.content
+          return Array.isArray(content)
+            ? content.map((c) => String((c as Record<string, unknown>)?.text ?? '')).join('')
+            : ''
+        }
+
+        // Find the section heading: prefer an exact (case-insensitive) match, else substring.
+        const target = action.section.trim().toLowerCase()
+        let startIdx = blocks.findIndex((b) => isHeading(b) && headingText(b).trim().toLowerCase() === target)
+        if (startIdx === -1) {
+          startIdx = blocks.findIndex((b) => isHeading(b) && headingText(b).toLowerCase().includes(target))
+        }
+
+        if (startIdx === -1) {
+          // Section not found — append it as a new section rather than failing.
+          blocks.push(...newBlocks)
+          await notesApi.update(r.id, { content: JSON.stringify(blocks) })
+          return {
+            ok: true,
+            message: `Section “${action.section}” not found in “${cur.data.title}” — added as a new section.`,
+            notesChanged: true,
+            touchedCurrentNote: touchesCurrent(r.id),
+          }
+        }
+
+        // The section runs until the next heading of the same-or-higher level (or EOF).
+        const level = headingLevel(blocks[startIdx])
+        let endIdx = blocks.length
+        for (let i = startIdx + 1; i < blocks.length; i++) {
+          if (isHeading(blocks[i]) && headingLevel(blocks[i]) <= level) { endIdx = i; break }
+        }
+
+        blocks.splice(startIdx, endIdx - startIdx, ...newBlocks)
+        await notesApi.update(r.id, { content: JSON.stringify(blocks) })
+        return {
+          ok: true,
+          message: `Updated section “${action.section}” in “${cur.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
         }

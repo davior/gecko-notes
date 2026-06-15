@@ -328,6 +328,15 @@ export default function AIConversationPanel({
   async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[] }> {
     const fileAttachments: FileAttachment[] = []
 
+    // Give the model the note's real Markdown (headings/bold/lists/links) instead of
+    // plain text, so it can preserve formatting when editing/replacing. Falls back to
+    // plain text if the editor is unavailable or conversion throws (e.g. custom blocks).
+    const blocksToMarkdown = (blocks: unknown[]): string => {
+      if (!editor) return extractPlainText(blocks)
+      try { return editor.blocksToMarkdownLossy(blocks) || extractPlainText(blocks) }
+      catch { return extractPlainText(blocks) }
+    }
+
     if (contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
@@ -339,7 +348,7 @@ export default function AIConversationPanel({
 
     if (contextScope === 'note') {
       const blocks = getNoteDocument?.() ?? []
-      notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: getNoteContext(), summary: noteSummary, blocks }]
+      notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(blocks), summary: noteSummary, blocks }]
     } else {
       // Fetch list items, then get full content for each (NoteListItem only has content_preview)
       let listItems: { id: string }[] = []
@@ -374,7 +383,7 @@ export default function AIConversationPanel({
         return {
           id: r.data.id,
           title: r.data.title,
-          content: extractPlainText(blocks),
+          content: blocksToMarkdown(blocks),
           summary: r.data.summary,
           blocks,
         }
@@ -383,7 +392,7 @@ export default function AIConversationPanel({
       // Prepend current note for children scope
       if (contextScope === 'children') {
         const curBlocks = getNoteDocument?.() ?? []
-        notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: getNoteContext(), summary: noteSummary, blocks: curBlocks })
+        notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(curBlocks), summary: noteSummary, blocks: curBlocks })
       }
     }
 
