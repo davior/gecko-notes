@@ -20,6 +20,7 @@ export type PlanAction =
   | { type: 'set_tags'; noteId: string; tags: string[]; mode: 'replace' | 'add'; description?: string }
   | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
   | { type: 'create_folder'; name: string; parentFolderId?: string | null; ref?: string; description?: string }
+  | { type: 'add_reference'; noteId: string; referenceNoteId: string; referenceTitle: string; insertAfterSection?: string; description?: string }
 
 export interface Plan { actions: PlanAction[] }
 
@@ -60,10 +61,12 @@ Action types (every action MAY also include an optional "description": one short
 - set_tags:          { "type":"set_tags", "noteId":"<id>", "tags":["..."], "mode":"replace"|"add" }
 - set_category:      { "type":"set_category", "noteId":"<id>", "categoryId":"<id>" }
 - create_folder:     { "type":"create_folder", "name":"<name>", "parentFolderId":"<id>"|null, "ref":"<optional local label>" }
+- add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "insertAfterSection":"<optional heading>" }
 
 Rules:
 - All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
+- Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
 - Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
 - Use edit_note "amend" (or append_note) to ADD to a note while preserving its existing content, including embedded child notes, note references, links and images. Use "replace" ONLY when the user explicitly asks to rewrite/replace the whole note — it overwrites embedded blocks.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
@@ -152,6 +155,14 @@ function validateAction(raw: unknown): PlanAction | null {
       if (!name) return null
       return { type: 'create_folder', name, parentFolderId: a.parentFolderId === null ? null : asString(a.parentFolderId) ?? null, ...r, ...d }
     }
+    case 'add_reference': {
+      const noteId = asString(a.noteId)
+      const referenceNoteId = asString(a.referenceNoteId)
+      const referenceTitle = asString(a.referenceTitle)
+      if (!noteId || !referenceNoteId || referenceTitle === undefined) return null
+      const insertAfterSection = asString(a.insertAfterSection)
+      return { type: 'add_reference', noteId, referenceNoteId, referenceTitle, insertAfterSection, ...d }
+    }
     default:
       return null
   }
@@ -216,5 +227,6 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'set_tags': return `${action.mode === 'add' ? 'Add tags to' : 'Set tags on'} “${name(action.noteId)}”: ${action.tags.join(', ')}`
     case 'set_category': return `Set category of “${name(action.noteId)}” to “${name(action.categoryId)}”`
     case 'create_folder': return `Create folder “${action.name}”`
+    case 'add_reference': return `Add reference to “${action.referenceTitle}” in “${name(action.noteId)}”${action.insertAfterSection ? ` under “${action.insertAfterSection}”` : ''}`
   }
 }

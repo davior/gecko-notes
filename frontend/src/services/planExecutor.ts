@@ -222,6 +222,51 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         if (action.ref) refMap.set(action.ref, res.data.id)
         return { ok: true, message: `Created folder “${res.data.name}”.`, notesChanged: true }
       }
+
+      case 'add_reference': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        if (!ctx.validNoteIds.has(action.referenceNoteId)) {
+          return { ok: false, message: `Note reference “${action.referenceTitle}” is not in context — skipped.` }
+        }
+        await notesApi.createVersion(r.id).catch(() => null)
+        const cur = await notesApi.get(r.id)
+        const blocks = parseBlocks(cur.data.content)
+
+        // Create the reference block
+        const referenceBlock = {
+          type: 'noteReference',
+          props: { noteId: action.referenceNoteId, noteTitle: action.referenceTitle },
+        } as unknown
+
+        // Find insertion point: after section heading if specified, else at end
+        let insertIndex = blocks.length
+        if (action.insertAfterSection) {
+          for (let i = 0; i < blocks.length; i++) {
+            const block = blocks[i] as Record<string, unknown>
+            // Check if this is a heading block matching the section name
+            if (block.type === 'heading' && block.content) {
+              const content = block.content as Array<Record<string, unknown>>
+              const textContent = content.map((c) => c.text ?? '').join('')
+              if (textContent.toLowerCase().includes(action.insertAfterSection.toLowerCase())) {
+                insertIndex = i + 1
+                break
+              }
+            }
+          }
+        }
+
+        blocks.splice(insertIndex, 0, referenceBlock)
+        await notesApi.update(r.id, { content: JSON.stringify(blocks) })
+
+        const sectionMsg = action.insertAfterSection ? ` under “${action.insertAfterSection}”` : ''
+        return {
+          ok: true,
+          message: `Added reference to “${action.referenceTitle}”${sectionMsg}.`,
+          notesChanged: true,
+          touchedCurrentNote: touchesCurrent(r.id),
+        }
+      }
     }
   }
 
