@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { Home, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -638,7 +638,7 @@ export default function EditorView() {
     el.style.height = `${el.scrollHeight}px`
   }
 
-  async function goHome() {
+  async function goBack() {
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current)
       autosaveTimer.current = null
@@ -649,7 +649,8 @@ export default function EditorView() {
       await doSave(true)
     }
 
-    navigate('/notes')
+    const folderId = note?.folder_id ?? searchParams.get('folder')
+    navigate(folderId ? `/notes?folder=${folderId}` : '/notes')
   }
 
   async function orphanChild() {
@@ -840,8 +841,8 @@ export default function EditorView() {
     <div className="flex flex-col h-screen overflow-hidden bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
-          <button className="btn-ghost p-2" onClick={goHome} title="Go home">
-            <Home className="w-5 h-5" />
+          <button className="btn-ghost p-2" onClick={goBack} title="Back">
+            <ArrowLeft className="w-5 h-5" />
           </button>
           {note?.parent_note_id && (
             <div className="flex items-center gap-1">
