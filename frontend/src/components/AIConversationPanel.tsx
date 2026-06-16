@@ -9,7 +9,8 @@ import { useDictation } from '@/hooks/useDictation'
 import { settingsApi } from '@/api/settings'
 import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
-import { extractPlainText, extractLinkedFileUrls } from '@/utils/blocks'
+import { annotationsApi } from '@/api/annotations'
+import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
 import type { FileAttachment } from '@/services/ai'
 import {
   parsePlan,
@@ -41,6 +42,7 @@ interface PlanContext {
   folders: ContextFolder[]
   categories: ContextCategory[]
   labelMap: Map<string, string>
+  annotationIds: Set<string>
 }
 
 interface PendingPlan {
@@ -69,6 +71,8 @@ interface AIConversationPanelProps {
   onBeforeExecute?: () => Promise<void> | void
   onCurrentNoteEdited?: () => Promise<void> | void
   onNotesChanged?: () => void
+  getAnnotations?: () => { id: string; block_id: string; text: string }[]
+  onAnnotationsChanged?: () => Promise<void> | void
 }
 
 function uid() {
@@ -166,6 +170,8 @@ export default function AIConversationPanel({
   onBeforeExecute,
   onCurrentNoteEdited,
   onNotesChanged,
+  getAnnotations,
+  onAnnotationsChanged,
 }: AIConversationPanelProps) {
   const aiService = useSettingsStore((s) => s.aiService)
   const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
@@ -333,8 +339,9 @@ export default function AIConversationPanel({
     window.addEventListener('mouseup', onMouseUp)
   }
 
-  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[] }> {
+  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
     const fileAttachments: FileAttachment[] = []
+    const annotationIds = new Set<string>()
 
     // Give the model the note's real Markdown (headings/bold/lists/links) instead of
     // plain text, so it can preserve formatting when editing/replacing. Falls back to
@@ -348,7 +355,7 @@ export default function AIConversationPanel({
     if (contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { contextText: '', attachments: imgs.map(p => p.attachment), targetNotes: [] }
+      return { contextText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
@@ -405,13 +412,31 @@ export default function AIConversationPanel({
     }
 
     // Build context text — each note labelled with its id so the model can target it.
-    const parts = notes.map((n) => {
+    // Each note's annotations are appended so the model can read/edit/delete them.
+    const parts = await Promise.all(notes.map(async (n) => {
       const body = (useSummaries && n.summary) ? n.summary : n.content
       const heading = n.id
         ? `## ${n.title || 'This note'} [id: ${n.id}]`
         : (n.title ? `## ${n.title}` : '')
-      return heading ? `${heading}\n\n${body}` : body
-    })
+      let annoSection = ''
+      if (n.id) {
+        let list: { id: string; block_id: string; text: string }[] = []
+        try {
+          list = (n.id === noteId && getAnnotations) ? getAnnotations() : (await annotationsApi.list(n.id)).data
+        } catch { list = [] }
+        if (list.length) {
+          const blockMap = new Map(extractBlockTexts(n.blocks).map((b) => [b.id, b.text]))
+          const lines = list.map((a) => {
+            annotationIds.add(a.id)
+            const snippet = (blockMap.get(a.block_id) ?? '').trim().slice(0, 80) || '(unknown block)'
+            return `- [annotation ${a.id}] anchored to "${snippet}": ${a.text || '(empty)'}`
+          })
+          annoSection = `\n\n**Annotations on this note:**\n${lines.join('\n')}`
+        }
+      }
+      const base = heading ? `${heading}\n\n${body}` : body
+      return base + annoSection
+    }))
 
     const targetNotes: ContextNote[] = notes
       .filter((n): n is typeof n & { id: string } => Boolean(n.id))
@@ -442,14 +467,14 @@ export default function AIConversationPanel({
       contextText = contextText ? `${contextText}\n\n---\n${fileSection}` : fileSection
     }
 
-    return { contextText, attachments: fileAttachments, targetNotes }
+    return { contextText, attachments: fileAttachments, targetNotes, annotationIds }
   }
 
   // Assemble everything the planner needs: the labelled system prompt plus the
   // id sets the executor validates against. Folders/categories come from the
   // store/API so the model can move notes, retag, and create folders.
   async function buildPlanContext(): Promise<PlanContext> {
-    const { contextText, attachments, targetNotes } = await buildScopeContext()
+    const { contextText, attachments, targetNotes, annotationIds } = await buildScopeContext()
 
     let folders: ContextFolder[] = []
     try {
@@ -465,7 +490,7 @@ export default function AIConversationPanel({
     cats.forEach((c) => labelMap.set(c.id, c.label))
 
     const systemPrompt = buildPlanSystemPrompt({ contextText, targetNotes, folders, categories: cats })
-    return { systemPrompt, attachments, targetNotes, folders, categories: cats, labelMap }
+    return { systemPrompt, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -527,6 +552,7 @@ export default function AIConversationPanel({
         validNoteIds: new Set(ctx.targetNotes.map((n) => n.id)),
         validFolderIds: new Set(ctx.folders.map((f) => f.id)),
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
+        validAnnotationIds: ctx.annotationIds,
       })
 
       const finalMessages = [
@@ -538,6 +564,7 @@ export default function AIConversationPanel({
       // Refresh in-memory note state (re-fetch + re-hydrate for content/title/tag/category changes).
       if (results.some((r) => r.notesChanged)) onNotesChanged?.()
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
+      if (results.some((r) => r.annotationsChanged)) await onAnnotationsChanged?.()
 
       // Persist the conversation directly — immediate, conversation-only DB write that
       // survives refreshOpenNote's re-hydrate (which defeats the debounced autosave).

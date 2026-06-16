@@ -210,6 +210,29 @@ class SharedNoteRead(BaseModel):
         from_attributes = True
 
 
+# Annotation schemas
+class AnnotationCreate(BaseModel):
+    block_id: str
+    text: str = ''
+
+
+class AnnotationUpdate(BaseModel):
+    text: Optional[str] = None
+    block_id: Optional[str] = None
+
+
+class AnnotationRead(BaseModel):
+    id: str
+    note_id: str
+    block_id: str
+    text: str
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
+
+    class Config:
+        from_attributes = True
+
+
 # AI Provider schemas
 class AIProviderCreate(BaseModel):
     name: str

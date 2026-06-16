@@ -98,6 +98,15 @@
   min-height: 100%;
 }
 
+/* Highlight a block while its annotation icon is hovered or its panel is open */
+.annotation-highlight {
+  background-color: rgba(245, 158, 11, 0.12);
+  box-shadow: inset 2px 0 0 0 rgb(245, 158, 11);
+  border-radius: 2px;
+  transition: background-color 0.15s ease;
+}
+.annotation-tooltip-body p:last-child { margin-bottom: 0; }
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
