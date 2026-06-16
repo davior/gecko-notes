@@ -1,7 +1,7 @@
 import { useState, useEffect, Component } from 'react'
 import type { ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
-import { Globe } from 'lucide-react'
+import { Globe, Printer } from 'lucide-react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -22,6 +22,27 @@ function parseContent(content: string): PartialBlock[] {
   } catch {
     return [{ type: 'paragraph' }]
   }
+}
+
+function handlePrint() {
+  const style = document.createElement('style')
+  style.setAttribute('media', 'print')
+  // The shared view lives inside a position:fixed, overflow:auto container, which
+  // makes browsers print only the first viewport-worth of content. Neutralise the
+  // fixed positioning and any clipping overflow so the whole note flows across pages.
+  style.textContent = `
+    @page { margin: 5mm; }
+    .no-print { display: none !important; }
+    html, body { background: white; color: black; margin: 0; padding: 0; height: auto; min-height: auto; }
+    .shared-root { position: static !important; overflow: visible !important; height: auto !important; inset: auto !important; }
+    .shared-content { overflow: visible !important; background: transparent !important; border: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+    .bn-container, .bn-editor { overflow: visible !important; height: auto !important; min-height: auto !important; page-break-inside: auto; }
+    img { page-break-inside: avoid; }
+    * { text-shadow: none !important; box-shadow: none !important; }
+  `
+  document.head.appendChild(style)
+  window.print()
+  setTimeout(() => document.head.removeChild(style), 1000)
 }
 
 class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
@@ -85,10 +106,11 @@ export default function SharedNoteView() {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, overflowY: 'auto', zIndex: 40 }}>
+    <div className="shared-root" style={{ position: 'fixed', inset: 0, overflowY: 'auto', zIndex: 40 }}>
       {/* Fixed theme background layer — same as App.tsx */}
       <div
         aria-hidden="true"
+        className="no-print"
         style={{
           position: 'fixed',
           inset: 0,
@@ -101,13 +123,25 @@ export default function SharedNoteView() {
       />
 
       {/* Header */}
-      <header className="border-b border-gray-100 dark:border-gray-700 sticky top-0 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
+      <header className="no-print border-b border-gray-100 dark:border-gray-700 sticky top-0 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
         <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between">
           <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
-          <span className="flex items-center gap-1.5 text-xs font-medium text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
-            <Globe className="w-3.5 h-3.5" />
-            Shared note
-          </span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handlePrint}
+              title="Print this note"
+              aria-label="Print this note"
+              className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 px-2.5 py-1 rounded-full transition-colors"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              Print
+            </button>
+            <span className="flex items-center gap-1.5 text-xs font-medium text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
+              <Globe className="w-3.5 h-3.5" />
+              Shared note
+            </span>
+          </div>
         </div>
       </header>
 
