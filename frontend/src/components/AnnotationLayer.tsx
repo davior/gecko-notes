@@ -30,6 +30,7 @@ export default function AnnotationLayer({
   const [positions, setPositions] = useState<IconPos[]>([])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [panelPos, setPanelPos] = useState<{ top: number; left: number } | null>(null)
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null)
   const iconRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const highlightedEl = useRef<HTMLElement | null>(null)
 
@@ -107,6 +108,22 @@ export default function AnnotationLayer({
     setPanelPos({ top: Math.min(r.top, window.innerHeight - 240), left: Math.max(8, left) })
   }, [openId, positions])
 
+  // Position the hover tooltip. The icon sits at the block's right edge, so
+  // prefer the left side (falling back to the right) and render it through a
+  // portal so it is never clipped by the editor's scroll container or the AI panel.
+  const TOOLTIP_WIDTH = 256
+  useEffect(() => {
+    if (!hoverId || hoverId === openId) { setTooltipPos(null); return }
+    const btn = iconRefs.current.get(hoverId)
+    if (!btn) { setTooltipPos(null); return }
+    const r = btn.getBoundingClientRect()
+    let left = r.left - TOOLTIP_WIDTH - 8
+    if (left < 8) left = Math.min(r.right + 8, window.innerWidth - TOOLTIP_WIDTH - 8)
+    setTooltipPos({ top: r.top, left: Math.max(8, left) })
+  }, [hoverId, openId, positions])
+
+  const hoverAnnotation = hoverId && hoverId !== openId ? annotations.find((a) => a.id === hoverId) ?? null : null
+
   const openAnnotation = annotations.find((a) => a.id === openId) ?? null
 
   return (
@@ -134,22 +151,26 @@ export default function AnnotationLayer({
               >
                 <MessageSquareText className="w-3.5 h-3.5" />
               </button>
-
-              {hoverId === p.id && !isOpen && (
-                <div className="pointer-events-none absolute left-7 top-0 w-64 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg px-3 py-2 text-xs text-gray-700 dark:text-gray-200 z-20">
-                  {annotation.text.trim() ? (
-                    <div className="annotation-tooltip-body max-h-40 overflow-hidden">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{annotation.text}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <span className="italic text-gray-400">Empty annotation — click to edit</span>
-                  )}
-                </div>
-              )}
             </div>
           )
         })}
       </div>
+
+      {hoverAnnotation && tooltipPos && createPortal(
+        <div
+          className="pointer-events-none fixed z-[55] w-64 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg px-3 py-2 text-xs text-gray-700 dark:text-gray-200"
+          style={{ top: tooltipPos.top, left: tooltipPos.left }}
+        >
+          {hoverAnnotation.text.trim() ? (
+            <div className="annotation-tooltip-body max-h-40 overflow-hidden">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{hoverAnnotation.text}</ReactMarkdown>
+            </div>
+          ) : (
+            <span className="italic text-gray-400">Empty annotation — click to edit</span>
+          )}
+        </div>,
+        document.body,
+      )}
 
       {openAnnotation && panelPos && (
         <AnnotationPanel
