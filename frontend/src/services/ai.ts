@@ -101,9 +101,21 @@ class AnthropicProvider implements AIService {
 
     // When web search is active the response content may contain server_tool_use and
     // web_search_tool_result blocks before the final text block — collect all text blocks.
-    const contentBlocks: Array<{ type: string; text?: string }> = response.data?.content ?? []
+    const contentBlocks: Array<{ type: string; text?: string; name?: string; input?: unknown }> = response.data?.content ?? []
     const textParts = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '')
-    const text = textParts.join('')
+    let text = textParts.join('')
+
+    // If Claude returned a tool_use block instead of text (e.g. it hallucinated calling
+    // an edit_section / plan action as a native tool), recover the plan from the tool input.
+    if (!text && response.data?.stop_reason === 'tool_use') {
+      const toolBlock = contentBlocks.find((b) => b.type === 'tool_use')
+      if (toolBlock?.input && typeof toolBlock.input === 'object') {
+        const input = { ...(toolBlock.input as Record<string, unknown>) }
+        if (!input.type && toolBlock.name) input.type = toolBlock.name
+        text = JSON.stringify(input)
+      }
+    }
+
     const full = prefill ? prefill + text : text
     if (response.data?.stop_reason === 'max_tokens') {
       return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
