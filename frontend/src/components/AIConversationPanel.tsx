@@ -60,6 +60,7 @@ interface AIConversationPanelProps {
   getNoteDocument?: () => unknown[]
   conversation: ConversationMessage[]
   onConversationChange: (messages: ConversationMessage[]) => void
+  onPersistConversation?: (messages: ConversationMessage[]) => Promise<void> | void
   onAddToNote: (text: string) => Promise<void>
   // Plan execution wiring (provided by EditorView)
   editor?: PlanEditor | null
@@ -157,6 +158,7 @@ export default function AIConversationPanel({
   getNoteDocument,
   conversation,
   onConversationChange,
+  onPersistConversation,
   onAddToNote,
   editor,
   defaultCategoryId,
@@ -527,14 +529,20 @@ export default function AIConversationPanel({
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
       })
 
-      // Refresh the in-memory note state first (this clears any stale autosave timer
-      // without cancelling a conversation save we care about).
+      const finalMessages = [
+        ...baseMessages,
+        assistantMsg(buildResultSummary(results)),
+        assistantMsg('_Plan completed._'),
+      ]
+
+      // Refresh in-memory note state (re-fetch + re-hydrate for content/title/tag/category changes).
       if (results.some((r) => r.notesChanged)) onNotesChanged?.()
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
 
-      // Now schedule the conversation autosave — nothing cancels it after this point.
-      const withResults = [...baseMessages, assistantMsg(buildResultSummary(results))]
-      onConversationChange([...withResults, assistantMsg('_Plan completed._')])
+      // Persist the conversation directly — immediate, conversation-only DB write that
+      // survives refreshOpenNote's re-hydrate (which defeats the debounced autosave).
+      if (onPersistConversation) await onPersistConversation(finalMessages)
+      else onConversationChange(finalMessages)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to run plan')
     } finally {

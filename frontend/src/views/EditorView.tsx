@@ -691,6 +691,18 @@ export default function EditorView() {
     scheduleAutosave()
   }
 
+  // Persist the conversation immediately (conversation-only update). Used after an
+  // AI plan runs: the debounced autosave is unreliable there because refreshOpenNote's
+  // forced editor re-hydrate resets hasPendingChanges, so doSave() bails.
+  async function persistConversation(messages: ConversationMessage[]) {
+    setConversation(messages)
+    conversationRef.current = JSON.stringify(messages)
+    const id = createdNoteId.current ?? noteId
+    if (!id) return // brand-new unsaved note — conversationRef rides along on the next full save
+    try { await notesApi.update(id, { conversation: conversationRef.current }) }
+    catch { /* best-effort; conversationRef is set so a later doSave retries */ }
+  }
+
   async function insertAIText(text: string) {
     if (!editor) return
     const blocks = await editor.tryParseMarkdownToBlocks(text)
@@ -1084,6 +1096,7 @@ export default function EditorView() {
           getNoteDocument={() => editor?.document as unknown[] ?? []}
           conversation={conversation}
           onConversationChange={handleConversationChange}
+          onPersistConversation={persistConversation}
           onAddToNote={insertAIText}
           editor={editor}
           defaultCategoryId={defaultCategoryId}
