@@ -482,9 +482,12 @@ export default function AIConversationPanel({
   // Turn the per-action results into one assistant chat message: respond actions
   // render as their text, mutations as a ✓/✗ line.
   function buildResultSummary(results: ActionResult[]): string {
-    const lines = results.map((r) =>
-      r.kind === 'respond' ? r.message : `${r.ok ? '✓' : '✗'} ${r.message}`,
-    )
+    const lines = results.map((r) => {
+      if (r.kind === 'respond') return r.message
+      // Link successful note actions so the user can jump straight to what changed.
+      const link = r.ok && r.noteId ? ` [Open](/notes/${r.noteId})` : ''
+      return `${r.ok ? '✓' : '✗'} ${r.message}${link}`
+    })
     const failures = results.filter((r) => r.kind !== 'respond' && !r.ok).length
     const text = lines.join('\n\n')
     return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
@@ -770,6 +773,12 @@ export default function AIConversationPanel({
                     remarkPlugins={[remarkGfm]}
                     components={{
                       p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                      a: ({ href, children }) =>
+                        href && href.startsWith('/') ? (
+                          <Link to={href} className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</Link>
+                        ) : (
+                          <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</a>
+                        ),
                       ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
                       ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
                       code: ({ children }) => <code className="bg-gray-200 dark:bg-gray-700 rounded px-1 font-mono text-xs">{children}</code>,

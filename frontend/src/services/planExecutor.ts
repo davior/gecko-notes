@@ -33,6 +33,7 @@ export interface ActionResult {
   kind?: 'respond'
   notesChanged?: boolean
   touchedCurrentNote?: boolean
+  noteId?: string // the note this action created/affected, for a result-summary link
 }
 
 function errMsg(e: unknown): string {
@@ -51,6 +52,21 @@ function parseBlocks(content: string): unknown[] {
   } catch {
     return []
   }
+}
+
+// Embed blocks (childNote / noteReference) can't be expressed in Markdown, so a
+// section rewrite from model Markdown can't reproduce them — collect them so
+// edit_section can re-insert them instead of silently dropping them.
+function collectEmbeds(blocks: unknown[]): unknown[] {
+  const out: unknown[] = []
+  const walk = (b: unknown) => {
+    const rec = b as Record<string, unknown> | null
+    if (!rec || typeof rec !== 'object') return
+    if (rec.type === 'childNote' || rec.type === 'noteReference') out.push(b)
+    if (Array.isArray(rec.children)) rec.children.forEach(walk)
+  }
+  blocks.forEach(walk)
+  return out
 }
 
 export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<ActionResult[]> {
@@ -99,7 +115,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           tags: [],
         })
         if (action.ref) refMap.set(action.ref, res.data.id)
-        return { ok: true, message: `Created note “${res.data.title}”.`, notesChanged: true }
+        return { ok: true, message: `Created note “${res.data.title}”.`, notesChanged: true, noteId: res.data.id }
       }
 
       case 'edit_note': {
@@ -118,6 +134,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `${action.mode === 'amend' ? 'Amended' : 'Replaced'} note “${cur.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -155,6 +172,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
             message: `Section “${action.section}” not found in “${cur.data.title}” — added as a new section.`,
             notesChanged: true,
             touchedCurrentNote: touchesCurrent(r.id),
+            noteId: r.id,
           }
         }
 
@@ -165,13 +183,20 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           if (isHeading(blocks[i]) && headingLevel(blocks[i]) <= level) { endIdx = i; break }
         }
 
-        blocks.splice(startIdx, endIdx - startIdx, ...newBlocks)
+        // Embedded child-notes/references can't be expressed in Markdown, so the
+        // model's rewrite can't reproduce them — re-append any that were in the
+        // section so a section edit never silently drops them.
+        const preserved = collectEmbeds(blocks.slice(startIdx, endIdx))
+        blocks.splice(startIdx, endIdx - startIdx, ...newBlocks, ...preserved)
         await notesApi.update(r.id, { content: JSON.stringify(blocks) })
         return {
           ok: true,
-          message: `Updated section “${action.section}” in “${cur.data.title}”.`,
+          message: `Updated section “${action.section}” in “${cur.data.title}”.${
+            preserved.length ? ` Kept ${preserved.length} embedded reference${preserved.length === 1 ? '' : 's'}.` : ''
+          }`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -187,6 +212,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Appended to note “${cur.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -199,6 +225,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Renamed note to “${action.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -224,6 +251,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Created child note “${child.data.title}” under “${parent.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: child.data.id,
         }
       }
 
@@ -238,6 +266,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Moved note to ${f.id ? 'folder' : 'the root'}.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -255,6 +284,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Updated tags: ${tags.join(', ') || '(none)'}.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -270,6 +300,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: 'Changed category.',
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
 
@@ -323,6 +354,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: `Added reference to “${action.referenceTitle}”${sectionMsg}.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
     }
