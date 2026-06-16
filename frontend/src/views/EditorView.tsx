@@ -965,7 +965,7 @@ export default function EditorView() {
               <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
             </span>
           )}
-          {note && <ShareMenu note={note} onToast={showToast} />}
+          {note && <ShareMenu note={note} onToast={showToast} onUpdate={setNote} />}
           <button
             className="btn-ghost p-2"
             title="Version history"

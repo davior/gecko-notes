@@ -9,9 +9,10 @@ import { useNotesStore } from '@/stores/notes'
 interface Props {
   note: Note
   onToast: (msg: string) => void
+  onUpdate?: (note: Note) => void
 }
 
-export default function ShareMenu({ note, onToast }: Props) {
+export default function ShareMenu({ note, onToast, onUpdate }: Props) {
   const { open, setOpen, triggerRef, dropdownRef, style } = useDropdown('right')
   const { shareNote, unshareNote } = useNotesStore()
   const [working, setWorking] = useState(false)
@@ -22,6 +23,7 @@ export default function ShareMenu({ note, onToast }: Props) {
     setWorking(true)
     try {
       const updated = await shareNote(note.id)
+      onUpdate?.(updated)
       const url = `${window.location.origin}/shared/${updated.share_token}`
       await navigator.clipboard.writeText(url)
       onToast('Share link copied to clipboard')
@@ -43,7 +45,8 @@ export default function ShareMenu({ note, onToast }: Props) {
   async function handleDisableSharing() {
     setWorking(true)
     try {
-      await unshareNote(note.id)
+      const updated = await unshareNote(note.id)
+      onUpdate?.(updated)
       onToast('Sharing disabled')
       setOpen(false)
     } catch {
