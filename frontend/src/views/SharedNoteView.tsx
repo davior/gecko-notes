@@ -31,7 +31,7 @@ function handlePrint() {
   // makes browsers print only the first viewport-worth of content. Neutralise the
   // fixed positioning and any clipping overflow so the whole note flows across pages.
   style.textContent = `
-    @page { margin: 23mm; }
+    @page { margin: 5mm; }
     .no-print { display: none !important; }
     html, body { background: white; color: black; margin: 0; padding: 0; height: auto; min-height: auto; }
     .shared-root { position: static !important; overflow: visible !important; height: auto !important; inset: auto !important; }
