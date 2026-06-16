@@ -515,11 +515,14 @@ export default function AIConversationPanel({
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
       })
 
-      const withResults = [...baseMessages, assistantMsg(buildResultSummary(results))]
-      onConversationChange([...withResults, assistantMsg('_Plan completed._')])
-
+      // Refresh the in-memory note state first (this clears any stale autosave timer
+      // without cancelling a conversation save we care about).
       if (results.some((r) => r.notesChanged)) onNotesChanged?.()
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
+
+      // Now schedule the conversation autosave — nothing cancels it after this point.
+      const withResults = [...baseMessages, assistantMsg(buildResultSummary(results))]
+      onConversationChange([...withResults, assistantMsg('_Plan completed._')])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to run plan')
     } finally {
