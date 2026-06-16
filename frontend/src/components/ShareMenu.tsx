@@ -74,7 +74,7 @@ export default function ShareMenu({ note, onToast, onUpdate }: Props) {
   return (
     <div className="relative" ref={triggerRef}>
       <button
-        className={`btn-ghost gap-1 text-sm ${note.is_shared ? 'text-green-600' : ''}`}
+        className={`btn-ghost gap-1 text-sm ${note.is_shared ? 'text-green-600 dark:text-green-400' : ''}`}
         onClick={() => setOpen((o) => !o)}
       >
         {note.is_shared ? <Globe className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
