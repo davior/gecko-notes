@@ -1,14 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
+import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
 import { settingsApi } from '@/api/settings'
 import { notesApi } from '@/api/notes'
+import { foldersApi } from '@/api/folders'
 import { extractPlainText, extractLinkedFileUrls } from '@/utils/blocks'
 import type { FileAttachment } from '@/services/ai'
+import {
+  parsePlan,
+  buildPlanSystemPrompt,
+  defaultActionLabel,
+  type Plan,
+  type ContextNote,
+  type ContextFolder,
+  type ContextCategory,
+} from '@/services/aiPlan'
+import { executePlan, type PlanEditor, type ActionResult } from '@/services/planExecutor'
 
 export interface ConversationMessage {
   id: string
@@ -19,9 +31,22 @@ export interface ConversationMessage {
 
 type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
 
-interface FrozenContext {
-  text: string
+// Everything needed to generate and execute a plan for the current context.
+// Cached when the context is frozen so repeated requests reuse the same (cached)
+// system prompt and target-id sets.
+interface PlanContext {
+  systemPrompt: string
   attachments: FileAttachment[]
+  targetNotes: ContextNote[]
+  folders: ContextFolder[]
+  categories: ContextCategory[]
+  labelMap: Map<string, string>
+}
+
+interface PendingPlan {
+  plan: Plan
+  ctx: PlanContext
+  baseMessages: ConversationMessage[]
 }
 
 interface AIConversationPanelProps {
@@ -29,12 +54,21 @@ interface AIConversationPanelProps {
   onToggle: () => void
   getNoteContext: () => string
   noteId?: string | null
+  noteTitle?: string
   noteFolderId?: string | null
   noteSummary?: string | null
   getNoteDocument?: () => unknown[]
   conversation: ConversationMessage[]
   onConversationChange: (messages: ConversationMessage[]) => void
+  onPersistConversation?: (messages: ConversationMessage[]) => Promise<void> | void
   onAddToNote: (text: string) => Promise<void>
+  // Plan execution wiring (provided by EditorView)
+  editor?: PlanEditor | null
+  defaultCategoryId?: string
+  currentFolderId?: string | null
+  onBeforeExecute?: () => Promise<void> | void
+  onCurrentNoteEdited?: () => Promise<void> | void
+  onNotesChanged?: () => void
 }
 
 function uid() {
@@ -118,15 +152,24 @@ export default function AIConversationPanel({
   onToggle,
   getNoteContext,
   noteId,
+  noteTitle,
   noteFolderId,
   noteSummary,
   getNoteDocument,
   conversation,
   onConversationChange,
+  onPersistConversation,
   onAddToNote,
+  editor,
+  defaultCategoryId,
+  currentFolderId,
+  onBeforeExecute,
+  onCurrentNoteEdited,
+  onNotesChanged,
 }: AIConversationPanelProps) {
   const aiService = useSettingsStore((s) => s.aiService)
   const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
+  const categories = useCategoriesStore((s) => s.categories)
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -152,11 +195,19 @@ export default function AIConversationPanel({
   const [includeLinkedFiles, setIncludeLinkedFiles] = useState(() => {
     try { return localStorage.getItem('ai-include-linked-files') === 'true' } catch { return false }
   })
+  // Plan mode: when on, multi-step plans are previewed for confirmation before
+  // they run. Defaults to on for first-run safety.
+  const [planMode, setPlanMode] = useState(() => {
+    try { return localStorage.getItem('ai-plan-mode') !== 'false' } catch { return true }
+  })
+  const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null)
+  const [selectedSteps, setSelectedSteps] = useState<boolean[]>([])
+  const [executing, setExecuting] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [frozenContext, setFrozenContext] = useState<FrozenContext | null>(null)
+  const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -181,6 +232,11 @@ export default function AIConversationPanel({
   const dictation = useDictation(handleDictationResult, {
     transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
   })
+
+  // Reset step selection (all checked) whenever a new plan is ready to review.
+  useEffect(() => {
+    setSelectedSteps(pendingPlan?.plan.actions.map(() => true) ?? [])
+  }, [pendingPlan])
 
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   useEffect(() => { panelWidthRef.current = panelWidth }, [panelWidth])
@@ -212,13 +268,23 @@ export default function AIConversationPanel({
     try { localStorage.setItem('ai-include-linked-files', String(includeLinkedFiles)) } catch { /* noop */ }
   }, [includeLinkedFiles])
 
+  useEffect(() => {
+    try { localStorage.setItem('ai-plan-mode', String(planMode)) } catch { /* noop */ }
+  }, [planMode])
+
   // Auto-unfreeze when scope settings change — frozen context is now stale
   useEffect(() => {
     setFrozenContext(null)
   }, [contextScope, useSummaries, includeLinkedFiles])
 
   useEffect(() => {
-    if (isOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!isOpen) return
+    // Scroll the message list itself rather than scrollIntoView on an anchor:
+    // scrollIntoView walks up and scrolls every scrollable ancestor (even an
+    // overflow-hidden one is programmatically scrollable), which would scroll
+    // the whole page and clip the note header.
+    const el = messagesContainerRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, loading, isOpen])
 
   useEffect(() => {
@@ -267,20 +333,30 @@ export default function AIConversationPanel({
     window.addEventListener('mouseup', onMouseUp)
   }
 
-  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[] }> {
+  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[] }> {
     const fileAttachments: FileAttachment[] = []
+
+    // Give the model the note's real Markdown (headings/bold/lists/links) instead of
+    // plain text, so it can preserve formatting when editing/replacing. Falls back to
+    // plain text if the editor is unavailable or conversion throws (e.g. custom blocks).
+    const blocksToMarkdown = (blocks: unknown[]): string => {
+      if (!editor) return extractPlainText(blocks)
+      try { return editor.blocksToMarkdownLossy(blocks) || extractPlainText(blocks) }
+      catch { return extractPlainText(blocks) }
+    }
 
     if (contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { contextText: '', attachments: imgs.map(p => p.attachment) }
+      return { contextText: '', attachments: imgs.map(p => p.attachment), targetNotes: [] }
     }
 
-    let notes: { title: string; content: string; summary?: string | null; blocks: unknown[] }[] = []
+    // `id` is carried through so the model can target each note in plan actions.
+    let notes: { id?: string; title: string; content: string; summary?: string | null; blocks: unknown[] }[] = []
 
     if (contextScope === 'note') {
       const blocks = getNoteDocument?.() ?? []
-      notes = [{ title: '', content: getNoteContext(), summary: noteSummary, blocks }]
+      notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(blocks), summary: noteSummary, blocks }]
     } else {
       // Fetch list items, then get full content for each (NoteListItem only has content_preview)
       let listItems: { id: string }[] = []
@@ -313,8 +389,9 @@ export default function AIConversationPanel({
         let blocks: unknown[] = []
         try { blocks = JSON.parse(r.data.content) } catch { /* ignore */ }
         return {
+          id: r.data.id,
           title: r.data.title,
-          content: extractPlainText(blocks),
+          content: blocksToMarkdown(blocks),
           summary: r.data.summary,
           blocks,
         }
@@ -323,15 +400,22 @@ export default function AIConversationPanel({
       // Prepend current note for children scope
       if (contextScope === 'children') {
         const curBlocks = getNoteDocument?.() ?? []
-        notes.unshift({ title: '', content: getNoteContext(), summary: noteSummary, blocks: curBlocks })
+        notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(curBlocks), summary: noteSummary, blocks: curBlocks })
       }
     }
 
-    // Build context text
+    // Build context text — each note labelled with its id so the model can target it.
     const parts = notes.map((n) => {
       const body = (useSummaries && n.summary) ? n.summary : n.content
-      return n.title ? `## ${n.title}\n\n${body}` : body
+      const heading = n.id
+        ? `## ${n.title || 'This note'} [id: ${n.id}]`
+        : (n.title ? `## ${n.title}` : '')
+      return heading ? `${heading}\n\n${body}` : body
     })
+
+    const targetNotes: ContextNote[] = notes
+      .filter((n): n is typeof n & { id: string } => Boolean(n.id))
+      .map((n) => ({ id: n.id, title: n.title || 'Untitled' }))
 
     // Collect linked file URLs (images only — others not supported as content blocks)
     if (includeLinkedFiles) {
@@ -358,7 +442,30 @@ export default function AIConversationPanel({
       contextText = contextText ? `${contextText}\n\n---\n${fileSection}` : fileSection
     }
 
-    return { contextText, attachments: fileAttachments }
+    return { contextText, attachments: fileAttachments, targetNotes }
+  }
+
+  // Assemble everything the planner needs: the labelled system prompt plus the
+  // id sets the executor validates against. Folders/categories come from the
+  // store/API so the model can move notes, retag, and create folders.
+  async function buildPlanContext(): Promise<PlanContext> {
+    const { contextText, attachments, targetNotes } = await buildScopeContext()
+
+    let folders: ContextFolder[] = []
+    try {
+      const res = await foldersApi.list()
+      folders = res.data.map((f) => ({ id: f.id, name: f.name }))
+    } catch { /* folders are optional context */ }
+
+    const cats: ContextCategory[] = categories.map((c) => ({ id: c.id, label: c.label }))
+
+    const labelMap = new Map<string, string>()
+    targetNotes.forEach((n) => labelMap.set(n.id, n.title || 'Untitled'))
+    folders.forEach((f) => labelMap.set(f.id, f.name))
+    cats.forEach((c) => labelMap.set(c.id, c.label))
+
+    const systemPrompt = buildPlanSystemPrompt({ contextText, targetNotes, folders, categories: cats })
+    return { systemPrompt, attachments, targetNotes, folders, categories: cats, labelMap }
   }
 
   async function handleFreeze() {
@@ -368,8 +475,7 @@ export default function AIConversationPanel({
     }
     setFreezing(true)
     try {
-      const ctx = await buildScopeContext()
-      setFrozenContext({ text: ctx.contextText, attachments: ctx.attachments })
+      setFrozenContext(await buildPlanContext())
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to freeze context')
     } finally {
@@ -377,8 +483,82 @@ export default function AIConversationPanel({
     }
   }
 
+  function assistantMsg(content: string): ConversationMessage {
+    return { id: uid(), role: 'assistant', content, timestamp: new Date().toISOString() }
+  }
+
+  // Turn the per-action results into one assistant chat message: respond actions
+  // render as their text, mutations as a ✓/✗ line.
+  function buildResultSummary(results: ActionResult[]): string {
+    // Respond-kind actions emit text (rare in mutation plans) — show above the table.
+    const respondParts = results.filter((r) => r.kind === 'respond').map((r) => r.message)
+    const mutationRows = results
+      .filter((r) => r.kind !== 'respond')
+      .map((r) => {
+        const icon = r.ok ? '✅' : '❌'
+        const pill = r.ok && r.noteId && r.noteTitle ? ` [${r.noteTitle}](/notes/${r.noteId})` : ''
+        return `| ${icon} | ${r.message}${pill} |`
+      })
+    const parts: string[] = []
+    if (respondParts.length) parts.push(respondParts.join('\n\n'))
+    if (mutationRows.length) parts.push(['| | |', '|:---:|:---|', ...mutationRows].join('\n'))
+    const failures = results.filter((r) => r.kind !== 'respond' && !r.ok).length
+    const text = parts.join('\n\n')
+    return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
+  }
+
+  async function runPlan(plan: Plan, ctx: PlanContext, baseMessages: ConversationMessage[]) {
+    if (!editor) {
+      setError('Editor is not ready yet — try again in a moment.')
+      setPendingPlan(null)
+      return
+    }
+    setExecuting(true)
+    try {
+      // Flush any unsaved edits to the open note so amend/append build on the
+      // latest content and a later re-hydrate won't clobber the user's typing.
+      await onBeforeExecute?.()
+
+      const results = await executePlan(plan, {
+        editor,
+        currentNoteId: noteId ?? null,
+        defaultCategoryId: defaultCategoryId ?? '',
+        currentFolderId: currentFolderId ?? null,
+        validNoteIds: new Set(ctx.targetNotes.map((n) => n.id)),
+        validFolderIds: new Set(ctx.folders.map((f) => f.id)),
+        validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
+      })
+
+      const finalMessages = [
+        ...baseMessages,
+        assistantMsg(buildResultSummary(results)),
+        assistantMsg('_Plan completed._'),
+      ]
+
+      // Refresh in-memory note state (re-fetch + re-hydrate for content/title/tag/category changes).
+      if (results.some((r) => r.notesChanged)) onNotesChanged?.()
+      if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
+
+      // Persist the conversation directly — immediate, conversation-only DB write that
+      // survives refreshOpenNote's re-hydrate (which defeats the debounced autosave).
+      if (onPersistConversation) await onPersistConversation(finalMessages)
+      else onConversationChange(finalMessages)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to run plan')
+    } finally {
+      setExecuting(false)
+      setPendingPlan(null)
+    }
+  }
+
+  function cancelPlan() {
+    if (!pendingPlan) return
+    onConversationChange([...pendingPlan.baseMessages, assistantMsg('_Plan cancelled._')])
+    setPendingPlan(null)
+  }
+
   async function handleSend(userContent: string, priorMessages: ConversationMessage[]) {
-    if (!userContent.trim() || !aiService || loading) return
+    if (!userContent.trim() || !aiService || loading || executing || pendingPlan) return
     setError('')
 
     const userMsg: ConversationMessage = {
@@ -400,30 +580,39 @@ export default function AIConversationPanel({
         ? `${transcript}\n\nHuman: ${userContent.trim()}`
         : userContent.trim()
 
-      // Use frozen context if locked; otherwise build fresh from current scope
+      // Use frozen context if locked; otherwise build fresh from current scope.
       const isFrozen = frozenContext !== null
-      const { contextText, attachments } = isFrozen
-        ? { contextText: frozenContext!.text, attachments: frozenContext!.attachments }
-        : await buildScopeContext()
+      const ctx = isFrozen ? frozenContext! : await buildPlanContext()
 
-      const systemPrompt = contextText
-        ? `You are an AI assistant helping the user with their notes.\n\nContext:\n${contextText}`
-        : 'You are an AI assistant helping the user.'
-
-      const result = await aiService.complete(fullPrompt, {
-        systemPrompt,
-        attachments: attachments.length ? attachments : undefined,
+      // No prefill: it behaves inconsistently across providers (Anthropic
+      // continues from it; OpenAI/Ollama prepend it to a fresh full-JSON reply,
+      // yielding "{{"). The system prompt asks for JSON-only and parsePlan
+      // tolerantly extracts the object, so temperature:0 alone is enough.
+      const raw = await aiService.complete(fullPrompt, {
+        systemPrompt: ctx.systemPrompt,
+        attachments: ctx.attachments.length ? ctx.attachments : undefined,
         cacheSystem: isFrozen,
+        temperature: 0,
       })
-
-      const assistantMsg: ConversationMessage = {
-        id: uid(),
-        role: 'assistant',
-        content: result,
-        timestamp: new Date().toISOString(),
-      }
-      onConversationChange([...withUser, assistantMsg])
       setPendingFiles([])
+
+      const plan = parsePlan(raw)
+      const onlyRespond = plan.actions.every((a) => a.type === 'respond')
+
+      if (onlyRespond) {
+        // Respond-only results display immediately as a normal chat message — no
+        // preview — even when Plan mode is on.
+        const text =
+          plan.actions
+            .map((a) => (a.type === 'respond' ? a.text : ''))
+            .filter(Boolean)
+            .join('\n\n') || '(no response)'
+        onConversationChange([...withUser, assistantMsg(text)])
+      } else if (planMode) {
+        setPendingPlan({ plan, ctx, baseMessages: withUser })
+      } else {
+        await runPlan(plan, ctx, withUser)
+      }
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : 'An error occurred'
       // Axios errors: the backend wraps the upstream API error body in `detail`
@@ -524,7 +713,7 @@ export default function AIConversationPanel({
       </div>
 
       {/* Message list */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">
         {!aiService && (
           <div className="text-center py-8 text-sm text-gray-400 space-y-2">
             <Sparkles className="w-8 h-8 mx-auto text-gray-300" />
@@ -538,7 +727,7 @@ export default function AIConversationPanel({
         {aiService && conversation.length === 0 && !loading && (
           <div className="text-center py-8 text-sm text-gray-400 space-y-1">
             <Sparkles className="w-8 h-8 mx-auto text-gray-300" />
-            <p>Ask anything about this note.</p>
+            <p>Ask about your notes — or tell me to create, edit, rename, or organise them.</p>
           </div>
         )}
 
@@ -607,6 +796,19 @@ export default function AIConversationPanel({
                     remarkPlugins={[remarkGfm]}
                     components={{
                       p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                      a: ({ href, children }) => {
+                        if (href?.startsWith('/notes/')) {
+                          return (
+                            <Link to={href} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors no-underline">
+                              <FileText className="w-3 h-3 shrink-0" />
+                              <span>{children}</span>
+                            </Link>
+                          )
+                        }
+                        if (href?.startsWith('/'))
+                          return <Link to={href} className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</Link>
+                        return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</a>
+                      },
                       ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
                       ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
                       code: ({ children }) => <code className="bg-gray-200 dark:bg-gray-700 rounded px-1 font-mono text-xs">{children}</code>,
@@ -672,7 +874,6 @@ export default function AIConversationPanel({
           </div>
         )}
 
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}
@@ -716,6 +917,16 @@ export default function AIConversationPanel({
                 className="rounded"
               />
               Files
+            </label>
+
+            <label className="flex items-center gap-1 cursor-pointer select-none" title="Preview multi-step plans before they run">
+              <input
+                type="checkbox"
+                checked={planMode}
+                onChange={(e) => setPlanMode(e.target.checked)}
+                className="rounded"
+              />
+              Plan mode
             </label>
 
             <button
@@ -800,21 +1011,81 @@ export default function AIConversationPanel({
                     void handleSend(input, conversation)
                   }
                 }}
-                placeholder="Ask about this note…"
+                placeholder="Ask a question or tell me what to do…"
                 rows={1}
                 className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
-                disabled={loading}
+                disabled={loading || executing}
               />
               <button
                 className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-                disabled={loading || !input.trim()}
+                disabled={loading || executing || !input.trim()}
                 onClick={() => void handleSend(input, conversation)}
                 type="button"
               >
-                {loading ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
+                {loading || executing ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
               </button>
             </div>
             <p className="text-xs text-gray-400 mt-0.5">Shift+Enter for new line</p>
+          </div>
+        </div>
+      )}
+
+      {/* Plan confirmation (Plan mode) */}
+      {pendingPlan && (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-3"
+          onClick={() => { if (!executing) cancelPlan() }}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-sm max-h-full flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-1.5 px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+              <ListChecks className="w-4 h-4 text-blue-500" />
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Review plan</h3>
+              <span className="text-xs text-gray-400 ml-auto">
+                {selectedSteps.filter(Boolean).length} / {pendingPlan.plan.actions.length} step{pendingPlan.plan.actions.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <ul className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm text-gray-700 dark:text-gray-200">
+              {pendingPlan.plan.actions.map((a, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedSteps[i] ?? true}
+                    onChange={(e) => setSelectedSteps((prev) => {
+                      const next = [...prev]; next[i] = e.target.checked; return next
+                    })}
+                    className="mt-0.5 h-3.5 w-3.5 accent-blue-600 cursor-pointer shrink-0"
+                  />
+                  <span className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</span>
+                </li>
+              ))}
+            </ul>
+            {pendingPlan.plan.actions.some((a) => a.type === 'edit_note' && a.mode === 'replace') && (
+              <p className="px-4 pb-2 text-xs text-amber-600 dark:text-amber-400">
+                ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
+              </p>
+            )}
+            <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
+              <button
+                className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
+                disabled={executing || selectedSteps.filter(Boolean).length === 0}
+                onClick={() => {
+                  const filtered = { actions: pendingPlan.plan.actions.filter((_, i) => selectedSteps[i]) }
+                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages)
+                }}
+              >
+                {executing ? <><Spinner /> Running…</> : 'Approve & run'}
+              </button>
+              <button
+                className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
+                disabled={executing}
+                onClick={cancelPlan}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

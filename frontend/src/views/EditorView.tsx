@@ -456,6 +456,24 @@ export default function EditorView() {
     navigate(`/notes/${newNote.id}`)
   }
 
+  // Re-fetch and re-hydrate the open note after the AI assistant mutated it via
+  // the API, reusing the same "force hydrate" mechanism as history restore.
+  async function refreshOpenNote() {
+    const id = createdNoteId.current ?? noteId
+    if (!id) return
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
+    hasPendingChanges.current = false
+    try {
+      const fresh = await notesStore.loadNote(id)
+      setNote(fresh)
+      setTitle(fresh.title)
+      setCategoryId(fresh.category_id)
+      setTags([...fresh.tags])
+      setSummary(fresh.summary ?? '')
+      syncedEditorKey.current = null // force the hydrate effect to reload editor content
+    } catch { /* best-effort refresh */ }
+  }
+
   // Build well-punctuated text for text-to-speech. Unlike extractPlainText (used
   // for AI context), this terminates list items, table rows and headings with
   // punctuation so the TTS engine inserts natural pauses instead of reading the
@@ -673,6 +691,18 @@ export default function EditorView() {
     scheduleAutosave()
   }
 
+  // Persist the conversation immediately (conversation-only update). Used after an
+  // AI plan runs: the debounced autosave is unreliable there because refreshOpenNote's
+  // forced editor re-hydrate resets hasPendingChanges, so doSave() bails.
+  async function persistConversation(messages: ConversationMessage[]) {
+    setConversation(messages)
+    conversationRef.current = JSON.stringify(messages)
+    const id = createdNoteId.current ?? noteId
+    if (!id) return // brand-new unsaved note — conversationRef rides along on the next full save
+    try { await notesApi.update(id, { conversation: conversationRef.current }) }
+    catch { /* best-effort; conversationRef is set so a later doSave retries */ }
+  }
+
   async function insertAIText(text: string) {
     if (!editor) return
     const blocks = await editor.tryParseMarkdownToBlocks(text)
@@ -807,7 +837,7 @@ export default function EditorView() {
   const editorTheme: 'light' | 'dark' = activeGlassTheme ? activeGlassTheme.mode : theme
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
+    <div className="flex flex-col h-screen overflow-hidden bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
         <div className="flex items-center gap-2 px-4 py-2">
           <button className="btn-ghost p-2" onClick={goHome} title="Go home">
@@ -1060,12 +1090,20 @@ export default function EditorView() {
           onToggle={() => setPanelOpen((o) => !o)}
           getNoteContext={() => currentNoteContent.current}
           noteId={createdNoteId.current ?? noteId}
+          noteTitle={title}
           noteFolderId={note?.folder_id ?? null}
           noteSummary={note?.summary ?? null}
           getNoteDocument={() => editor?.document as unknown[] ?? []}
           conversation={conversation}
           onConversationChange={handleConversationChange}
+          onPersistConversation={persistConversation}
           onAddToNote={insertAIText}
+          editor={editor}
+          defaultCategoryId={defaultCategoryId}
+          currentFolderId={note?.folder_id ?? null}
+          onBeforeExecute={async () => { if (hasPendingChanges.current) await doSave(true) }}
+          onCurrentNoteEdited={refreshOpenNote}
+          onNotesChanged={() => { void notesStore.loadNotes() }}
         />
       </div>
 

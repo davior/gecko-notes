@@ -1,0 +1,244 @@
+// Turns a natural-language request into a structured PLAN of sequential actions
+// the notes app can execute. The model returns a single JSON object; we parse it
+// here (reusing the fence-stripping approach from parseTagsFromAI in ai.ts) and
+// degrade gracefully to a plain "respond" action when the output isn't valid JSON.
+
+export interface ContextNote { id: string; title: string }
+export interface ContextFolder { id: string; name: string }
+export interface ContextCategory { id: string; label: string }
+
+// All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
+// via the live editor's tryParseMarkdownToBlocks(). The model never emits BlockNote JSON.
+export type PlanAction =
+  | { type: 'respond'; text: string; description?: string }
+  | { type: 'create_note'; title: string; content: string; ref?: string; description?: string }
+  | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; description?: string }
+  | { type: 'edit_section'; noteId: string; section: string; content: string; description?: string }
+  | { type: 'append_note'; noteId: string; content: string; description?: string }
+  | { type: 'rename_note'; noteId: string; title: string; description?: string }
+  | { type: 'create_child_note'; parentId: string; title: string; content: string; ref?: string; description?: string }
+  | { type: 'move_note'; noteId: string; folderId: string | null; description?: string }
+  | { type: 'set_tags'; noteId: string; tags: string[]; mode: 'replace' | 'add'; description?: string }
+  | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
+  | { type: 'create_folder'; name: string; parentFolderId?: string | null; ref?: string; description?: string }
+  | { type: 'add_reference'; noteId: string; referenceNoteId: string; referenceTitle: string; insertAfterSection?: string; description?: string }
+
+export interface Plan { actions: PlanAction[] }
+
+// Defensive ceiling so a runaway model can't queue thousands of mutations.
+export const MAX_PLAN_ACTIONS = 50
+
+interface BuildPromptOpts {
+  contextText: string
+  targetNotes: ContextNote[]
+  folders: ContextFolder[]
+  categories: ContextCategory[]
+}
+
+export function buildPlanSystemPrompt({ contextText, targetNotes, folders, categories }: BuildPromptOpts): string {
+  const noteList = targetNotes.length
+    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+    : '(none)'
+  const folderList = folders.length
+    ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
+    : '(none)'
+  const categoryList = categories.length
+    ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
+    : '(none)'
+
+  return `You are an AI assistant that turns the user's request into a PLAN of sequential actions executed against their notes. You ALWAYS respond with a single JSON object and NOTHING else.
+
+Output format (JSON only — no prose, no markdown code fences):
+{ "actions": [ <action>, ... ] }
+
+Action types (every action MAY also include an optional "description": one short plain sentence summarising it for a confirmation preview):
+- respond:           { "type":"respond", "text":"<markdown>" }
+- create_note:       { "type":"create_note", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
+- edit_note:         { "type":"edit_note", "noteId":"<id>", "mode":"replace"|"amend", "content":"<markdown>" }
+- edit_section:       { "type":"edit_section", "noteId":"<id>", "section":"<heading text>", "content":"<markdown incl. the section heading>" }
+- append_note:       { "type":"append_note", "noteId":"<id>", "content":"<markdown>" }
+- rename_note:       { "type":"rename_note", "noteId":"<id>", "title":"<new title>" }
+- create_child_note: { "type":"create_child_note", "parentId":"<id>", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
+- move_note:         { "type":"move_note", "noteId":"<id>", "folderId":"<id>"|null }
+- set_tags:          { "type":"set_tags", "noteId":"<id>", "tags":["..."], "mode":"replace"|"add" }
+- set_category:      { "type":"set_category", "noteId":"<id>", "categoryId":"<id>" }
+- create_folder:     { "type":"create_folder", "name":"<name>", "parentFolderId":"<id>"|null, "ref":"<optional local label>" }
+- add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "insertAfterSection":"<optional heading>" }
+
+Rules:
+- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies below are also given to you as Markdown — preserve their existing formatting (headings, bold, lists, links) when editing.
+- "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
+- Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
+- Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
+- Choosing how to edit (IMPORTANT — preserve formatting and embedded blocks):
+  - To ADD content, use append_note or edit_note "amend". These keep ALL existing content, including embedded child notes, note references, links and images.
+  - To CHANGE an existing section, use edit_section: set "section" to that section's heading text and "content" to the new Markdown for the whole section (include the heading). Only that section is rewritten; every other section is preserved untouched.
+  - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
+- If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
+- Output ONLY the JSON object. No explanations and no code fences around it.
+
+Notes in context (id — title):
+${noteList}
+
+Folders (id — name):
+${folderList}
+
+Categories (id — label):
+${categoryList}
+
+Context (note bodies):
+${contextText || '(no note content in context)'}`
+}
+
+// ─── Parsing ──────────────────────────────────────────────────────────────────
+
+function asString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+
+function validateAction(raw: unknown): PlanAction | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const a = raw as Record<string, unknown>
+  // Returning object literals directly lets the function's PlanAction return type
+  // contextually type the `type` discriminant (a generic helper would widen it to string).
+  const desc = asString(a.description)
+  const d = desc ? { description: desc } : {}
+  const ref = asString(a.ref)
+  const r = ref ? { ref } : {}
+
+  switch (a.type) {
+    case 'respond': {
+      const text = asString(a.text)
+      if (text === undefined) return null
+      return { type: 'respond', text, ...d }
+    }
+    case 'create_note': {
+      const title = asString(a.title)
+      if (title === undefined) return null
+      return { type: 'create_note', title, content: asString(a.content) ?? '', ...r, ...d }
+    }
+    case 'edit_note': {
+      const noteId = asString(a.noteId)
+      if (!noteId) return null
+      return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...d }
+    }
+    case 'edit_section': {
+      const noteId = asString(a.noteId)
+      const section = asString(a.section)
+      if (!noteId || !section) return null
+      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...d }
+    }
+    case 'append_note': {
+      const noteId = asString(a.noteId)
+      if (!noteId) return null
+      return { type: 'append_note', noteId, content: asString(a.content) ?? '', ...d }
+    }
+    case 'rename_note': {
+      const noteId = asString(a.noteId)
+      const title = asString(a.title)
+      if (!noteId || title === undefined) return null
+      return { type: 'rename_note', noteId, title, ...d }
+    }
+    case 'create_child_note': {
+      const parentId = asString(a.parentId)
+      const title = asString(a.title)
+      if (!parentId || title === undefined) return null
+      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...r, ...d }
+    }
+    case 'move_note': {
+      const noteId = asString(a.noteId)
+      if (!noteId) return null
+      return { type: 'move_note', noteId, folderId: a.folderId === null ? null : asString(a.folderId) ?? null, ...d }
+    }
+    case 'set_tags': {
+      const noteId = asString(a.noteId)
+      if (!noteId || !Array.isArray(a.tags)) return null
+      return { type: 'set_tags', noteId, tags: a.tags.map(String), mode: a.mode === 'add' ? 'add' : 'replace', ...d }
+    }
+    case 'set_category': {
+      const noteId = asString(a.noteId)
+      const categoryId = asString(a.categoryId)
+      if (!noteId || !categoryId) return null
+      return { type: 'set_category', noteId, categoryId, ...d }
+    }
+    case 'create_folder': {
+      const name = asString(a.name)
+      if (!name) return null
+      return { type: 'create_folder', name, parentFolderId: a.parentFolderId === null ? null : asString(a.parentFolderId) ?? null, ...r, ...d }
+    }
+    case 'add_reference': {
+      const noteId = asString(a.noteId)
+      const referenceNoteId = asString(a.referenceNoteId)
+      const referenceTitle = asString(a.referenceTitle)
+      if (!noteId || !referenceNoteId || referenceTitle === undefined) return null
+      const insertAfterSection = asString(a.insertAfterSection)
+      return { type: 'add_reference', noteId, referenceNoteId, referenceTitle, insertAfterSection, ...d }
+    }
+    default:
+      return null
+  }
+}
+
+export function parsePlan(raw: string): Plan {
+  const fallback = (): Plan => ({ actions: [{ type: 'respond', text: (raw ?? '').trim() || '(no response)' }] })
+  if (!raw || !raw.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
+
+  try {
+    // Strip a leading ```json / ``` fence and a trailing fence, then isolate the
+    // JSON object so any preamble or the "response cut off" suffix is ignored.
+    let s = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+    const first = s.indexOf('{')
+    const last = s.lastIndexOf('}')
+    if (first === -1 || last === -1 || last < first) return fallback()
+    s = s.slice(first, last + 1)
+
+    const parsed = JSON.parse(s) as unknown
+    // The model sometimes returns a bare action object (e.g. {"type":"respond",...})
+    // instead of the {"actions":[...]} envelope — wrap it so it's validated and
+    // rendered as a normal reply rather than shown as raw JSON.
+    const isBareAction = parsed !== null && typeof parsed === 'object' && 'type' in parsed
+    const actionsRaw = isBareAction ? [parsed] : (parsed as { actions?: unknown }).actions
+    if (!Array.isArray(actionsRaw)) return fallback()
+
+    const actions: PlanAction[] = []
+    for (const a of actionsRaw.slice(0, MAX_PLAN_ACTIONS)) {
+      const valid = validateAction(a)
+      if (valid) actions.push(valid)
+    }
+    if (actions.length === 0) return fallback()
+    if (actionsRaw.length > MAX_PLAN_ACTIONS) {
+      actions.push({ type: 'respond', text: `_(Plan truncated to the first ${MAX_PLAN_ACTIONS} actions.)_` })
+    }
+    return { actions }
+  } catch {
+    return fallback()
+  }
+}
+
+// ─── Preview labels ─────────────────────────────────────────────────────────
+
+function truncate(text: string, max = 80): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine
+}
+
+// Human-readable label for a plan action, used in the confirmation preview.
+// `labelMap` resolves note/folder/category ids (and forward-ref labels) to names.
+export function defaultActionLabel(action: PlanAction, labelMap: Map<string, string>): string {
+  if (action.description) return action.description
+  const name = (id: string) => labelMap.get(id) ?? id
+  switch (action.type) {
+    case 'respond': return `Reply: ${truncate(action.text)}`
+    case 'create_note': return `Create note “${action.title || 'Untitled'}”`
+    case 'edit_note': return `${action.mode === 'amend' ? 'Amend' : 'Replace'} note “${name(action.noteId)}”`
+    case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`
+    case 'append_note': return `Append to note “${name(action.noteId)}”`
+    case 'rename_note': return `Rename “${name(action.noteId)}” → “${action.title}”`
+    case 'create_child_note': return `Create child note “${action.title || 'Untitled'}” under “${name(action.parentId)}”`
+    case 'move_note': return `Move “${name(action.noteId)}” to ${action.folderId ? `folder “${name(action.folderId)}”` : 'the root'}`
+    case 'set_tags': return `${action.mode === 'add' ? 'Add tags to' : 'Set tags on'} “${name(action.noteId)}”: ${action.tags.join(', ')}`
+    case 'set_category': return `Set category of “${name(action.noteId)}” to “${name(action.categoryId)}”`
+    case 'create_folder': return `Create folder “${action.name}”`
+    case 'add_reference': return `Add reference to “${action.referenceTitle}” in “${name(action.noteId)}”${action.insertAfterSection ? ` under “${action.insertAfterSection}”` : ''}`
+  }
+}
