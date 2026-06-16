@@ -593,6 +593,7 @@ export default function AIConversationPanel({
         attachments: ctx.attachments.length ? ctx.attachments : undefined,
         cacheSystem: isFrozen,
         temperature: 0,
+        enableWebSearch: true,
       })
       setPendingFiles([])
 
