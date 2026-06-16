@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
@@ -199,6 +199,7 @@ export default function AIConversationPanel({
     try { return localStorage.getItem('ai-plan-mode') !== 'false' } catch { return true }
   })
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null)
+  const [selectedSteps, setSelectedSteps] = useState<boolean[]>([])
   const [executing, setExecuting] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
@@ -229,6 +230,11 @@ export default function AIConversationPanel({
   const dictation = useDictation(handleDictationResult, {
     transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
   })
+
+  // Reset step selection (all checked) whenever a new plan is ready to review.
+  useEffect(() => {
+    setSelectedSteps(pendingPlan?.plan.actions.map(() => true) ?? [])
+  }, [pendingPlan])
 
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   useEffect(() => { panelWidthRef.current = panelWidth }, [panelWidth])
@@ -482,14 +488,20 @@ export default function AIConversationPanel({
   // Turn the per-action results into one assistant chat message: respond actions
   // render as their text, mutations as a ✓/✗ line.
   function buildResultSummary(results: ActionResult[]): string {
-    const lines = results.map((r) => {
-      if (r.kind === 'respond') return r.message
-      // Link successful note actions so the user can jump straight to what changed.
-      const link = r.ok && r.noteId ? ` [Open](/notes/${r.noteId})` : ''
-      return `${r.ok ? '✓' : '✗'} ${r.message}${link}`
-    })
+    // Respond-kind actions emit text (rare in mutation plans) — show above the table.
+    const respondParts = results.filter((r) => r.kind === 'respond').map((r) => r.message)
+    const mutationRows = results
+      .filter((r) => r.kind !== 'respond')
+      .map((r) => {
+        const icon = r.ok ? '✅' : '❌'
+        const pill = r.ok && r.noteId && r.noteTitle ? ` [${r.noteTitle}](/notes/${r.noteId})` : ''
+        return `| ${icon} | ${r.message}${pill} |`
+      })
+    const parts: string[] = []
+    if (respondParts.length) parts.push(respondParts.join('\n\n'))
+    if (mutationRows.length) parts.push(['| | |', '|:---:|:---|', ...mutationRows].join('\n'))
     const failures = results.filter((r) => r.kind !== 'respond' && !r.ok).length
-    const text = lines.join('\n\n')
+    const text = parts.join('\n\n')
     return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
   }
 
@@ -776,12 +788,19 @@ export default function AIConversationPanel({
                     remarkPlugins={[remarkGfm]}
                     components={{
                       p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-                      a: ({ href, children }) =>
-                        href && href.startsWith('/') ? (
-                          <Link to={href} className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</Link>
-                        ) : (
-                          <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</a>
-                        ),
+                      a: ({ href, children }) => {
+                        if (href?.startsWith('/notes/')) {
+                          return (
+                            <Link to={href} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors no-underline">
+                              <FileText className="w-3 h-3 shrink-0" />
+                              <span>{children}</span>
+                            </Link>
+                          )
+                        }
+                        if (href?.startsWith('/'))
+                          return <Link to={href} className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</Link>
+                        return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline hover:no-underline">{children}</a>
+                      },
                       ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
                       ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
                       code: ({ children }) => <code className="bg-gray-200 dark:bg-gray-700 rounded px-1 font-mono text-xs">{children}</code>,
@@ -1017,14 +1036,24 @@ export default function AIConversationPanel({
               <ListChecks className="w-4 h-4 text-blue-500" />
               <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Review plan</h3>
               <span className="text-xs text-gray-400 ml-auto">
-                {pendingPlan.plan.actions.length} step{pendingPlan.plan.actions.length === 1 ? '' : 's'}
+                {selectedSteps.filter(Boolean).length} / {pendingPlan.plan.actions.length} step{pendingPlan.plan.actions.length === 1 ? '' : 's'}
               </span>
             </div>
-            <ol className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm text-gray-700 dark:text-gray-200 list-decimal list-inside">
+            <ul className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm text-gray-700 dark:text-gray-200">
               {pendingPlan.plan.actions.map((a, i) => (
-                <li key={i} className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</li>
+                <li key={i} className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedSteps[i] ?? true}
+                    onChange={(e) => setSelectedSteps((prev) => {
+                      const next = [...prev]; next[i] = e.target.checked; return next
+                    })}
+                    className="mt-0.5 h-3.5 w-3.5 accent-blue-600 cursor-pointer shrink-0"
+                  />
+                  <span className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</span>
+                </li>
               ))}
-            </ol>
+            </ul>
             {pendingPlan.plan.actions.some((a) => a.type === 'edit_note' && a.mode === 'replace') && (
               <p className="px-4 pb-2 text-xs text-amber-600 dark:text-amber-400">
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
@@ -1033,8 +1062,11 @@ export default function AIConversationPanel({
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
-                disabled={executing}
-                onClick={() => void runPlan(pendingPlan.plan, pendingPlan.ctx, pendingPlan.baseMessages)}
+                disabled={executing || selectedSteps.filter(Boolean).length === 0}
+                onClick={() => {
+                  const filtered = { actions: pendingPlan.plan.actions.filter((_, i) => selectedSteps[i]) }
+                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages)
+                }}
               >
                 {executing ? <><Spinner /> Running…</> : 'Approve & run'}
               </button>

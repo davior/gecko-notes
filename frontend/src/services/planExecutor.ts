@@ -33,7 +33,8 @@ export interface ActionResult {
   kind?: 'respond'
   notesChanged?: boolean
   touchedCurrentNote?: boolean
-  noteId?: string // the note this action created/affected, for a result-summary link
+  noteId?: string    // the note this action created/affected, for a result-summary link
+  noteTitle?: string // display title for the pill link (omitted where title isn't fetched)
 }
 
 function errMsg(e: unknown): string {
@@ -115,7 +116,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           tags: [],
         })
         if (action.ref) refMap.set(action.ref, res.data.id)
-        return { ok: true, message: `Created note “${res.data.title}”.`, notesChanged: true, noteId: res.data.id }
+        return { ok: true, message: `Created note “${res.data.title}”.`, notesChanged: true, noteId: res.data.id, noteTitle: res.data.title }
       }
 
       case 'edit_note': {
@@ -135,6 +136,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
+          noteTitle: cur.data.title,
         }
       }
 
@@ -173,6 +175,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
             notesChanged: true,
             touchedCurrentNote: touchesCurrent(r.id),
             noteId: r.id,
+            noteTitle: cur.data.title,
           }
         }
 
@@ -197,6 +200,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
+          noteTitle: cur.data.title,
         }
       }
 
@@ -213,6 +217,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
+          noteTitle: cur.data.title,
         }
       }
 
@@ -226,6 +231,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
+          noteTitle: action.title,
         }
       }
 
@@ -252,6 +258,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: child.data.id,
+          noteTitle: child.data.title,
         }
       }
 
@@ -355,6 +362,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
+          noteTitle: cur.data.title,
         }
       }
     }
