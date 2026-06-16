@@ -5,6 +5,8 @@
 
 import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
+import { annotationsApi } from '@/api/annotations'
+import { extractBlockTexts } from '@/utils/blocks'
 import type { Plan, PlanAction } from './aiPlan'
 
 // Minimal structural view of the BlockNote editor — we use it to convert the model's
@@ -25,6 +27,7 @@ export interface PlanExecContext {
   validNoteIds: Set<string>
   validFolderIds: Set<string>
   validCategoryIds: Set<string>
+  validAnnotationIds?: Set<string>
 }
 
 export interface ActionResult {
@@ -33,6 +36,7 @@ export interface ActionResult {
   kind?: 'respond'
   notesChanged?: boolean
   touchedCurrentNote?: boolean
+  annotationsChanged?: boolean  // true when this action touched the current note's annotations
   noteId?: string    // the note this action created/affected, for a result-summary link
   noteTitle?: string // display title for the pill link (omitted where title isn't fetched)
 }
@@ -363,6 +367,55 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
           noteTitle: cur.data.title,
+        }
+      }
+
+      case 'add_annotation': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        // Anchor the annotation to a block by matching the model's snippet against
+        // each block's text (block ids are stable across saves; the model only sees
+        // markdown, so it targets by snippet rather than id).
+        const cur = await notesApi.get(r.id)
+        const needle = action.anchorText.trim().toLowerCase()
+        const blockTexts = extractBlockTexts(parseBlocks(cur.data.content))
+        const match =
+          blockTexts.find((b) => b.text.toLowerCase() === needle) ??
+          blockTexts.find((b) => b.text.toLowerCase().includes(needle))
+        if (!match) {
+          return { ok: false, message: `Could not find a block matching “${action.anchorText}” in “${cur.data.title}” — annotation skipped.` }
+        }
+        await annotationsApi.create(r.id, { block_id: match.id, text: action.text })
+        return {
+          ok: true,
+          message: `Added annotation to “${cur.data.title}”.`,
+          annotationsChanged: touchesCurrent(r.id),
+          noteId: r.id,
+          noteTitle: cur.data.title,
+        }
+      }
+
+      case 'edit_annotation': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        await annotationsApi.update(r.id, action.annotationId, { text: action.text })
+        return {
+          ok: true,
+          message: 'Edited annotation.',
+          annotationsChanged: touchesCurrent(r.id),
+          noteId: r.id,
+        }
+      }
+
+      case 'delete_annotation': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        await annotationsApi.delete(r.id, action.annotationId)
+        return {
+          ok: true,
+          message: 'Deleted annotation.',
+          annotationsChanged: touchesCurrent(r.id),
+          noteId: r.id,
         }
       }
     }

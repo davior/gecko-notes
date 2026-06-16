@@ -22,6 +22,9 @@ export type PlanAction =
   | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
   | { type: 'create_folder'; name: string; parentFolderId?: string | null; ref?: string; description?: string }
   | { type: 'add_reference'; noteId: string; referenceNoteId: string; referenceTitle: string; insertAfterSection?: string; description?: string }
+  | { type: 'add_annotation'; noteId: string; anchorText: string; text: string; description?: string }
+  | { type: 'edit_annotation'; noteId: string; annotationId: string; text: string; description?: string }
+  | { type: 'delete_annotation'; noteId: string; annotationId: string; description?: string }
 
 export interface Plan { actions: PlanAction[] }
 
@@ -64,6 +67,9 @@ Action types (every action MAY also include an optional "description": one short
 - set_category:      { "type":"set_category", "noteId":"<id>", "categoryId":"<id>" }
 - create_folder:     { "type":"create_folder", "name":"<name>", "parentFolderId":"<id>"|null, "ref":"<optional local label>" }
 - add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "insertAfterSection":"<optional heading>" }
+- add_annotation:    { "type":"add_annotation", "noteId":"<id>", "anchorText":"<verbatim snippet of the block to attach to>", "text":"<markdown annotation>" }
+- edit_annotation:   { "type":"edit_annotation", "noteId":"<id>", "annotationId":"<id>", "text":"<new markdown annotation>" }
+- delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
 
 Rules:
 - All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies below are also given to you as Markdown — preserve their existing formatting (headings, bold, lists, links) when editing.
@@ -74,6 +80,7 @@ Rules:
   - To ADD content, use append_note or edit_note "amend". These keep ALL existing content, including embedded child notes, note references, links and images.
   - To CHANGE an existing section, use edit_section: set "section" to that section's heading text and "content" to the new Markdown for the whole section (include the heading). Only that section is rewritten; every other section is preserved untouched.
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
+- Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.
 
@@ -174,6 +181,24 @@ function validateAction(raw: unknown): PlanAction | null {
       const insertAfterSection = asString(a.insertAfterSection)
       return { type: 'add_reference', noteId, referenceNoteId, referenceTitle, insertAfterSection, ...d }
     }
+    case 'add_annotation': {
+      const noteId = asString(a.noteId)
+      const anchorText = asString(a.anchorText)
+      if (!noteId || !anchorText) return null
+      return { type: 'add_annotation', noteId, anchorText, text: asString(a.text) ?? '', ...d }
+    }
+    case 'edit_annotation': {
+      const noteId = asString(a.noteId)
+      const annotationId = asString(a.annotationId)
+      if (!noteId || !annotationId) return null
+      return { type: 'edit_annotation', noteId, annotationId, text: asString(a.text) ?? '', ...d }
+    }
+    case 'delete_annotation': {
+      const noteId = asString(a.noteId)
+      const annotationId = asString(a.annotationId)
+      if (!noteId || !annotationId) return null
+      return { type: 'delete_annotation', noteId, annotationId, ...d }
+    }
     default:
       return null
   }
@@ -240,5 +265,8 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'set_category': return `Set category of “${name(action.noteId)}” to “${name(action.categoryId)}”`
     case 'create_folder': return `Create folder “${action.name}”`
     case 'add_reference': return `Add reference to “${action.referenceTitle}” in “${name(action.noteId)}”${action.insertAfterSection ? ` under “${action.insertAfterSection}”` : ''}`
+    case 'add_annotation': return `Annotate “${truncate(action.anchorText, 40)}” in “${name(action.noteId)}”`
+    case 'edit_annotation': return `Edit annotation in “${name(action.noteId)}”`
+    case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
   }
 }

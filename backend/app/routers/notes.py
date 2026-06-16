@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, col
 
 from app.database import get_session
-from app.models import Note, NoteVersion, Folder
+from app.models import Note, NoteVersion, Folder, Annotation
 from app.schemas import (
     NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
@@ -443,6 +443,9 @@ def delete_note(note_id: str, request: Request, session: Session = Depends(get_s
     versions = session.exec(select(NoteVersion).where(NoteVersion.note_id == note_id)).all()
     for version in versions:
         session.delete(version)
+    annotations = session.exec(select(Annotation).where(Annotation.note_id == note_id)).all()
+    for annotation in annotations:
+        session.delete(annotation)
     session.delete(note)
     session.commit()
 

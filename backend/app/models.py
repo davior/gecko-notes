@@ -63,6 +63,16 @@ class NoteVersion(SQLModel, table=True):
     created_at: datetime
 
 
+class Annotation(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    note_id: str = Field(foreign_key="note.id", index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    block_id: str  # BlockNote block.id this annotation is anchored to
+    text: str = Field(default='')  # markdown body
+    created_at: datetime
+    modified_at: datetime
+
+
 class AIProvider(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

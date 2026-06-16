@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2 } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -20,6 +20,7 @@ import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel, { type ConversationMessage } from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
+import AnnotationLayer from '@/components/AnnotationLayer'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -27,6 +28,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { notesApi, configApi, type Note } from '@/api/notes'
+import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
@@ -98,6 +100,20 @@ function SendToChildToolbarButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+// Custom formatting-toolbar button that attaches an annotation to the current block.
+function AnnotateToolbarButton({ onClick }: { onClick: () => void }) {
+  const Components = useComponentsContext()!
+  return (
+    <Components.FormattingToolbar.Button
+      mainTooltip="Annotate this block"
+      label="Annotate"
+      onClick={onClick}
+    >
+      <MessageSquareText className="w-4 h-4" />
+    </Components.FormattingToolbar.Button>
+  )
+}
+
 export default function EditorView() {
   const navigate = useNavigate()
   const { id: noteId } = useParams<{ id: string }>()
@@ -134,6 +150,9 @@ export default function EditorView() {
   const [panelOpen, setPanelOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('ai-panel-open') !== 'false' } catch { return true }
   })
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [openAnnotationId, setOpenAnnotationId] = useState<string | null>(null)
+  const annotationContainerRef = useRef<HTMLDivElement>(null)
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -225,6 +244,8 @@ export default function EditorView() {
       currentNoteContent.current = ''
       syncedEditorKey.current = null
       hasPendingChanges.current = false
+      setAnnotations([])
+      setOpenAnnotationId(null)
 
       await categoriesStore.loadCategories()
 
@@ -243,6 +264,7 @@ export default function EditorView() {
         setConversation(parseConversation(data.conversation))
         conversationRef.current = data.conversation ?? '[]'
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
+        annotationsApi.list(noteId).then((res) => setAnnotations(res.data)).catch(() => setAnnotations([]))
 
         // Load parent note title if this is a child note
         if (data.parent_note_id) {
@@ -714,6 +736,65 @@ export default function EditorView() {
     )
   }
 
+  // ─── Annotations ──────────────────────────────────────────────────────────
+
+  // Re-fetch the open note's annotations (used after AI plans touch them).
+  const reloadAnnotations = useCallback(async () => {
+    const id = createdNoteId.current ?? noteId
+    if (!id) return
+    try { const res = await annotationsApi.list(id); setAnnotations(res.data) } catch { /* best-effort */ }
+  }, [noteId])
+
+  // Attach an annotation to the block at the cursor (toolbar / slash entry point).
+  async function annotateCurrentBlock() {
+    if (!editor) return
+    const blockId = editor.getTextCursorPosition().block?.id
+    if (!blockId) return
+    const id = await ensureParentId()
+    if (!id) { showToast('Could not save note'); return }
+    try {
+      const res = await annotationsApi.create(id, { block_id: blockId, text: '' })
+      setAnnotations((prev) => [...prev, res.data])
+      setOpenAnnotationId(res.data.id)
+    } catch {
+      showToast('Could not add annotation')
+    }
+  }
+
+  function saveAnnotation(id: string, text: string) {
+    const noteIdResolved = createdNoteId.current ?? noteId
+    if (!noteIdResolved) return
+    setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, text } : a)))
+    void annotationsApi.update(noteIdResolved, id, { text }).catch(() => showToast('Could not save annotation'))
+  }
+
+  function deleteAnnotation(id: string) {
+    const noteIdResolved = createdNoteId.current ?? noteId
+    if (!noteIdResolved) return
+    setAnnotations((prev) => prev.filter((a) => a.id !== id))
+    if (openAnnotationId === id) setOpenAnnotationId(null)
+    void annotationsApi.delete(noteIdResolved, id).catch(() => showToast('Could not delete annotation'))
+  }
+
+  // Promote an annotation into the note: insert its content as block(s) right
+  // after the annotated block, then remove the annotation.
+  async function insertAnnotationIntoNote(annotation: Annotation) {
+    if (!editor) return
+    const target = editor.getBlock(annotation.block_id)
+    const blocks = await editor.tryParseMarkdownToBlocks(annotation.text)
+    const toInsert = blocks.length > 0
+      ? blocks
+      : [{ type: 'paragraph', content: [{ type: 'text', text: annotation.text, styles: {} }] }]
+    if (target) {
+      editor.insertBlocks(toInsert as never, target as never, 'after')
+    } else {
+      const doc = editor.document
+      const last = doc[doc.length - 1]
+      if (last) editor.insertBlocks(toInsert as never, last as never, 'after')
+    }
+    deleteAnnotation(annotation.id)
+  }
+
   // Resolve (saving first if needed) the id under which a child note should be
   // created. New notes must be persisted before they can parent a child.
   async function ensureParentId(): Promise<string | undefined> {
@@ -825,8 +906,16 @@ export default function EditorView() {
       icon: <Link2 className="w-4 h-4" />,
       onItemClick: () => setShowNotePicker(true),
     }
+    const annotateItem: DefaultReactSuggestionItem = {
+      title: 'Annotate block',
+      subtext: 'Attach an annotation to this block',
+      aliases: ['annotate', 'annotation', 'comment', 'note'],
+      group: 'Basic blocks',
+      icon: <MessageSquareText className="w-4 h-4" />,
+      onItemClick: () => { void annotateCurrentBlock() },
+    }
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem],
       query,
     )
   }
@@ -1055,26 +1144,38 @@ export default function EditorView() {
             ) : (
               <EditorErrorBoundary>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
-                  <BlockNoteView
-                    editor={editor}
-                    onChange={scheduleAutosave}
-                    theme={editorTheme}
-                    slashMenu={false}
-                    formattingToolbar={false}
-                  >
-                    <SuggestionMenuController
-                      triggerCharacter="/"
-                      getItems={async (query) => getSlashItems(query)}
+                  <div ref={annotationContainerRef} className="relative">
+                    <BlockNoteView
+                      editor={editor}
+                      onChange={scheduleAutosave}
+                      theme={editorTheme}
+                      slashMenu={false}
+                      formattingToolbar={false}
+                    >
+                      <SuggestionMenuController
+                        triggerCharacter="/"
+                        getItems={async (query) => getSlashItems(query)}
+                      />
+                      <FormattingToolbarController
+                        formattingToolbar={() => (
+                          <FormattingToolbar>
+                            {getFormattingToolbarItems()}
+                            <SendToChildToolbarButton onClick={() => void sendSelectionToChild()} />
+                            <AnnotateToolbarButton onClick={() => void annotateCurrentBlock()} />
+                          </FormattingToolbar>
+                        )}
+                      />
+                    </BlockNoteView>
+                    <AnnotationLayer
+                      containerRef={annotationContainerRef}
+                      annotations={annotations}
+                      openId={openAnnotationId}
+                      onOpen={setOpenAnnotationId}
+                      onSave={saveAnnotation}
+                      onDelete={deleteAnnotation}
+                      onInsert={(a) => { void insertAnnotationIntoNote(a) }}
                     />
-                    <FormattingToolbarController
-                      formattingToolbar={() => (
-                        <FormattingToolbar>
-                          {getFormattingToolbarItems()}
-                          <SendToChildToolbarButton onClick={() => void sendSelectionToChild()} />
-                        </FormattingToolbar>
-                      )}
-                    />
-                  </BlockNoteView>
+                  </div>
                 </ChildNoteChainContext.Provider>
               </EditorErrorBoundary>
             )}
@@ -1105,6 +1206,8 @@ export default function EditorView() {
           onBeforeExecute={async () => { if (hasPendingChanges.current) await doSave(true) }}
           onCurrentNoteEdited={refreshOpenNote}
           onNotesChanged={() => { void notesStore.loadNotes() }}
+          getAnnotations={() => annotations}
+          onAnnotationsChanged={reloadAnnotations}
         />
       </div>
 
