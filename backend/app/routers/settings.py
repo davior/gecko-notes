@@ -393,6 +393,7 @@ class AnthropicProxyRequest(BaseModel):
     system: Optional[Union[str, List[Dict[str, Any]]]] = None
     temperature: Optional[float] = None
     prefill: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
 
 
 @router.post("/ai-providers/proxy/anthropic")
@@ -417,14 +418,26 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
         body["system"] = payload.system
     if payload.temperature is not None:
         body["temperature"] = payload.temperature
+    if payload.tools:
+        body["tools"] = payload.tools
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    uses_web_search = payload.tools and any(
+        t.get("type", "").startswith("web_search") for t in payload.tools
+    )
+    beta_flags = "pdfs-2024-09-25"
+    if uses_web_search:
+        beta_flags += ",web-search-2025-03-05"
+
+    # Increase timeout when web search is enabled — searches add latency.
+    timeout = 120.0 if uses_web_search else 60.0
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "x-api-key": decrypt_api_key(provider.api_key),
                 "anthropic-version": "2023-06-01",
-                "anthropic-beta": "pdfs-2024-09-25",
+                "anthropic-beta": beta_flags,
                 "content-type": "application/json",
             },
             json=body,

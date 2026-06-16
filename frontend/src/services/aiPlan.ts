@@ -46,7 +46,7 @@ export function buildPlanSystemPrompt({ contextText, targetNotes, folders, categ
     ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
     : '(none)'
 
-  return `You are an AI assistant that turns the user's request into a PLAN of sequential actions executed against their notes. You ALWAYS respond with a single JSON object and NOTHING else.
+  return `You are an AI assistant and research helper that turns the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
 
 Output format (JSON only — no prose, no markdown code fences):
 { "actions": [ <action>, ... ] }

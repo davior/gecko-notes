@@ -14,6 +14,7 @@ export interface AICompleteOptions {
   prefill?: string
   attachments?: FileAttachment[]
   cacheSystem?: boolean  // When true: mark system prompt for Anthropic prompt cache
+  enableWebSearch?: boolean  // When true: enable Anthropic's built-in web search tool
 }
 
 export interface AIService {
@@ -55,7 +56,7 @@ class AnthropicProvider implements AIService {
   constructor(private config: { id: string; model: string }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill, attachments, cacheSystem } = options
+    const { systemPrompt, temperature, prefill, attachments, cacheSystem, enableWebSearch } = options
 
     type AnthropicContentBlock =
       | { type: 'text'; text: string }
@@ -92,9 +93,17 @@ class AnthropicProvider implements AIService {
         : systemPrompt
     }
     if (temperature !== undefined) body.temperature = temperature
+    if (enableWebSearch) {
+      body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+    }
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
-    const text = response.data?.content?.[0]?.text ?? ''
+
+    // When web search is active the response content may contain server_tool_use and
+    // web_search_tool_result blocks before the final text block — collect all text blocks.
+    const contentBlocks: Array<{ type: string; text?: string }> = response.data?.content ?? []
+    const textParts = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '')
+    const text = textParts.join('')
     const full = prefill ? prefill + text : text
     if (response.data?.stop_reason === 'max_tokens') {
       return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
