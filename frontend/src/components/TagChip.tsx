@@ -6,11 +6,11 @@ interface Props {
 
 export default function TagChip({ tag, removable, onRemove }: Props) {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700 border border-gray-200">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700 border border-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600">
       <span>#{tag}</span>
       {removable && (
         <button
-          className="ml-0.5 text-gray-400 hover:text-gray-600 focus:outline-none"
+          className="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 focus:outline-none"
           aria-label={`Remove tag ${tag}`}
           onClick={(e) => { e.stopPropagation(); onRemove?.(tag) }}
         >

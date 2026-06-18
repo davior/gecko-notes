@@ -141,18 +141,18 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
               {visibleTags.map((tag) => (
                 <span
                   key={tag}
-                  className="text-xs px-1.5 py-0.5 rounded-full"
+                  className={`text-xs px-1.5 py-0.5 rounded-full ${hasImage ? '' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}
                   style={hasImage
                     ? { backgroundColor: 'rgba(255,255,255,0.25)', color: 'white', textShadow }
-                    : { backgroundColor: 'rgba(0,0,0,0.06)', color: '#6b7280' }}
+                    : undefined}
                 >
                   #{tag}
                 </span>
               ))}
               {note.tags.length > 3 && (
                 <span
-                  className="text-xs px-1"
-                  style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : { color: '#9ca3af' }}
+                  className={`text-xs px-1 ${hasImage ? '' : 'text-gray-400 dark:text-gray-500'}`}
+                  style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
                 >
                   +{note.tags.length - 3}
                 </span>
