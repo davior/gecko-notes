@@ -122,16 +122,20 @@ export default function ShareMenu({ note, onToast, onUpdate }: Props) {
             <div className="my-1 border-t border-gray-100" />
 
             {/* Social share options */}
-            {socialItems.map((item) => (
-              <button
-                key={item.label}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors text-left"
-                onClick={() => handleSocial(item.action)}
-              >
-                <item.icon className="w-4 h-4 text-gray-500" />
-                <span>{item.label}</span>
-              </button>
-            ))}
+            {note.is_shared && (
+              <>
+                {socialItems.map((item) => (
+                  <button
+                    key={item.label}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors text-left"
+                    onClick={() => handleSocial(item.action)}
+                  >
+                    <item.icon className="w-4 h-4 text-gray-500" />
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </div>,
         document.body,
