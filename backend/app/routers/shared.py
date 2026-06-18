@@ -77,8 +77,11 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     content_preview = extract_plain_text(note.content, 200)
     first_image_url = extract_first_image(note.content)
 
-    # Construct absolute share URL
-    share_url = urljoin(str(request.base_url), f"shared/{token}")
+    # Construct absolute URLs
+    # og:url points to the actual note viewer (what users see when they click the preview)
+    note_view_url = urljoin(str(request.base_url), f"shared/{token}")
+    # preview_url is the current endpoint (what gets shared on social media)
+    preview_url = urljoin(str(request.base_url), f"api/shared/{token}/preview")
 
     # Use first image from note, fallback to author avatar, fallback to a generic image
     preview_image = first_image_url or (author.avatar_url if author else None) or "/api/media/gecko-logo.png"
@@ -109,7 +112,7 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="article">
-    <meta property="og:url" content="{escape_html(share_url)}">
+    <meta property="og:url" content="{escape_html(note_view_url)}">
     <meta property="og:title" content="{title}">
     <meta property="og:description" content="{description}">
     <meta property="og:image" content="{escape_html(preview_image)}">
@@ -117,7 +120,7 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:url" content="{escape_html(share_url)}">
+    <meta name="twitter:url" content="{escape_html(note_view_url)}">
     <meta name="twitter:title" content="{title}">
     <meta name="twitter:description" content="{description}">
     <meta name="twitter:image" content="{escape_html(preview_image)}">
@@ -128,10 +131,10 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     <meta property="article:modified_time" content="{note.modified_at.isoformat()}">
 
     <!-- Redirect to actual shared note view -->
-    <meta http-equiv="refresh" content="0; url=/shared/{escape_html(token)}">
+    <meta http-equiv="refresh" content="0; url={escape_html(note_view_url)}">
 </head>
 <body>
-    <p><a href="/shared/{escape_html(token)}">Click here to view the note</a></p>
+    <p><a href="{escape_html(note_view_url)}">Click here to view the note</a></p>
 </body>
 </html>"""
 
