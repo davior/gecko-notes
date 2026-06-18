@@ -987,7 +987,7 @@ export default function EditorView() {
           <DocumentOutline
             editor={editor}
             scrollContainerRef={editorScrollRef}
-            storageKey="editor-outline-open"
+            storageKey="editor-outline"
           />
         )}
 
