@@ -148,7 +148,7 @@ export default function SharedNoteView() {
     sharedApi.get(token)
       .then((res) => {
         setNote(res.data)
-        document.title = res.data.title ? `${res.data.title} - Gecko Notes` : 'Gecko Notes'
+        document.title = res.data.title ? `Gecko Notes - ${res.data.title}` : 'Gecko Notes'
         applyThemeToDom(res.data.theme ?? null)
       })
       .catch(() => setNotFound(true))

@@ -239,7 +239,7 @@ export default function EditorView() {
     }
   }, [tts.status, tts.errorMessage])
   useEffect(() => {
-    document.title = title ? `${title} - Gecko Notes` : 'Gecko Notes'
+    document.title = title ? `Gecko Notes - ${title}` : 'Gecko Notes'
     return () => { document.title = 'Gecko Notes' }
   }, [title])
 
