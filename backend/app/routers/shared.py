@@ -1,4 +1,5 @@
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
@@ -7,6 +8,8 @@ from app.database import get_session
 from app.models import Note, User, UserSetting, Theme
 from app.schemas import DataResponse, SharedNoteRead, ThemeRead
 from app.routers.notes import extract_first_image, extract_plain_text
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -94,12 +97,16 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     # preview_url is the current endpoint (what gets shared on social media)
     preview_url = f"{base_url}/api/shared/{token}/preview"
 
+    logger.info(f"Preview URL construction - X-Forwarded-Proto: {request.headers.get('X-Forwarded-Proto')}, X-Forwarded-Host: {request.headers.get('X-Forwarded-Host')}, scheme: {scheme}, host: {host}, base_url: {base_url}, note_view_url: {note_view_url}")
+
     # Use first image from note, fallback to author avatar, fallback to a generic image
     preview_image = first_image_url or (author.avatar_url if author else None) or "/api/media/gecko-logo.png"
 
     # Ensure image URL is absolute
     if preview_image and not preview_image.startswith(("http://", "https://")):
         preview_image = f"{base_url}{preview_image}"
+
+    logger.info(f"Preview image - first_image_url: {first_image_url}, final preview_image: {preview_image}")
 
     # Escape HTML special characters
     def escape_html(s: str) -> str:
