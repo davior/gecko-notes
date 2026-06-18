@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff } from 'lucide-react'
+import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff, PanelBottom, Maximize2 } from 'lucide-react'
 import type { UseTextToSpeechReturn } from '@/hooks/useTextToSpeech'
 import type { UseDictationReturn } from '@/hooks/useDictation'
 
@@ -15,6 +15,11 @@ interface Props {
   onDictationToggle?: () => void
   ttsSpeed?: number
   onTtsSpeedChange?: (speed: number) => void
+  /** When true the controls render inline (e.g. inside the editor status bar)
+   *  instead of as a fixed, draggable floating panel. */
+  docked?: boolean
+  /** Toggle between floating and docked. Renders a dock/undock button when set. */
+  onToggleDock?: () => void
 }
 
 function clamp(v: number, min: number, max: number) {
@@ -22,12 +27,17 @@ function clamp(v: number, min: number, max: number) {
 }
 
 /**
- * Floating, draggable read-aloud control panel: play/pause toggle, a stop
- * button (always visible, disabled when not speaking) and an always-visible
- * volume control. Its position is remembered across notes in localStorage and
- * defaults to sitting next to the export button.
+ * Read-aloud / dictation control panel: play/pause toggle, a stop button
+ * (always visible, disabled when not speaking), an always-visible volume
+ * control, a dictation toggle and a speed slider.
+ *
+ * It can be displayed in two modes:
+ *  - Floating (default): a draggable pill whose position is remembered across
+ *    notes in localStorage and defaults to sitting next to the export button.
+ *  - Docked: rendered inline inside the editor's bottom status bar.
+ * A dock/undock button (shown when `onToggleDock` is provided) switches modes.
  */
-export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dictation, onDictationToggle, ttsSpeed = 1, onTtsSpeedChange }: Props) {
+export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dictation, onDictationToggle, ttsSpeed = 1, onTtsSpeedChange, docked = false, onToggleDock }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   const lastVolRef = useRef(tts.volume || 1)
@@ -44,8 +54,9 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
   })
 
   // First mount with no saved position: anchor next to the export button.
+  // Skipped while docked — positioning is irrelevant for the inline variant.
   useEffect(() => {
-    if (pos !== null) return
+    if (docked || pos !== null) return
     const el = anchorRef.current
     if (el) {
       const r = el.getBoundingClientRect()
@@ -53,7 +64,7 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
     } else {
       setPos({ x: window.innerWidth - PANEL_FALLBACK_W - 16, y: 80 })
     }
-  }, [pos, anchorRef])
+  }, [pos, anchorRef, docked])
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     if (!dragRef.current) return
@@ -114,21 +125,9 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
   const isLoading = tts.status === 'loading'
   const isPlaying = tts.status === 'playing'
 
-  return (
-    <div
-      ref={panelRef}
-      className="fixed z-40 flex items-center gap-1 rounded-full border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95 backdrop-blur px-1.5 py-1 shadow-lg no-print"
-      style={{ left: pos?.x ?? -9999, top: pos?.y ?? -9999, visibility: pos ? 'visible' : 'hidden' }}
-    >
-      <button
-        className="cursor-grab active:cursor-grabbing text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 touch-none"
-        onPointerDown={onHandlePointerDown}
-        title="Drag to move"
-        aria-label="Move playback controls"
-      >
-        <GripVertical className="w-4 h-4" />
-      </button>
-
+  // Shared controls, identical in both floating and docked modes.
+  const controls = (
+    <>
       <button
         className="p-1.5 rounded-full text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
         onClick={onPlayPause}
@@ -212,6 +211,56 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
         />
         <span className="text-xs text-gray-400 dark:text-gray-500 w-8 text-right">{ttsSpeed.toFixed(2)}x</span>
       </div>
+    </>
+  )
+
+  // Docked: inline within the editor status bar, no fixed positioning or drag.
+  if (docked) {
+    return (
+      <div ref={panelRef} className="flex items-center gap-1 no-print">
+        {controls}
+        {onToggleDock && (
+          <button
+            className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            onClick={onToggleDock}
+            title="Detach to floating panel"
+            aria-label="Undock playback controls"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  // Floating: a draggable pill positioned from localStorage.
+  return (
+    <div
+      ref={panelRef}
+      className="fixed z-40 flex items-center gap-1 rounded-full border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95 backdrop-blur px-1.5 py-1 shadow-lg no-print"
+      style={{ left: pos?.x ?? -9999, top: pos?.y ?? -9999, visibility: pos ? 'visible' : 'hidden' }}
+    >
+      <button
+        className="cursor-grab active:cursor-grabbing text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 touch-none"
+        onPointerDown={onHandlePointerDown}
+        title="Drag to move"
+        aria-label="Move playback controls"
+      >
+        <GripVertical className="w-4 h-4" />
+      </button>
+
+      {controls}
+
+      {onToggleDock && (
+        <button
+          className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          onClick={onToggleDock}
+          title="Dock to status bar"
+          aria-label="Dock playback controls to status bar"
+        >
+          <PanelBottom className="w-4 h-4" />
+        </button>
+      )}
     </div>
   )
 }

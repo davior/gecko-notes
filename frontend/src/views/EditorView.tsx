@@ -151,6 +151,11 @@ export default function EditorView() {
   const [panelOpen, setPanelOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('ai-panel-open') !== 'false' } catch { return true }
   })
+  // Whether the TTS/dictation controls are docked into the bottom status bar
+  // (vs. floating). Remembered across notes/sessions in localStorage.
+  const [ttsDocked, setTtsDocked] = useState<boolean>(() => {
+    try { return localStorage.getItem('tts-controls-docked') === 'true' } catch { return false }
+  })
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [openAnnotationId, setOpenAnnotationId] = useState<string | null>(null)
   const annotationContainerRef = useRef<HTMLDivElement>(null)
@@ -214,6 +219,9 @@ export default function EditorView() {
   useEffect(() => {
     try { localStorage.setItem('ai-panel-open', String(panelOpen)) } catch { /* noop */ }
   }, [panelOpen])
+  useEffect(() => {
+    try { localStorage.setItem('tts-controls-docked', String(ttsDocked)) } catch { /* noop */ }
+  }, [ttsDocked])
   useEffect(() => { latestTitle.current = title }, [title])
   useEffect(() => { latestCategoryId.current = categoryId }, [categoryId])
   useEffect(() => { latestTags.current = tags }, [tags])
@@ -1045,7 +1053,7 @@ export default function EditorView() {
 
               </div>
 
-              {deepgramApiKey && (
+              {deepgramApiKey && !ttsDocked && (
                 <TTSPlaybackControls
                   tts={tts}
                   anchorRef={exportAnchorRef}
@@ -1054,6 +1062,7 @@ export default function EditorView() {
                   onDictationToggle={dictation.toggleDictation}
                   ttsSpeed={tts.speed}
                   onTtsSpeedChange={tts.setSpeed}
+                  onToggleDock={() => setTtsDocked(true)}
                 />
               )}
 
@@ -1174,8 +1183,21 @@ export default function EditorView() {
             )}
           </div>
 
-          <div className="shrink-0 no-print px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900">
+          <div className="shrink-0 no-print px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center justify-between gap-3 flex-wrap">
             <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
+            {deepgramApiKey && ttsDocked && (
+              <TTSPlaybackControls
+                tts={tts}
+                anchorRef={exportAnchorRef}
+                onPlayPause={handlePlayPause}
+                dictation={dictation}
+                onDictationToggle={dictation.toggleDictation}
+                ttsSpeed={tts.speed}
+                onTtsSpeedChange={tts.setSpeed}
+                docked
+                onToggleDock={() => setTtsDocked(false)}
+              />
+            )}
           </div>
         </div>
 
