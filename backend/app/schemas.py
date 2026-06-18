@@ -207,9 +207,14 @@ class SharedNoteRead(BaseModel):
     theme: Optional['ThemeRead'] = None
     content_preview: str = ""
     first_image_url: Optional[str] = None
+    like_count: int = 0
 
     class Config:
         from_attributes = True
+
+
+class LikeCountRead(BaseModel):
+    like_count: int
 
 
 # Annotation schemas

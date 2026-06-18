@@ -11,6 +11,7 @@ import { noteSchema } from '@/blocks/childNoteBlock'
 import DocumentOutline from '@/components/DocumentOutline'
 import { sharedApi, type SharedNote } from '@/api/shared'
 import { applyThemeToDom } from '@/stores/settings'
+import SharePageActions from '@/components/SharePageActions'
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -147,10 +148,14 @@ export default function SharedNoteView() {
     sharedApi.get(token)
       .then((res) => {
         setNote(res.data)
+        document.title = res.data.title ? `Gecko Notes - ${res.data.title}` : 'Gecko Notes'
         applyThemeToDom(res.data.theme ?? null)
       })
       .catch(() => setNotFound(true))
-    return () => { applyThemeToDom(null) }
+    return () => {
+      document.title = 'Gecko Notes'
+      applyThemeToDom(null)
+    }
   }, [token])
 
   if (notFound) {
@@ -197,7 +202,10 @@ export default function SharedNoteView() {
       <header className="no-print shrink-0 border-b border-gray-100 dark:border-gray-700 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
         <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between">
           <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            {token && (
+              <SharePageActions token={token} title={note.title} initialLikeCount={note.like_count} />
+            )}
             <button
               type="button"
               onClick={handlePrint}

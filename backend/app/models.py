@@ -44,6 +44,7 @@ class Note(SQLModel, table=True):
     is_pinned: bool = Field(default=False)
     is_shared: bool = Field(default=False)
     share_token: Optional[str] = Field(default=None, index=True)
+    like_count: int = Field(default=0)  # public likes on the shared page
     summary: Optional[str] = None
     conversation: Optional[str] = None  # JSON array of ConversationMessage
     created_at: datetime

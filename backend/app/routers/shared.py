@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.database import get_session
 from app.models import Note, User, UserSetting, Theme
-from app.schemas import DataResponse, SharedNoteRead, ThemeRead
+from app.schemas import DataResponse, SharedNoteRead, ThemeRead, LikeCountRead
 from app.routers.notes import extract_first_image, extract_plain_text
 
 router = APIRouter()
@@ -59,7 +59,36 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
         theme=theme_data,
         content_preview=content_preview,
         first_image_url=first_image_url,
+        like_count=note.like_count or 0,
     ))
+
+
+@router.post("/{token}/like", response_model=DataResponse[LikeCountRead])
+def like_shared_note(token: str, session: Session = Depends(get_session)):
+    note = session.exec(
+        select(Note).where(Note.share_token == token, Note.is_shared == True)
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Shared note not found"})
+    note.like_count = (note.like_count or 0) + 1
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=LikeCountRead(like_count=note.like_count))
+
+
+@router.delete("/{token}/like", response_model=DataResponse[LikeCountRead])
+def unlike_shared_note(token: str, session: Session = Depends(get_session)):
+    note = session.exec(
+        select(Note).where(Note.share_token == token, Note.is_shared == True)
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Shared note not found"})
+    note.like_count = max(0, (note.like_count or 0) - 1)
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=LikeCountRead(like_count=note.like_count))
 
 
 @router.get("/{token}/preview", response_class=HTMLResponse)
@@ -92,9 +121,13 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
         scheme = scheme or "https"
 
     base_url = f"{scheme}://{host}"
-    # og:url points to the actual note viewer (what users see when they click the preview)
-    note_view_url = f"{base_url}/shared/{token}"
-    # preview_url is the current endpoint (what gets shared on social media)
+    # The human redirect is RELATIVE so the browser stays on whatever origin it
+    # loaded the preview from. In dev the preview is reached via the Vite proxy
+    # (origin :5173); an absolute backend URL would bounce the browser to :8000
+    # where the SPA isn't served and the API auth middleware rejects the path.
+    note_view_path = f"/shared/{token}"
+    # preview_url is the current endpoint (what gets shared on social media) and
+    # must stay absolute so crawlers can resolve the og:/twitter: tags.
     preview_url = f"{base_url}/api/shared/{token}/preview"
 
     # Use first image from note, fallback to author avatar, fallback to a generic image
@@ -148,8 +181,8 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
 </head>
 <body>
-    <p><a href="{escape_html(note_view_url)}">Click here to view the note</a></p>
-    <script>window.location.href = "{escape_html(note_view_url)}";</script>
+    <p><a href="{escape_html(note_view_path)}">Click here to view the note</a></p>
+    <script>window.location.href = "{escape_html(note_view_path)}";</script>
 </body>
 </html>"""
 
