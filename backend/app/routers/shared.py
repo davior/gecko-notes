@@ -2,7 +2,6 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
-from urllib.parse import urljoin
 
 from app.database import get_session
 from app.models import Note, User, UserSetting, Theme
@@ -78,17 +77,19 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     first_image_url = extract_first_image(note.content)
 
     # Construct absolute URLs
+    # Build base URL from scheme and netloc (host)
+    base_url = f"{request.url.scheme}://{request.url.netloc}"
     # og:url points to the actual note viewer (what users see when they click the preview)
-    note_view_url = urljoin(str(request.base_url), f"shared/{token}")
+    note_view_url = f"{base_url}/shared/{token}"
     # preview_url is the current endpoint (what gets shared on social media)
-    preview_url = urljoin(str(request.base_url), f"api/shared/{token}/preview")
+    preview_url = f"{base_url}/api/shared/{token}/preview"
 
     # Use first image from note, fallback to author avatar, fallback to a generic image
     preview_image = first_image_url or (author.avatar_url if author else None) or "/api/media/gecko-logo.png"
 
     # Ensure image URL is absolute
     if preview_image and not preview_image.startswith(("http://", "https://")):
-        preview_image = urljoin(str(request.base_url), preview_image)
+        preview_image = f"{base_url}{preview_image}"
 
     # Escape HTML special characters
     def escape_html(s: str) -> str:
