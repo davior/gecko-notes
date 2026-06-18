@@ -76,9 +76,17 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     content_preview = extract_plain_text(note.content, 200)
     first_image_url = extract_first_image(note.content)
 
-    # Construct absolute URLs
-    # Build base URL from scheme and netloc (host)
-    base_url = f"{request.url.scheme}://{request.url.netloc}"
+    # Construct absolute URLs using X-Forwarded headers (from reverse proxy) or fallback to request.url
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme) or "https"
+    host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+
+    # Fallback if headers are still empty
+    if not host:
+        host = request.url.netloc or "localhost"
+    if not scheme:
+        scheme = "https"
+
+    base_url = f"{scheme}://{host}"
     # og:url points to the actual note viewer (what users see when they click the preview)
     note_view_url = f"{base_url}/shared/{token}"
     # preview_url is the current endpoint (what gets shared on social media)
