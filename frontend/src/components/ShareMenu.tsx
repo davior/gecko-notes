@@ -17,14 +17,14 @@ export default function ShareMenu({ note, onToast, onUpdate }: Props) {
   const { shareNote, unshareNote } = useNotesStore()
   const [working, setWorking] = useState(false)
 
-  const shareUrl = note.share_token ? `${window.location.origin}/shared/${note.share_token}` : null
+  const previewUrl = note.share_token ? `${window.location.origin}/api/shared/${note.share_token}/preview` : null
 
   async function handleEnableSharing() {
     setWorking(true)
     try {
       const updated = await shareNote(note.id)
       onUpdate?.(updated)
-      const url = `${window.location.origin}/shared/${updated.share_token}`
+      const url = `${window.location.origin}/api/shared/${updated.share_token}/preview`
       await navigator.clipboard.writeText(url)
       onToast('Share link copied to clipboard')
       setOpen(false)
@@ -36,8 +36,8 @@ export default function ShareMenu({ note, onToast, onUpdate }: Props) {
   }
 
   async function handleCopyLink() {
-    if (!shareUrl) return
-    await navigator.clipboard.writeText(shareUrl)
+    if (!previewUrl) return
+    await navigator.clipboard.writeText(previewUrl)
     onToast('Share link copied to clipboard')
     setOpen(false)
   }
