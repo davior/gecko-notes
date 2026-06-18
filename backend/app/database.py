@@ -164,6 +164,12 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Public likes on shared notes
+        try:
+            conn.execute(text("ALTER TABLE note ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
         # Collapse exact duplicate categories created by seed + import flows.
         try:
             duplicate_groups = conn.execute(text("""

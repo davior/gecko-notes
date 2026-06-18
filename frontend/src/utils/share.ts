@@ -72,6 +72,29 @@ export function shareViaTwitter(note: Note): void {
   window.open(`https://twitter.com/intent/tweet?url=${encodedUrl}`, '_blank')
 }
 
+// --- Public shared-page sharing -------------------------------------------
+// The public viewer (/shared/:token) only knows the URL token + title, not the
+// full Note object. These helpers share the OG-rich preview URL so social cards
+// render nicely, mirroring shareViaFacebook/shareViaTwitter above.
+
+export function sharedPreviewUrl(token: string): string {
+  return `${window.location.origin}/api/shared/${token}/preview`
+}
+
+export type ShareNetwork = 'x' | 'facebook' | 'linkedin' | 'email'
+
+export function shareSharedPage(network: ShareNetwork, token: string, title: string): void {
+  const u = encodeURIComponent(sharedPreviewUrl(token))
+  const t = encodeURIComponent(title || 'Shared note')
+  const targets: Record<ShareNetwork, string> = {
+    x: `https://twitter.com/intent/tweet?url=${u}&text=${t}`,
+    facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
+    linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${u}`,
+    email: `mailto:?subject=${t}&body=${u}`,
+  }
+  window.open(targets[network], network === 'email' ? '_self' : '_blank')
+}
+
 export async function shareViaSubstack(note: Note): Promise<void> {
   // Convert to markdown-ish format for Substack
   const { title, body } = noteSnapshot(note)

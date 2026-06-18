@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.database import get_session
 from app.models import Note, User, UserSetting, Theme
-from app.schemas import DataResponse, SharedNoteRead, ThemeRead
+from app.schemas import DataResponse, SharedNoteRead, ThemeRead, LikeCountRead
 from app.routers.notes import extract_first_image, extract_plain_text
 
 router = APIRouter()
@@ -59,7 +59,36 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
         theme=theme_data,
         content_preview=content_preview,
         first_image_url=first_image_url,
+        like_count=note.like_count or 0,
     ))
+
+
+@router.post("/{token}/like", response_model=DataResponse[LikeCountRead])
+def like_shared_note(token: str, session: Session = Depends(get_session)):
+    note = session.exec(
+        select(Note).where(Note.share_token == token, Note.is_shared == True)
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Shared note not found"})
+    note.like_count = (note.like_count or 0) + 1
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=LikeCountRead(like_count=note.like_count))
+
+
+@router.delete("/{token}/like", response_model=DataResponse[LikeCountRead])
+def unlike_shared_note(token: str, session: Session = Depends(get_session)):
+    note = session.exec(
+        select(Note).where(Note.share_token == token, Note.is_shared == True)
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Shared note not found"})
+    note.like_count = max(0, (note.like_count or 0) - 1)
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=LikeCountRead(like_count=note.like_count))
 
 
 @router.get("/{token}/preview", response_class=HTMLResponse)
