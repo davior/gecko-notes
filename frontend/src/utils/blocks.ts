@@ -61,6 +61,47 @@ export function extractBlockTexts(blocks: unknown[]): { id: string; text: string
   return out
 }
 
+export interface OutlineHeading {
+  /** Block id — matches the rendered block's DOM `data-id`, used to scroll to it. */
+  id: string
+  text: string
+  /** Heading level 1–6. */
+  level: number
+}
+
+/**
+ * Walk blocks and collect heading blocks as a flat, document-order list of
+ * { id, text, level }. Nested headings (inside a block's children) are included.
+ * Derive this from `editor.document` rather than raw saved JSON so the ids line
+ * up with the live DOM `data-id` attributes.
+ */
+export function extractHeadings(blocks: unknown[]): OutlineHeading[] {
+  const out: OutlineHeading[] = []
+  function inlineText(content: unknown): string {
+    if (!Array.isArray(content)) return ''
+    let s = ''
+    for (const item of content) {
+      if (typeof item !== 'object' || item === null) continue
+      const rec = item as Record<string, unknown>
+      if (rec.type === 'text') s += String(rec.text ?? '')
+      else if (Array.isArray(rec.content)) s += inlineText(rec.content) // links, etc.
+    }
+    return s
+  }
+  function walk(block: Record<string, unknown>) {
+    if (block.type === 'heading' && typeof block.id === 'string') {
+      const levelRaw = (block.props as Record<string, unknown> | undefined)?.level
+      const level = typeof levelRaw === 'number' ? levelRaw : Number(levelRaw) || 1
+      out.push({ id: block.id, level, text: inlineText(block.content).trim() })
+    }
+    if (Array.isArray(block.children)) {
+      for (const child of block.children) walk(child as Record<string, unknown>)
+    }
+  }
+  for (const block of blocks) walk(block as Record<string, unknown>)
+  return out
+}
+
 export function extractLinkedFileUrls(blocks: unknown[]): string[] {
   const urls: string[] = []
   function walk(block: Record<string, unknown>) {
