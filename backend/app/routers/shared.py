@@ -77,14 +77,16 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     first_image_url = extract_first_image(note.content)
 
     # Construct absolute URLs using X-Forwarded headers (from reverse proxy) or fallback to request.url
-    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme) or "https"
-    host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+    # Extract scheme, handling cases like "HTTP/2.0" by taking only the protocol part
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme or "https")
+    if scheme:
+        # Extract just the protocol part (http or https) before any slashes or version info
+        scheme = scheme.lower().split("/")[0].split(":")[0]
+    scheme = scheme or "https"
 
-    # Fallback if headers are still empty
+    host = request.headers.get("X-Forwarded-Host", request.url.netloc)
     if not host:
         host = request.url.netloc or "localhost"
-    if not scheme:
-        scheme = "https"
 
     base_url = f"{scheme}://{host}"
     # og:url points to the actual note viewer (what users see when they click the preview)
