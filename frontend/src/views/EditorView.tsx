@@ -238,6 +238,10 @@ export default function EditorView() {
       showToast(tts.errorMessage)
     }
   }, [tts.status, tts.errorMessage])
+  useEffect(() => {
+    document.title = title ? `${title} - Gecko Notes` : 'Gecko Notes'
+    return () => { document.title = 'Gecko Notes' }
+  }, [title])
 
   const saveStatusClass = saveStatus === 'Saving...' ? 'text-yellow-600' : saveStatus.includes('Unsaved') ? 'text-orange-600' : 'text-gray-400'
 
