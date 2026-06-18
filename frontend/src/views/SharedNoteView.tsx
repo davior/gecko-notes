@@ -1,4 +1,4 @@
-import { useState, useEffect, Component } from 'react'
+import { useState, useEffect, useRef, Component } from 'react'
 import type { ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 import { Globe, Printer } from 'lucide-react'
@@ -8,6 +8,7 @@ import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import type { PartialBlock } from '@blocknote/core'
 import { noteSchema } from '@/blocks/childNoteBlock'
+import DocumentOutline from '@/components/DocumentOutline'
 import { sharedApi, type SharedNote } from '@/api/shared'
 import { applyThemeToDom } from '@/stores/settings'
 
@@ -34,7 +35,9 @@ function handlePrint() {
     @page { margin: 5mm; }
     .no-print { display: none !important; }
     html, body { background: white; color: black; margin: 0; padding: 0; height: auto; min-height: auto; }
-    .shared-root { position: static !important; overflow: visible !important; height: auto !important; inset: auto !important; }
+    .shared-root { display: block !important; position: static !important; overflow: visible !important; height: auto !important; inset: auto !important; }
+    .shared-body { display: block !important; }
+    .shared-scroll { overflow: visible !important; height: auto !important; }
     .shared-content { overflow: visible !important; background: transparent !important; border: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
     .bn-container, .bn-editor { overflow: visible !important; height: auto !important; min-height: auto !important; page-break-inside: auto; }
     img { page-break-inside: avoid; }
@@ -55,12 +58,82 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
   }
 }
 
-function ReadOnlyEditor({ content, editorTheme }: { content: string; editorTheme: 'light' | 'dark' }) {
-  const editor = useCreateBlockNote({ schema: noteSchema, initialContent: parseContent(content) as never })
+// The loaded note: a document outline on the left and the note content in a
+// scrollable column. Rendered only once `note` is available so the read-only
+// editor can be created with its content (and the outline derived from it)
+// directly, without a hydration step.
+function SharedNoteBody({ note }: { note: SharedNote }) {
+  const editor = useCreateBlockNote({ schema: noteSchema, initialContent: parseContent(note.content) as never })
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const editorTheme: 'light' | 'dark' = note.theme ? note.theme.mode : 'light'
+
   return (
-    <EditorErrorBoundary>
-      <BlockNoteView editor={editor} editable={false} theme={editorTheme} />
-    </EditorErrorBoundary>
+    <div className="shared-body flex flex-1 min-h-0 flex-col sm:flex-row">
+      {/* Document outline (left) */}
+      <DocumentOutline
+        editor={editor}
+        scrollContainerRef={scrollRef}
+        storageKey="shared-outline-open"
+        scrollOffset={24}
+      />
+
+      {/* Scrollable note content */}
+      <div ref={scrollRef} className="shared-scroll flex-1 min-w-0 overflow-y-auto">
+        <main className="w-full md:w-4/5 mx-auto px-4 py-8">
+          {/* Title */}
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-4 leading-tight">
+            {note.title || 'Untitled'}
+          </h1>
+
+          {/* Author + metadata */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 text-sm text-gray-500 dark:text-gray-400">
+            <div className="flex items-center gap-2">
+              {note.author_avatar_url ? (
+                <img
+                  src={note.author_avatar_url}
+                  alt={note.author_username}
+                  className="w-6 h-6 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-xs font-semibold text-blue-600">
+                  {note.author_username.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <span className="font-medium text-gray-700 dark:text-gray-300">{note.author_username}</span>
+            </div>
+            <span>Created {formatDate(note.created_at)}</span>
+            <span>Updated {formatDate(note.modified_at)}</span>
+          </div>
+
+          {/* Tags */}
+          {note.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-6">
+              {note.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="border-t border-gray-100 dark:border-gray-700 mb-6" />
+
+          {/* Note content */}
+          <div className="shared-content overflow-hidden">
+            <EditorErrorBoundary>
+              <BlockNoteView editor={editor} editable={false} theme={editorTheme} />
+            </EditorErrorBoundary>
+          </div>
+
+          <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-8">
+            Shared with Gecko Notes
+          </p>
+        </main>
+      </div>
+    </div>
   )
 }
 
@@ -79,8 +152,6 @@ export default function SharedNoteView() {
       .catch(() => setNotFound(true))
     return () => { applyThemeToDom(null) }
   }, [token])
-
-  const editorTheme: 'light' | 'dark' = note?.theme ? note.theme.mode : 'light'
 
   if (notFound) {
     return (
@@ -106,7 +177,7 @@ export default function SharedNoteView() {
   }
 
   return (
-    <div className="shared-root" style={{ position: 'fixed', inset: 0, overflowY: 'auto', zIndex: 40 }}>
+    <div className="shared-root flex flex-col" style={{ position: 'fixed', inset: 0, overflow: 'hidden', zIndex: 40 }}>
       {/* Fixed theme background layer — same as App.tsx */}
       <div
         aria-hidden="true"
@@ -123,7 +194,7 @@ export default function SharedNoteView() {
       />
 
       {/* Header */}
-      <header className="no-print border-b border-gray-100 dark:border-gray-700 sticky top-0 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
+      <header className="no-print shrink-0 border-b border-gray-100 dark:border-gray-700 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
         <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between">
           <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
           <div className="flex items-center gap-3">
@@ -145,58 +216,8 @@ export default function SharedNoteView() {
         </div>
       </header>
 
-      {/* Content */}
-      <main className="w-full md:w-4/5 mx-auto px-4 py-8">
-        {/* Title */}
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-4 leading-tight">
-          {note.title || 'Untitled'}
-        </h1>
-
-        {/* Author + metadata */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 text-sm text-gray-500 dark:text-gray-400">
-          <div className="flex items-center gap-2">
-            {note.author_avatar_url ? (
-              <img
-                src={note.author_avatar_url}
-                alt={note.author_username}
-                className="w-6 h-6 rounded-full object-cover"
-              />
-            ) : (
-              <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-xs font-semibold text-blue-600">
-                {note.author_username.charAt(0).toUpperCase()}
-              </div>
-            )}
-            <span className="font-medium text-gray-700 dark:text-gray-300">{note.author_username}</span>
-          </div>
-          <span>Created {formatDate(note.created_at)}</span>
-          <span>Updated {formatDate(note.modified_at)}</span>
-        </div>
-
-        {/* Tags */}
-        {note.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-6">
-            {note.tags.map((tag) => (
-              <span
-                key={tag}
-                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"
-              >
-                #{tag}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="border-t border-gray-100 dark:border-gray-700 mb-6" />
-
-        {/* Note content */}
-        <div className="shared-content overflow-hidden">
-          <ReadOnlyEditor content={note.content} editorTheme={editorTheme} />
-        </div>
-
-        <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-8">
-          Shared with Gecko Notes
-        </p>
-      </main>
+      {/* Outline + content */}
+      <SharedNoteBody note={note} />
     </div>
   )
 }

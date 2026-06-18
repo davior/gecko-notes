@@ -107,6 +107,16 @@
 }
 .annotation-tooltip-body p:last-child { margin-bottom: 0; }
 
+/* Brief flash on a heading after jumping to it from the document outline */
+.outline-target-flash {
+  animation: outline-flash 1.2s ease-out;
+  border-radius: 2px;
+}
+@keyframes outline-flash {
+  0%, 30% { background-color: rgba(59, 130, 246, 0.18); }
+  100% { background-color: transparent; }
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

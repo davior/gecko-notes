@@ -22,6 +22,7 @@ import AIConversationPanel, { type ConversationMessage } from '@/components/AICo
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
 import AnnotationLayer from '@/components/AnnotationLayer'
+import DocumentOutline from '@/components/DocumentOutline'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -153,6 +154,7 @@ export default function EditorView() {
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [openAnnotationId, setOpenAnnotationId] = useState<string | null>(null)
   const annotationContainerRef = useRef<HTMLDivElement>(null)
+  const editorScrollRef = useRef<HTMLDivElement>(null)
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -980,6 +982,15 @@ export default function EditorView() {
       </header>
 
       <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+        {/* Document outline (left) */}
+        {loaded && (
+          <DocumentOutline
+            editor={editor}
+            scrollContainerRef={editorScrollRef}
+            storageKey="editor-outline-open"
+          />
+        )}
+
         {/* Editor column */}
         <div className="flex flex-col flex-1 min-w-0 min-h-0">
           {loaded && (
@@ -1115,7 +1126,7 @@ export default function EditorView() {
             </div>
           )}
 
-          <div className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
+          <div ref={editorScrollRef} className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
             {!loaded ? (
               <div className="flex items-center justify-center h-full">
                 <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
