@@ -73,7 +73,7 @@ function SharedNoteBody({ note }: { note: SharedNote }) {
       <DocumentOutline
         editor={editor}
         scrollContainerRef={scrollRef}
-        storageKey="shared-outline-open"
+        storageKey="shared-outline"
         scrollOffset={24}
       />
 

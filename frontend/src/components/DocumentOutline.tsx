@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useEditorChange } from '@blocknote/react'
 import type { BlockNoteEditor } from '@blocknote/core'
 import { List, PanelLeftClose } from 'lucide-react'
@@ -14,10 +14,30 @@ interface DocumentOutlineProps {
    * scrollable ancestor (and the page).
    */
   scrollContainerRef: React.RefObject<HTMLElement | null>
-  /** localStorage key for the open/collapsed state (editor & shared views differ). */
+  /**
+   * Base for the localStorage keys persisting this panel's state — open/closed
+   * (`<base>-open`), width (`<base>-width`) and height (`<base>-height`) — so the
+   * editor and shared views stay independent.
+   */
   storageKey?: string
   /** Gap (px) left above a heading after scrolling — e.g. to clear a sticky header. */
   scrollOffset?: number
+}
+
+const DEFAULT_WIDTH = 240
+const DEFAULT_HEIGHT = 240
+const MIN_WIDTH = 180
+const MAX_WIDTH = 600
+const MIN_HEIGHT = 150
+const MAX_HEIGHT = 600
+
+function readStoredSize(key: string, fallback: number): number {
+  try {
+    const v = parseInt(localStorage.getItem(key) ?? '', 10)
+    return Number.isFinite(v) ? v : fallback
+  } catch {
+    return fallback
+  }
 }
 
 function findBlockEl(container: HTMLElement, id: string): HTMLElement | null {
@@ -28,21 +48,48 @@ function findBlockEl(container: HTMLElement, id: string): HTMLElement | null {
 export default function DocumentOutline({
   editor,
   scrollContainerRef,
-  storageKey = 'outline-panel-open',
+  storageKey = 'outline-panel',
   scrollOffset = 16,
 }: DocumentOutlineProps) {
+  const openKey = `${storageKey}-open`
+  const widthKey = `${storageKey}-width`
+  const heightKey = `${storageKey}-height`
+
   const [headings, setHeadings] = useState<OutlineHeading[]>(() => extractHeadings(editor.document))
   const [open, setOpen] = useState<boolean>(() => {
-    try { return localStorage.getItem(storageKey) !== 'false' } catch { return true }
+    try { return localStorage.getItem(openKey) !== 'false' } catch { return true }
   })
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 640 : false))
+  const [panelWidth, setPanelWidth] = useState<number>(() => readStoredSize(widthKey, DEFAULT_WIDTH))
+  const [panelHeight, setPanelHeight] = useState<number>(() => readStoredSize(heightKey, DEFAULT_HEIGHT))
+
+  // Mirrored into refs so the drag handler reads live values without re-binding.
+  const isMobileRef = useRef(isMobile)
+  const panelWidthRef = useRef(panelWidth)
+  const panelHeightRef = useRef(panelHeight)
+  useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
+  useEffect(() => { panelWidthRef.current = panelWidth }, [panelWidth])
+  useEffect(() => { panelHeightRef.current = panelHeight }, [panelHeight])
 
   // Recompute on any document change (typing, hydration, AI edits, restore, …).
   useEditorChange(() => setHeadings(extractHeadings(editor.document)), editor)
 
   useEffect(() => {
-    try { localStorage.setItem(storageKey, String(open)) } catch { /* noop */ }
-  }, [open, storageKey])
+    const handler = () => setIsMobile(window.innerWidth < 640)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem(openKey, String(open)) } catch { /* noop */ }
+  }, [open, openKey])
+  useEffect(() => {
+    try { localStorage.setItem(widthKey, String(panelWidth)) } catch { /* noop */ }
+  }, [panelWidth, widthKey])
+  useEffect(() => {
+    try { localStorage.setItem(heightKey, String(panelHeight)) } catch { /* noop */ }
+  }, [panelHeight, heightKey])
 
   // Scroll-spy: mark the heading nearest the top of the scroll viewport as active.
   // Throttled through requestAnimationFrame; re-runs whenever the heading set changes.
@@ -84,6 +131,38 @@ export default function DocumentOutline({
     window.setTimeout(() => el.classList.remove('outline-target-flash'), 1200)
   }, [scrollContainerRef, scrollOffset])
 
+  // Drag the panel's inner edge to resize: width on desktop (panel is on the left,
+  // so dragging right widens it), height on mobile (panel is stacked on top, so
+  // dragging down grows it). Bounds are clamped to keep the panel usable.
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startWidth = panelWidthRef.current
+    const startHeight = panelHeightRef.current
+
+    function onMouseMove(ev: MouseEvent) {
+      if (isMobileRef.current) {
+        const delta = ev.clientY - startY
+        setPanelHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta)))
+      } else {
+        const delta = ev.clientX - startX
+        setPanelWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth + delta)))
+      }
+    }
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = isMobileRef.current ? 'ns-resize' : 'ew-resize'
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
   // Indent relative to the shallowest heading present, so a note that starts at
   // H2 isn't pushed in for no reason.
   const minLevel = headings.reduce((m, h) => Math.min(m, h.level), 6)
@@ -106,44 +185,61 @@ export default function DocumentOutline({
     )
   }
 
+  const containerStyle = isMobile ? { height: panelHeight } : { width: panelWidth }
+
   return (
-    <div className="flex flex-col shrink-0 w-full sm:w-60 border-b sm:border-b-0 sm:border-r border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 no-print">
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700">
-        <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
-          <List className="w-4 h-4 text-blue-500" />
-          Outline
+    <div
+      className="flex flex-col sm:flex-row shrink-0 border-b sm:border-b-0 sm:border-r border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 no-print"
+      style={containerStyle}
+    >
+      {/* Content column */}
+      <div className="flex flex-col flex-1 min-h-0 min-w-0">
+        <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+            <List className="w-4 h-4 text-blue-500" />
+            Outline
+          </div>
+          <button onClick={() => setOpen(false)} className="btn-ghost p-1" title="Hide outline">
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
         </div>
-        <button onClick={() => setOpen(false)} className="btn-ghost p-1" title="Hide outline">
-          <PanelLeftClose className="w-4 h-4" />
-        </button>
+
+        <nav className="flex-1 min-h-0 overflow-y-auto py-2">
+          {headings.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-gray-400 dark:text-gray-500">
+              No headings yet. Add headings to build an outline.
+            </p>
+          ) : (
+            <ul className="text-sm">
+              {headings.map((h) => (
+                <li key={h.id}>
+                  <button
+                    onClick={() => goToHeading(h.id)}
+                    title={h.text || 'Untitled heading'}
+                    style={{ paddingLeft: `${0.75 + (h.level - minLevel) * 0.85}rem` }}
+                    className={`block w-full text-left truncate pr-3 py-1 border-l-2 transition-colors ${
+                      activeId === h.id
+                        ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 font-medium'
+                        : 'border-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100'
+                    }`}
+                  >
+                    {h.text || <span className="italic text-gray-400">Untitled heading</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </nav>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto py-2 max-h-60 sm:max-h-none">
-        {headings.length === 0 ? (
-          <p className="px-4 py-3 text-xs text-gray-400 dark:text-gray-500">
-            No headings yet. Add headings to build an outline.
-          </p>
-        ) : (
-          <ul className="text-sm">
-            {headings.map((h) => (
-              <li key={h.id}>
-                <button
-                  onClick={() => goToHeading(h.id)}
-                  title={h.text || 'Untitled heading'}
-                  style={{ paddingLeft: `${0.75 + (h.level - minLevel) * 0.85}rem` }}
-                  className={`block w-full text-left truncate pr-3 py-1 border-l-2 transition-colors ${
-                    activeId === h.id
-                      ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 font-medium'
-                      : 'border-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100'
-                  }`}
-                >
-                  {h.text || <span className="italic text-gray-400">Untitled heading</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </nav>
+      {/* Resize gutter — drag the bottom edge (mobile) or right edge (desktop). */}
+      <div
+        className={`shrink-0 transition-colors hover:bg-blue-400/40 active:bg-blue-400/60 ${
+          isMobile ? 'h-1.5 w-full cursor-ns-resize' : 'w-1.5 cursor-ew-resize'
+        }`}
+        onMouseDown={startResize}
+        title="Drag to resize"
+      />
     </div>
   )
 }
