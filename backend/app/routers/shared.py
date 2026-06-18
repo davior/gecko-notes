@@ -151,11 +151,10 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     <meta property="article:published_time" content="{note.created_at.isoformat()}">
     <meta property="article:modified_time" content="{note.modified_at.isoformat()}">
 
-    <!-- Redirect to actual shared note view -->
-    <meta http-equiv="refresh" content="0; url={escape_html(note_view_url)}">
 </head>
 <body>
     <p><a href="{escape_html(note_view_url)}">Click here to view the note</a></p>
+    <script>window.location.href = "{escape_html(note_view_url)}";</script>
 </body>
 </html>"""
 
