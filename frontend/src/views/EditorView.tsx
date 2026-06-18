@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText } from 'lucide-react'
@@ -1095,7 +1096,7 @@ export default function EditorView() {
                           td: ({ children }) => <td className="px-2 py-1 border border-gray-300 dark:border-gray-600">{children}</td>,
                         }}
                       >
-                        {summary}
+                        {processCiteTags(summary)}
                       </ReactMarkdown>
                     </div>
                   )}
