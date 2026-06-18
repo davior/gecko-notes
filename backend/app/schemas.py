@@ -205,6 +205,8 @@ class SharedNoteRead(BaseModel):
     author_username: str
     author_avatar_url: Optional[str] = None
     theme: Optional['ThemeRead'] = None
+    content_preview: str = ""
+    first_image_url: Optional[str] = None
 
     class Config:
         from_attributes = True

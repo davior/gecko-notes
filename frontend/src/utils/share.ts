@@ -42,26 +42,34 @@ function noteSnapshot(note: Note): { title: string; body: string } {
 
 export function shareViaEmail(note: Note): void {
   const { title, body } = noteSnapshot(note)
+  let emailBody = body
+  if (note.share_token) {
+    const viewUrl = `${window.location.origin}/shared/${note.share_token}`
+    emailBody = `${body}\n\nView full note: ${viewUrl}`
+  }
   const subject = encodeURIComponent(title)
-  const bodyEncoded = encodeURIComponent(body)
+  const bodyEncoded = encodeURIComponent(emailBody)
   window.open(`mailto:?subject=${subject}&body=${bodyEncoded}`)
 }
 
 export function shareViaFacebook(note: Note): void {
-  const { title, body } = noteSnapshot(note)
-  const quote = encodeURIComponent(`${title}\n${body}`)
-  window.open(`https://www.facebook.com/sharer/sharer.php?u=&quote=${quote}`, '_blank')
+  if (!note.share_token) {
+    window.alert('Share the note first to get a public link')
+    return
+  }
+  const previewUrl = `${window.location.origin}/api/shared/${note.share_token}/preview`
+  const encodedUrl = encodeURIComponent(previewUrl)
+  window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`, '_blank')
 }
 
 export function shareViaTwitter(note: Note): void {
-  const { title, body } = noteSnapshot(note)
-  const MAX_CHARS = 270
-  let text = `${title}\n${body}`
-  if (text.length > MAX_CHARS) {
-    text = text.slice(0, MAX_CHARS - 3) + '...'
+  if (!note.share_token) {
+    window.alert('Share the note first to get a public link')
+    return
   }
-  const encoded = encodeURIComponent(text)
-  window.open(`https://twitter.com/intent/tweet?text=${encoded}`, '_blank')
+  const previewUrl = `${window.location.origin}/api/shared/${note.share_token}/preview`
+  const encodedUrl = encodeURIComponent(previewUrl)
+  window.open(`https://twitter.com/intent/tweet?url=${encodedUrl}`, '_blank')
 }
 
 export async function shareViaSubstack(note: Note): Promise<void> {
