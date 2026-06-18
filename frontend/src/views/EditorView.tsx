@@ -143,8 +143,7 @@ export default function EditorView() {
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
-  const [generatingTags, setGeneratingTags] = useState(false)
-  const [generatingSummary, setGeneratingSummary] = useState(false)
+  const [generatingMetadata, setGeneratingMetadata] = useState(false)
   const [summary, setSummary] = useState<string>('')
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
@@ -619,40 +618,30 @@ export default function EditorView() {
     setSuggestedTags((s) => s.filter((t) => t !== tag))
   }
 
-  async function handleGenerateTags() {
-    if (!settingsStore.aiService) { showToast('No AI provider configured'); return }
-    setGeneratingTags(true)
-    try {
-      const content = extractPlainText(editor?.document as unknown[] ?? [])
-      const generated = await settingsStore.aiService.generateTags(`${title}\n\n${content}`)
-      onTagsGenerated(generated)
-    } catch { showToast('Failed to generate tags') }
-    finally { setGeneratingTags(false) }
-  }
-
   function onTagsGenerated(generated: string[]) {
     setSuggestedTags(generated.filter((t) => !tags.includes(t)))
   }
 
-  async function handleGenerateSummary() {
+  async function handleGenerateMetadata() {
     if (!settingsStore.aiService) { showToast('No AI provider configured'); return }
-    setGeneratingSummary(true)
+    setGeneratingMetadata(true)
     try {
       const content = extractPlainText(editor?.document as unknown[] ?? [])
-      const generated = await settingsStore.aiService.generateSummary(
+      const { tags: generatedTags, summary: generatedSummary } = await settingsStore.aiService.generateMetadata(
         `${title}\n\n${content}`,
         settingsStore.summaryPrompt,
       )
-      setSummary(generated)
-      setSummaryOpen(true)
-      const noteId = createdNoteId.current || latestNoteId.current
-      if (noteId) {
-        await notesStore.updateNote(noteId, { summary: generated })
+      onTagsGenerated(generatedTags)
+      if (generatedSummary) {
+        setSummary(generatedSummary)
+        setSummaryOpen(true)
+        const noteId = createdNoteId.current || latestNoteId.current
+        if (noteId) await notesStore.updateNote(noteId, { summary: generatedSummary })
       }
     } catch {
-      showToast('Failed to generate summary')
+      showToast('Failed to generate metadata')
     } finally {
-      setGeneratingSummary(false)
+      setGeneratingMetadata(false)
     }
   }
 
@@ -1028,10 +1017,10 @@ export default function EditorView() {
 
                 <button
                   className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1"
-                  disabled={generatingTags}
-                  onClick={handleGenerateTags}
+                  disabled={generatingMetadata}
+                  onClick={handleGenerateMetadata}
                 >
-                  {generatingTags ? (
+                  {generatingMetadata ? (
                     <>
                       <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -1039,15 +1028,7 @@ export default function EditorView() {
                       </svg>
                       Generating...
                     </>
-                  ) : '✦ Generate Tags'}
-                </button>
-
-                <button
-                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-purple-50 hover:text-purple-600 hover:border-purple-200 transition-colors flex items-center gap-1"
-                  disabled={generatingSummary}
-                  onClick={handleGenerateSummary}
-                >
-                  {generatingSummary ? 'Summarising...' : '✦ Generate Summary'}
+                  ) : '✦ Generate Metadata'}
                 </button>
 
 
