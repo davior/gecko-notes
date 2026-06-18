@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { processCiteTags } from '@/utils/markdown'
 import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
@@ -849,7 +850,7 @@ export default function AIConversationPanel({
                       td: ({ children }) => <td className="px-2 py-1 border border-gray-300 dark:border-gray-600">{children}</td>,
                     }}
                   >
-                    {msg.content}
+                    {processCiteTags(msg.content)}
                   </ReactMarkdown>
                 </div>
               </div>
