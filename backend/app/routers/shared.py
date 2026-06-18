@@ -132,8 +132,10 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
     <meta name="description" content="{description}">
 
     <!-- Open Graph / Facebook -->
+    <!-- og:url is self-referential (this preview endpoint) so crawlers read THESE
+         tags rather than following to the SPA, which has no per-note meta tags. -->
     <meta property="og:type" content="article">
-    <meta property="og:url" content="{escape_html(note_view_url)}">
+    <meta property="og:url" content="{escape_html(preview_url)}">
     <meta property="og:title" content="{title}">
     <meta property="og:description" content="{description}">
     <meta property="og:image" content="{escape_html(preview_image)}">
@@ -141,7 +143,7 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:url" content="{escape_html(note_view_url)}">
+    <meta name="twitter:url" content="{escape_html(preview_url)}">
     <meta name="twitter:title" content="{title}">
     <meta name="twitter:description" content="{description}">
     <meta name="twitter:image" content="{escape_html(preview_image)}">
