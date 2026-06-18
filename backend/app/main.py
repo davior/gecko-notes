@@ -94,7 +94,9 @@ async def add_cache_headers(request: Request, call_next):
 
 @app.middleware("http")
 async def jwt_auth_middleware(request: Request, call_next):
-    if _is_public(request.url.path):
+    # Only guard API routes. Non-/api paths (e.g. the SPA's /shared/:token) must
+    # never receive an API 401 — they're either served by the frontend or 404.
+    if not request.url.path.startswith("/api/") or _is_public(request.url.path):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization", "")

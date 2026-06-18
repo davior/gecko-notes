@@ -121,9 +121,13 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
         scheme = scheme or "https"
 
     base_url = f"{scheme}://{host}"
-    # og:url points to the actual note viewer (what users see when they click the preview)
-    note_view_url = f"{base_url}/shared/{token}"
-    # preview_url is the current endpoint (what gets shared on social media)
+    # The human redirect is RELATIVE so the browser stays on whatever origin it
+    # loaded the preview from. In dev the preview is reached via the Vite proxy
+    # (origin :5173); an absolute backend URL would bounce the browser to :8000
+    # where the SPA isn't served and the API auth middleware rejects the path.
+    note_view_path = f"/shared/{token}"
+    # preview_url is the current endpoint (what gets shared on social media) and
+    # must stay absolute so crawlers can resolve the og:/twitter: tags.
     preview_url = f"{base_url}/api/shared/{token}/preview"
 
     # Use first image from note, fallback to author avatar, fallback to a generic image
@@ -177,8 +181,8 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
 </head>
 <body>
-    <p><a href="{escape_html(note_view_url)}">Click here to view the note</a></p>
-    <script>window.location.href = "{escape_html(note_view_url)}";</script>
+    <p><a href="{escape_html(note_view_path)}">Click here to view the note</a></p>
+    <script>window.location.href = "{escape_html(note_view_path)}";</script>
 </body>
 </html>"""
 
