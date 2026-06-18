@@ -20,6 +20,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    networks:
+      - default
+      - web
   frontend:
     build: ./frontend
     restart: unless-stopped
@@ -29,5 +32,12 @@ services:
       - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-1g}
     depends_on:
       - backend
+    networks:
+      - default
+      - web
 networks:
   default:
+    name: gecko-notes_default
+  web:
+    external: true
+    name: web
