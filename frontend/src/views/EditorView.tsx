@@ -18,7 +18,7 @@ import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
-import AIConversationPanel, { type ConversationMessage } from '@/components/AIConversationPanel'
+import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
 import AnnotationLayer from '@/components/AnnotationLayer'
@@ -36,11 +36,6 @@ import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
-
-function parseConversation(raw: string | null | undefined): ConversationMessage[] {
-  if (!raw) return []
-  try { const p = JSON.parse(raw); return Array.isArray(p) ? p : [] } catch { return [] }
-}
 
 function formatDate(dateStr: string): string {
   // Timestamps are UTC; toLocaleString renders them in the viewer's local timezone.
@@ -147,7 +142,6 @@ export default function EditorView() {
   const [generatingMetadata, setGeneratingMetadata] = useState(false)
   const [summary, setSummary] = useState<string>('')
   const [summaryOpen, setSummaryOpen] = useState(false)
-  const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [panelOpen, setPanelOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('ai-panel-open') !== 'false' } catch { return true }
   })
@@ -177,7 +171,6 @@ export default function EditorView() {
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
   const defaultCategoryId = categoriesStore.categories[0]?.id ?? ''
-  const conversationRef = useRef<string>('[]')
   const latestTitle = useRef(title)
   const latestCategoryId = useRef(categoryId)
   const latestTags = useRef(tags)
@@ -259,7 +252,6 @@ export default function EditorView() {
   const tts = useTextToSpeech({ model: settingsStore.ttsModel })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
-  useEffect(() => { conversationRef.current = JSON.stringify(conversation) }, [conversation])
   useEffect(() => {
     try { localStorage.setItem('ai-panel-open', String(panelOpen)) } catch { /* noop */ }
   }, [panelOpen])
@@ -322,8 +314,6 @@ export default function EditorView() {
         setTags([...data.tags])
         setSummary(data.summary ?? '')
         setSummaryOpen(false)
-        setConversation(parseConversation(data.conversation))
-        conversationRef.current = data.conversation ?? '[]'
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         annotationsApi.list(noteId).then((res) => setAnnotations(res.data)).catch(() => setAnnotations([]))
 
@@ -401,7 +391,6 @@ export default function EditorView() {
       content,
       category_id: latestCategoryId.current || latestDefaultCategoryId.current,
       tags: latestTags.current,
-      conversation: conversationRef.current,
     }
     try {
       let saved: Note
@@ -780,24 +769,6 @@ export default function EditorView() {
   function showToast(msg: string) {
     setToastMessage(msg)
     setTimeout(() => setToastMessage(''), 3000)
-  }
-
-  function handleConversationChange(messages: ConversationMessage[]) {
-    setConversation(messages)
-    conversationRef.current = JSON.stringify(messages)
-    scheduleAutosave()
-  }
-
-  // Persist the conversation immediately (conversation-only update). Used after an
-  // AI plan runs: the debounced autosave is unreliable there because refreshOpenNote's
-  // forced editor re-hydrate resets hasPendingChanges, so doSave() bails.
-  async function persistConversation(messages: ConversationMessage[]) {
-    setConversation(messages)
-    conversationRef.current = JSON.stringify(messages)
-    const id = createdNoteId.current ?? noteId
-    if (!id) return // brand-new unsaved note — conversationRef rides along on the next full save
-    try { await notesApi.update(id, { conversation: conversationRef.current }) }
-    catch { /* best-effort; conversationRef is set so a later doSave retries */ }
   }
 
   async function insertAIText(text: string) {
@@ -1291,9 +1262,6 @@ export default function EditorView() {
           noteFolderId={note?.folder_id ?? null}
           noteSummary={note?.summary ?? null}
           getNoteDocument={() => editor?.document as unknown[] ?? []}
-          conversation={conversation}
-          onConversationChange={handleConversationChange}
-          onPersistConversation={persistConversation}
           onAddToNote={insertAIText}
           editor={editor}
           defaultCategoryId={defaultCategoryId}

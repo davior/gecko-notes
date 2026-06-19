@@ -116,6 +116,20 @@ class SystemPrompt(SQLModel, table=True):
     user_id: Optional[str] = Field(default=None, index=True)
 
 
+class AISession(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    note_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    name: str
+    messages: str = Field(default='[]')
+    context_scope: str = Field(default='none')
+    use_summaries: bool = Field(default=False)
+    include_linked_files: bool = Field(default=False)
+    plan_mode: bool = Field(default=True)
+    created_at: datetime
+    updated_at: datetime
+
+
 class Theme(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
