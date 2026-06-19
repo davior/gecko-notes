@@ -13,9 +13,11 @@ export interface UseTextToSpeechReturn {
   setSpeed: (s: number) => void
   isExporting: boolean
   play: (text: string) => void
+  playBlob: (blob: Blob) => void
   pause: () => void
   resume: () => void
   stop: () => void
+  synthesizeBlob: (text: string) => Promise<Blob>
   exportToFile: (text: string, filename?: string) => Promise<void>
 }
 
@@ -234,6 +236,41 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     void playIndex(0)
   }, [playIndex, revokeUrl])
 
+  // Play an already-synthesized audio blob through the same element/state machine
+  // as chunked playback, so pause/resume/stop and the volume control keep working.
+  // Used by "Insert Mode" so the inserted clip plays without re-synthesizing.
+  const playBlob = useCallback((blob: Blob) => {
+    cancelledRef.current = false
+    if (audioRef.current) audioRef.current.pause()
+    revokeUrl()
+    queueRef.current = []
+    indexRef.current = 0
+    prefetchRef.current = null
+    setErrorMessage('')
+    setStatus('loading')
+
+    const url = URL.createObjectURL(blob)
+    objectUrlRef.current = url
+
+    const audio = audioRef.current ?? new Audio()
+    audioRef.current = audio
+    audio.volume = volumeRef.current
+    audio.onplaying = () => { if (!cancelledRef.current) setStatus('playing') }
+    audio.onended = () => {
+      if (cancelledRef.current) return
+      revokeUrl()
+      setStatus('idle')
+    }
+    audio.src = url
+
+    audio.play().catch(() => {
+      if (cancelledRef.current) return
+      if (!audio.paused) return
+      setErrorMessage('Playback was blocked by the browser')
+      setStatus('error')
+    })
+  }, [revokeUrl])
+
   const pause = useCallback(() => {
     if (audioRef.current && status === 'playing') {
       audioRef.current.pause()
@@ -250,21 +287,36 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     }
   }, [status])
 
-  // Synthesize the whole text and download it as a single MP3 file. Chunks are
-  // fetched sequentially (to stay friendly to Deepgram's rate limits) and the
-  // resulting MP3 segments are concatenated — MP3 is frame-based, so simple
-  // byte concatenation plays back correctly.
-  const exportToFile = useCallback(async (text: string, filename = 'note.mp3') => {
+  // Synthesize the whole text into a single MP3 blob. Chunks are fetched
+  // sequentially (to stay friendly to Deepgram's rate limits) and the resulting
+  // MP3 segments are concatenated — MP3 is frame-based, so simple byte
+  // concatenation plays back correctly. Sets 'loading' while running; on success
+  // it leaves the status as 'loading' so the caller decides the next transition
+  // (download → idle, or playBlob → playing). On failure it sets 'error' and rethrows.
+  const synthesizeBlob = useCallback(async (text: string): Promise<Blob> => {
     const chunks = chunkText(text)
-    if (chunks.length === 0) return
-    setIsExporting(true)
+    if (chunks.length === 0) return new Blob([], { type: 'audio/mpeg' })
     setErrorMessage('')
+    setStatus('loading')
     try {
       const blobs: Blob[] = []
       for (const chunk of chunks) {
         blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current))
       }
-      const combined = new Blob(blobs, { type: 'audio/mpeg' })
+      return new Blob(blobs, { type: 'audio/mpeg' })
+    } catch (e) {
+      setErrorMessage('Failed to synthesize speech — check your Deepgram key in Settings → Speech')
+      setStatus('error')
+      throw e
+    }
+  }, [])
+
+  // Synthesize the whole text and download it as a single MP3 file.
+  const exportToFile = useCallback(async (text: string, filename = 'note.mp3') => {
+    if (chunkText(text).length === 0) return
+    setIsExporting(true)
+    try {
+      const combined = await synthesizeBlob(text)
       const url = URL.createObjectURL(combined)
       const a = document.createElement('a')
       a.href = url
@@ -273,13 +325,14 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
+      // Export doesn't play; clear the 'loading' state synthesizeBlob set.
+      setStatus('idle')
     } catch {
-      setErrorMessage('Failed to export audio — check your Deepgram key in Settings → Speech')
-      setStatus('error')
+      // synthesizeBlob already set the error status/message.
     } finally {
       setIsExporting(false)
     }
-  }, [])
+  }, [synthesizeBlob])
 
   return {
     status,
@@ -291,9 +344,11 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     setSpeed,
     isExporting,
     play,
+    playBlob,
     pause,
     resume,
     stop,
+    synthesizeBlob,
     exportToFile,
   }
 }

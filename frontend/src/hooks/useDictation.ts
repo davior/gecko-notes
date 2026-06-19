@@ -53,14 +53,27 @@ declare global {
 
 export type DictationStatus = 'idle' | 'recording' | 'transcribing' | 'error' | 'unsupported'
 
+/** Which control started the active recording session, or null when idle. */
+export type DictationMode = 'dictation' | 'record' | null
+
 export interface UseDictationReturn {
   status: DictationStatus
+  /** Which control owns the in-progress session, so the UI can light up the
+   *  right button (mic vs. record). Null when no session is active. */
+  mode: DictationMode
   interimText: string
   errorMessage: string
   isSupported: boolean
+  /** True when audio can be recorded and transcribed (MediaRecorder + a
+   *  transcribe backend). The Record button requires this regardless of whether
+   *  the Web Speech API is available. */
+  canRecord: boolean
   startDictation: () => void
   stopDictation: () => void
   toggleDictation: () => void
+  startRecording: () => void
+  stopRecording: () => void
+  toggleRecording: () => void
 }
 
 const SPEECH_ERRORS: Record<string, string> = {
@@ -80,12 +93,22 @@ const hasMediaRecorder =
 
 export function useDictation(
   onFinalResult: (text: string) => void,
-  options?: { transcribeAudio?: (blob: Blob) => Promise<string> },
+  options?: {
+    transcribeAudio?: (blob: Blob) => Promise<string>
+    /** Called when a Record-button session finishes, with the transcription
+     *  (possibly empty if transcription failed) and the recorded audio blob. */
+    onRecordingComplete?: (text: string, blob: Blob) => void
+  },
 ): UseDictationReturn {
   const useRecorderFallback = !hasSpeechRecognition && hasMediaRecorder && !!options?.transcribeAudio
   const isSupported = hasSpeechRecognition || useRecorderFallback
+  // The Record button always needs to capture the audio file, which only the
+  // MediaRecorder path can do — so it's available whenever MediaRecorder and a
+  // transcribe backend exist, independent of Web Speech API support.
+  const canRecord = hasMediaRecorder && !!options?.transcribeAudio
 
   const [status, setStatus] = useState<DictationStatus>(isSupported ? 'idle' : 'unsupported')
+  const [mode, setMode] = useState<DictationMode>(null)
   const [interimText, setInterimText] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
 
@@ -94,10 +117,15 @@ export function useDictation(
   const audioChunksRef = useRef<Blob[]>([])
   const onFinalResultRef = useRef(onFinalResult)
   const transcribeAudioRef = useRef(options?.transcribeAudio)
+  const onRecordingCompleteRef = useRef(options?.onRecordingComplete)
   const userStoppedRef = useRef(false)
+  // Whether the in-progress MediaRecorder session was started by the Record
+  // button (true) or is a dictation fallback (false). Read inside async onstop.
+  const recordModeRef = useRef(false)
 
   useEffect(() => { onFinalResultRef.current = onFinalResult })
   useEffect(() => { transcribeAudioRef.current = options?.transcribeAudio })
+  useEffect(() => { onRecordingCompleteRef.current = options?.onRecordingComplete })
 
   // Sync status when support becomes available after initial mount
   // (e.g. Deepgram key loads asynchronously from settings)
@@ -146,11 +174,13 @@ export function useDictation(
       if (event.error === 'aborted' && userStoppedRef.current) return
       setErrorMessage(SPEECH_ERRORS[event.error] ?? `Speech recognition error: ${event.error}`)
       setStatus('error')
+      setMode(null)
       setInterimText('')
     }
 
     recognition.onend = () => {
       setStatus((prev) => (prev === 'recording' ? 'idle' : prev))
+      setMode(null)
       setInterimText('')
     }
 
@@ -158,7 +188,9 @@ export function useDictation(
     recognition.start()
   }, [])
 
-  const startMediaRecorder = useCallback(() => {
+  const startMediaRecorder = useCallback((asRecord: boolean) => {
+    recordModeRef.current = asRecord
+    userStoppedRef.current = false
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
       audioChunksRef.current = []
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg'
@@ -172,20 +204,30 @@ export function useDictation(
         stream.getTracks().forEach((t) => t.stop())
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType })
         audioChunksRef.current = []
+        const isRecord = recordModeRef.current
 
-        if (!userStoppedRef.current) return
+        if (!userStoppedRef.current) { setMode(null); return }
 
         setStatus('transcribing')
         setInterimText('Transcribing...')
+        let text = ''
         try {
-          const text = await transcribeAudioRef.current!(blob)
-          if (text.trim()) onFinalResultRef.current(text)
+          text = await transcribeAudioRef.current!(blob)
         } catch {
           setErrorMessage('Transcription failed — check your Deepgram key in Settings → Speech')
-          setStatus('error')
+          // In record mode we still want to keep the audio, so don't bail here.
+          if (!isRecord) setStatus('error')
         } finally {
           setInterimText('')
           setStatus((prev) => (prev === 'transcribing' ? 'idle' : prev))
+          setMode(null)
+        }
+
+        if (isRecord) {
+          // Hand back the audio even if transcription came back empty/failed.
+          onRecordingCompleteRef.current?.(text, blob)
+        } else if (text.trim()) {
+          onFinalResultRef.current(text)
         }
       }
 
@@ -196,12 +238,14 @@ export function useDictation(
     }).catch(() => {
       setErrorMessage('Microphone access denied')
       setStatus('error')
+      setMode(null)
     })
   }, [])
 
   const startDictation = useCallback(() => {
     if (!isSupported) { setStatus('unsupported'); return }
-    if (useRecorderFallback) startMediaRecorder()
+    setMode('dictation')
+    if (useRecorderFallback) startMediaRecorder(false)
     else startSpeechRecognition()
   }, [isSupported, useRecorderFallback, startMediaRecorder, startSpeechRecognition])
 
@@ -212,14 +256,46 @@ export function useDictation(
     } else {
       recognitionRef.current?.stop()
       setStatus('idle')
+      setMode(null)
       setInterimText('')
     }
   }, [useRecorderFallback])
 
   const toggleDictation = useCallback(() => {
-    if (status === 'recording') stopDictation()
+    if (status === 'recording' && mode === 'dictation') stopDictation()
     else if (status === 'idle' || status === 'error') startDictation()
-  }, [status, startDictation, stopDictation])
+  }, [status, mode, startDictation, stopDictation])
 
-  return { status, interimText, errorMessage, isSupported, startDictation, stopDictation, toggleDictation }
+  // Record: always capture audio via MediaRecorder (the only path that exposes
+  // the recorded file), regardless of Web Speech API availability.
+  const startRecording = useCallback(() => {
+    if (!canRecord) return
+    setMode('record')
+    startMediaRecorder(true)
+  }, [canRecord, startMediaRecorder])
+
+  const stopRecording = useCallback(() => {
+    userStoppedRef.current = true
+    mediaRecorderRef.current?.stop()
+  }, [])
+
+  const toggleRecording = useCallback(() => {
+    if (status === 'recording' && mode === 'record') stopRecording()
+    else if (status === 'idle' || status === 'error') startRecording()
+  }, [status, mode, startRecording, stopRecording])
+
+  return {
+    status,
+    mode,
+    interimText,
+    errorMessage,
+    isSupported,
+    canRecord,
+    startDictation,
+    stopDictation,
+    toggleDictation,
+    startRecording,
+    stopRecording,
+    toggleRecording,
+  }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff, PanelBottom, Maximize2 } from 'lucide-react'
+import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff, Circle, PanelBottom, Maximize2 } from 'lucide-react'
 import type { UseTextToSpeechReturn } from '@/hooks/useTextToSpeech'
 import type { UseDictationReturn } from '@/hooks/useDictation'
 
@@ -13,6 +13,11 @@ interface Props {
   onPlayPause: () => void
   dictation?: UseDictationReturn
   onDictationToggle?: () => void
+  /** Toggle for the Record button (record + transcribe + save audio). */
+  onRecordToggle?: () => void
+  /** When true, pressing Play also saves + inserts the TTS audio into the note. */
+  insertMode?: boolean
+  onToggleInsertMode?: () => void
   ttsSpeed?: number
   onTtsSpeedChange?: (speed: number) => void
   /** When true the controls render inline (e.g. inside the editor status bar)
@@ -37,7 +42,7 @@ function clamp(v: number, min: number, max: number) {
  *  - Docked: rendered inline inside the editor's bottom status bar.
  * A dock/undock button (shown when `onToggleDock` is provided) switches modes.
  */
-export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dictation, onDictationToggle, ttsSpeed = 1, onTtsSpeedChange, docked = false, onToggleDock }: Props) {
+export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dictation, onDictationToggle, onRecordToggle, insertMode = false, onToggleInsertMode, ttsSpeed = 1, onTtsSpeedChange, docked = false, onToggleDock }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   const lastVolRef = useRef(tts.volume || 1)
@@ -125,9 +130,26 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
   const isLoading = tts.status === 'loading'
   const isPlaying = tts.status === 'playing'
 
+  const recordActive = dictation?.status === 'recording' && dictation?.mode === 'record'
+  const dictationActive = dictation?.status === 'recording' && dictation?.mode === 'dictation'
+
   // Shared controls, identical in both floating and docked modes.
   const controls = (
     <>
+      {onToggleInsertMode && (
+        <button
+          className="flex items-center gap-1 pl-1 pr-1.5 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          onClick={onToggleInsertMode}
+          onMouseDown={(e) => e.preventDefault()}
+          title={insertMode ? 'Insert Mode on — Play saves the audio into the note' : 'Insert Mode off — Play is transient'}
+          aria-label="Toggle Insert Mode"
+          aria-pressed={insertMode}
+        >
+          <span className={`w-2.5 h-2.5 rounded-full ${insertMode ? 'bg-green-500' : 'bg-red-500'}`} />
+          <span className="text-xs whitespace-nowrap">Insert Mode</span>
+        </button>
+      )}
+
       <button
         className="p-1.5 rounded-full text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
         onClick={onPlayPause}
@@ -185,15 +207,29 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
           // Keep the editor's focus/cursor so dictated text lands at the cursor
           // position rather than blurring the note (which appends to the end).
           onMouseDown={(e) => e.preventDefault()}
-          disabled={dictation.status === 'transcribing'}
-          title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
-          aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
+          disabled={dictation.status === 'transcribing' || recordActive}
+          title={dictationActive ? 'Stop dictation' : 'Start dictation'}
+          aria-label={dictationActive ? 'Stop dictation' : 'Start dictation'}
         >
-          {dictation.status === 'recording' ? (
+          {dictationActive ? (
             <MicOff className="w-4 h-4 text-red-500" />
           ) : (
             <Mic className="w-4 h-4" />
           )}
+        </button>
+      )}
+
+      {dictation && onRecordToggle && dictation.canRecord && (
+        <button
+          className="p-1.5 rounded-full text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-50"
+          onClick={onRecordToggle}
+          // Keep editor focus so the recording + transcription land at the cursor.
+          onMouseDown={(e) => e.preventDefault()}
+          disabled={dictation.status === 'transcribing' || dictationActive}
+          title={recordActive ? 'Stop recording' : 'Record (saves audio + transcription)'}
+          aria-label={recordActive ? 'Stop recording' : 'Record audio'}
+        >
+          <Circle className={`w-4 h-4 text-red-500 ${recordActive ? 'fill-red-500 animate-pulse' : ''}`} />
         </button>
       )}
 
