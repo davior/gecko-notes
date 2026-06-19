@@ -156,6 +156,11 @@ export default function EditorView() {
   const [ttsDocked, setTtsDocked] = useState<boolean>(() => {
     try { return localStorage.getItem('tts-controls-docked') === 'true' } catch { return false }
   })
+  // When on, pressing Play also saves the synthesized audio and inserts it as an
+  // audio object at the top of the note. Remembered across notes/sessions.
+  const [ttsInsertMode, setTtsInsertMode] = useState<boolean>(() => {
+    try { return localStorage.getItem('tts-insert-mode') === 'true' } catch { return false }
+  })
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [openAnnotationId, setOpenAnnotationId] = useState<string | null>(null)
   const annotationContainerRef = useRef<HTMLDivElement>(null)
@@ -189,28 +194,67 @@ export default function EditorView() {
     },
   })
 
-  const insertDictatedText = useCallback((text: string) => {
-    if (!editor || !text.trim()) return
-    const block: PartialBlock = { type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }
-    // When the editor has focus, insert at the cursor position. Otherwise (e.g.
-    // dictation started while focus was elsewhere) append to the end of the note.
+  // Insert blocks at the cursor when the editor is focused, otherwise append to
+  // the end of the note (e.g. dictation started while focus was elsewhere).
+  const insertBlocksAtCursor = useCallback((blocks: PartialBlock[]) => {
+    if (!editor || blocks.length === 0) return
     if (editor.isFocused()) {
       const cursorBlock = editor.getTextCursorPosition().block
-      editor.insertBlocks([block], cursorBlock, 'after')
+      editor.insertBlocks(blocks, cursorBlock, 'after')
     } else {
       const doc = editor.document
       const lastBlock = doc[doc.length - 1]
-      if (lastBlock) editor.insertBlocks([block], lastBlock, 'after')
+      if (lastBlock) editor.insertBlocks(blocks, lastBlock, 'after')
     }
   }, [editor])
+
+  const insertBlocksAtTop = useCallback((blocks: PartialBlock[]) => {
+    if (!editor || blocks.length === 0) return
+    const firstBlock = editor.document[0]
+    if (firstBlock) editor.insertBlocks(blocks, firstBlock, 'before')
+  }, [editor])
+
+  const insertDictatedText = useCallback((text: string) => {
+    if (!text.trim()) return
+    insertBlocksAtCursor([{ type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }])
+  }, [insertBlocksAtCursor])
+
+  // Upload an audio blob to /media and return its URL. The filename extension
+  // must match the blob type so the backend accepts it (.webm/.ogg/.mp3 are allowed).
+  const uploadAudioBlob = useCallback(async (blob: Blob, baseName: string): Promise<string> => {
+    const ext = blob.type.includes('ogg') ? 'ogg' : blob.type.includes('webm') ? 'webm' : 'mp3'
+    const safeBase = (baseName || 'audio').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'audio'
+    const file = new File([blob], `${safeBase}.${ext}`, { type: blob.type || 'application/octet-stream' })
+    const res = await mediaApi.upload(file)
+    return res.data.url
+  }, [])
 
   const { deepgramApiKey } = settingsStore
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
     [],
   )
+
+  // Record button: save the recorded audio as an audio object, then the
+  // transcription text directly below it.
+  const handleRecordingComplete = useCallback(async (text: string, blob: Blob) => {
+    const transcript = text.trim()
+    try {
+      const url = await uploadAudioBlob(blob, 'recording')
+      const blocks: PartialBlock[] = [
+        { type: 'audioFile', props: { url, name: `Recording — ${new Date().toLocaleString()}` } } as unknown as PartialBlock,
+      ]
+      if (transcript) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: transcript, styles: {} }] })
+      insertBlocksAtCursor(blocks)
+    } catch {
+      showToast('Failed to save recording audio')
+      if (transcript) insertDictatedText(transcript)
+    }
+  }, [uploadAudioBlob, insertBlocksAtCursor, insertDictatedText])
+
   const dictation = useDictation(insertDictatedText, {
     transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
+    onRecordingComplete: handleRecordingComplete,
   })
   const tts = useTextToSpeech({ model: settingsStore.ttsModel })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
@@ -222,6 +266,9 @@ export default function EditorView() {
   useEffect(() => {
     try { localStorage.setItem('tts-controls-docked', String(ttsDocked)) } catch { /* noop */ }
   }, [ttsDocked])
+  useEffect(() => {
+    try { localStorage.setItem('tts-insert-mode', String(ttsInsertMode)) } catch { /* noop */ }
+  }, [ttsInsertMode])
   useEffect(() => { latestTitle.current = title }, [title])
   useEffect(() => { latestCategoryId.current = categoryId }, [categoryId])
   useEffect(() => { latestTags.current = tags }, [tags])
@@ -604,12 +651,35 @@ export default function EditorView() {
     return `${base}.mp3`
   }
 
+  // Insert Mode: synthesize once, save + insert the clip at the top of the note,
+  // then play the same blob (no second synthesis, so Deepgram isn't billed twice).
+  async function handlePlayWithInsert(text: string) {
+    let blob: Blob
+    try {
+      blob = await tts.synthesizeBlob(text)
+    } catch {
+      // synthesizeBlob already set the error status + message (toast via effect).
+      return
+    }
+    try {
+      const url = await uploadAudioBlob(blob, title || 'note')
+      insertBlocksAtTop([
+        { type: 'audioFile', props: { url, name: `Read-aloud — ${new Date().toLocaleString()}` } } as unknown as PartialBlock,
+      ])
+    } catch {
+      // Saving to the note failed, but we still have the audio — play it anyway.
+      showToast('Could not save the audio to the note')
+    }
+    tts.playBlob(blob)
+  }
+
   function handlePlayPause() {
     if (tts.status === 'playing') { tts.pause(); return }
     if (tts.status === 'paused') { tts.resume(); return }
     if (tts.status === 'loading') return
     const text = speechText()
     if (!text) { showToast('Nothing to read'); return }
+    if (ttsInsertMode) { void handlePlayWithInsert(text); return }
     tts.play(text)
   }
 
@@ -1064,6 +1134,9 @@ export default function EditorView() {
                   onPlayPause={handlePlayPause}
                   dictation={dictation}
                   onDictationToggle={dictation.toggleDictation}
+                  onRecordToggle={dictation.toggleRecording}
+                  insertMode={ttsInsertMode}
+                  onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
                   ttsSpeed={tts.speed}
                   onTtsSpeedChange={tts.setSpeed}
                   onToggleDock={() => setTtsDocked(true)}
@@ -1196,6 +1269,9 @@ export default function EditorView() {
                 onPlayPause={handlePlayPause}
                 dictation={dictation}
                 onDictationToggle={dictation.toggleDictation}
+                onRecordToggle={dictation.toggleRecording}
+                insertMode={ttsInsertMode}
+                onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
                 ttsSpeed={tts.speed}
                 onTtsSpeedChange={tts.setSpeed}
                 docked

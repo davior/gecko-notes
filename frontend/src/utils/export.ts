@@ -15,6 +15,10 @@ function extractPlainText(contentStr: string): string {
         texts.push('[Image]')
         return
       }
+      if (block.type === 'audioFile') {
+        texts.push('[Audio recording]')
+        return
+      }
       const content = block.content
       if (Array.isArray(content)) {
         for (const item of content) {
@@ -159,6 +163,15 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
       const url = props?.url as string | undefined
       if (url) {
         parts.push(`<figure style="margin:16px 0"><img src="${escapeHtml(url)}" style="max-width:100%;height:auto;" /></figure>`)
+      }
+      i++
+      continue
+    }
+
+    if (type === 'audioFile') {
+      const url = props?.url as string | undefined
+      if (url) {
+        parts.push(`<figure style="margin:16px 0"><audio controls src="${escapeHtml(url)}"></audio></figure>`)
       }
       i++
       continue
@@ -537,6 +550,12 @@ export async function exportToWord(note: Note): Promise<void> {
         }
       }
       return [new Paragraph({ children: [] })]
+    }
+
+    if (type === 'audioFile') {
+      // Audio can't be embedded in a Word document; leave a labeled placeholder.
+      const label = (props?.name as string | undefined) || 'Audio recording'
+      return [new Paragraph({ children: [new TextRun({ text: `[${label}]`, italics: true })] })]
     }
 
     if (type === 'table') {

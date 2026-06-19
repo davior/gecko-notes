@@ -6,6 +6,7 @@ import { BlockNoteSchema, defaultBlockSpecs, type PartialBlock } from '@blocknot
 import { ChevronRight, ChevronDown, FileText, ExternalLink, Repeat } from 'lucide-react'
 import { notesApi } from '@/api/notes'
 import { noteReferenceBlock } from './noteReferenceBlock'
+import { audioBlock } from './audioBlock'
 
 // Tracks the chain of child-note ids currently being rendered so an embed that
 // references one of its own ancestors is shown as a circular reference instead
@@ -160,5 +161,6 @@ export const noteSchema = BlockNoteSchema.create({
     ...defaultBlockSpecs,
     childNote: childNoteBlock,
     noteReference: noteReferenceBlock,
+    audioFile: audioBlock,
   },
 })
