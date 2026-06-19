@@ -120,15 +120,23 @@ class AnthropicProvider implements AIService {
     const textParts = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '')
     let text = textParts.join('')
 
-    // If Claude returned a tool_use block instead of text (e.g. it hallucinated calling
-    // an edit_section / plan action as a native tool), recover the plan from the tool input.
-    if (!text && response.data?.stop_reason === 'tool_use') {
-      const toolBlock = contentBlocks.find((b) => b.type === 'tool_use')
-      if (toolBlock?.input && typeof toolBlock.input === 'object') {
-        const input = { ...(toolBlock.input as Record<string, unknown>) }
-        if (!input.type && toolBlock.name) input.type = toolBlock.name
-        text = JSON.stringify(input)
-      }
+    // If Claude stopped on a tool_use block, it invoked one of our *described* plan
+    // actions (edit_note, edit_section, …) as though it were a native tool instead of
+    // emitting the JSON envelope, so recover the plan from the tool_use block(s).
+    // This must NOT be gated on `!text`: when web search is enabled Claude interleaves
+    // running commentary ("let me search…", "now I'll add it to the article…") as text
+    // blocks, so `text` is non-empty even though the real action lives in a tool_use
+    // block — gating on `!text` silently dropped the action. Anthropic emits web_search
+    // as `server_tool_use`, so a plain `tool_use` block here is always a misfired action.
+    if (response.data?.stop_reason === 'tool_use') {
+      const actions = contentBlocks
+        .filter((b) => b.type === 'tool_use' && b.input && typeof b.input === 'object')
+        .map((b) => {
+          const input = { ...(b.input as Record<string, unknown>) }
+          if (!input.type && b.name) input.type = b.name
+          return input
+        })
+      if (actions.length) text = JSON.stringify({ actions })
     }
 
     const full = prefill ? prefill + text : text
