@@ -59,6 +59,20 @@ function parseBlocks(content: string): unknown[] {
   }
 }
 
+// Heading blocks store only the plain heading text — the level lives in the
+// block's props, so "## Chapter 1" is stored as "Chapter 1". The model is given
+// note bodies as Markdown, so it routinely copies the Markdown form (e.g.
+// "## Chapter 1") into a section field. Strip any leading ATX "#" markers (and a
+// trailing run, for closed ATX headings) so either form matches the stored text.
+function normalizeHeading(s: string): string {
+  return s
+    .trim()
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/\s+#+$/, '')
+    .trim()
+    .toLowerCase()
+}
+
 // Embed blocks (childNote / noteReference) can't be expressed in Markdown, so a
 // section rewrite from model Markdown can't reproduce them — collect them so
 // edit_section can re-insert them instead of silently dropping them.
@@ -162,11 +176,15 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
             : ''
         }
 
-        // Find the section heading: prefer an exact (case-insensitive) match, else substring.
-        const target = action.section.trim().toLowerCase()
-        let startIdx = blocks.findIndex((b) => isHeading(b) && headingText(b).trim().toLowerCase() === target)
-        if (startIdx === -1) {
-          startIdx = blocks.findIndex((b) => isHeading(b) && headingText(b).toLowerCase().includes(target))
+        // Find the section heading: prefer an exact (case-insensitive) match, else
+        // substring. Both sides are normalized so a Markdown-style section value
+        // ("## Chapter 1") still matches the stored heading text ("Chapter 1").
+        const target = normalizeHeading(action.section)
+        let startIdx = target
+          ? blocks.findIndex((b) => isHeading(b) && normalizeHeading(headingText(b)) === target)
+          : -1
+        if (startIdx === -1 && target) {
+          startIdx = blocks.findIndex((b) => isHeading(b) && normalizeHeading(headingText(b)).includes(target))
         }
 
         if (startIdx === -1) {
@@ -341,14 +359,16 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
 
         // Find insertion point: after section heading if specified, else at end
         let insertIndex = blocks.length
-        if (action.insertAfterSection) {
+        const afterSection = action.insertAfterSection ? normalizeHeading(action.insertAfterSection) : ''
+        if (afterSection) {
           for (let i = 0; i < blocks.length; i++) {
             const block = blocks[i] as Record<string, unknown>
-            // Check if this is a heading block matching the section name
+            // Check if this is a heading block matching the section name. Normalize
+            // both sides so a Markdown-style heading ("## Chapter 1") still matches.
             if (block.type === 'heading' && block.content) {
               const content = block.content as Array<Record<string, unknown>>
               const textContent = content.map((c) => c.text ?? '').join('')
-              if (textContent.toLowerCase().includes(action.insertAfterSection.toLowerCase())) {
+              if (normalizeHeading(textContent).includes(afterSection)) {
                 insertIndex = i + 1
                 break
               }
