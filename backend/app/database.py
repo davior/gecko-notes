@@ -276,6 +276,45 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Migrate legacy Note.conversation data into the new AISession table
+        try:
+            import json as _json
+            notes_with_convo = conn.execute(text(
+                "SELECT id, user_id, conversation, modified_at FROM note "
+                "WHERE conversation IS NOT NULL AND conversation != '' AND conversation != '[]'"
+            )).fetchall()
+            for note_id, user_id, conversation_json, modified_at in notes_with_convo:
+                if not user_id:
+                    continue
+                existing = conn.execute(text(
+                    "SELECT 1 FROM aisession WHERE note_id = :nid LIMIT 1"
+                ), {"nid": note_id}).fetchone()
+                if existing:
+                    continue
+                try:
+                    msgs = _json.loads(conversation_json)
+                    user_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "user"]
+                    first_text = (user_msgs[0].get("content", "") if user_msgs else "").strip()
+                    name = (first_text[:47] + "…") if len(first_text) > 50 else first_text or "Previous session"
+                except Exception:
+                    name = "Previous session"
+                ts = modified_at or ""
+                conn.execute(text("""
+                    INSERT INTO aisession (id, note_id, user_id, name, messages, context_scope,
+                        use_summaries, include_linked_files, plan_mode, created_at, updated_at)
+                    VALUES (:id, :note_id, :user_id, :name, :messages, 'note',
+                        0, 0, 1, :ts, :ts)
+                """), {
+                    "id": str(_uuid.uuid4()),
+                    "note_id": note_id,
+                    "user_id": user_id,
+                    "name": name,
+                    "messages": conversation_json,
+                    "ts": ts,
+                })
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():
