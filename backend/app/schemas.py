@@ -314,6 +314,41 @@ class SystemPromptRead(BaseModel):
         from_attributes = True
 
 
+# AI Session schemas
+class AISessionCreate(BaseModel):
+    name: str
+    messages: str = '[]'
+    context_scope: str = 'none'
+    use_summaries: bool = False
+    include_linked_files: bool = False
+    plan_mode: bool = True
+
+
+class AISessionUpdate(BaseModel):
+    name: Optional[str] = None
+    messages: Optional[str] = None
+    context_scope: Optional[str] = None
+    use_summaries: Optional[bool] = None
+    include_linked_files: Optional[bool] = None
+    plan_mode: Optional[bool] = None
+
+
+class AISessionRead(BaseModel):
+    id: str
+    note_id: str
+    name: str
+    messages: str
+    context_scope: str
+    use_summaries: bool
+    include_linked_files: bool
+    plan_mode: bool
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
+
+    class Config:
+        from_attributes = True
+
+
 # Theme schemas
 class ThemeCreate(BaseModel):
     name: str

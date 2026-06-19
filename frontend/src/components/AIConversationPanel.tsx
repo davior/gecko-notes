@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText, History } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
@@ -11,6 +11,7 @@ import { settingsApi } from '@/api/settings'
 import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
+import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
 import type { FileAttachment } from '@/services/ai'
 import {
@@ -61,9 +62,6 @@ interface AIConversationPanelProps {
   noteFolderId?: string | null
   noteSummary?: string | null
   getNoteDocument?: () => unknown[]
-  conversation: ConversationMessage[]
-  onConversationChange: (messages: ConversationMessage[]) => void
-  onPersistConversation?: (messages: ConversationMessage[]) => Promise<void> | void
   onAddToNote: (text: string) => Promise<void>
   // Plan execution wiring (provided by EditorView)
   editor?: PlanEditor | null
@@ -161,9 +159,6 @@ export default function AIConversationPanel({
   noteFolderId,
   noteSummary,
   getNoteDocument,
-  conversation,
-  onConversationChange,
-  onPersistConversation,
   onAddToNote,
   editor,
   defaultCategoryId,
@@ -177,6 +172,14 @@ export default function AIConversationPanel({
   const aiService = useSettingsStore((s) => s.aiService)
   const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
   const categories = useCategoriesStore((s) => s.categories)
+
+  // Conversation and session state (self-managed — not driven by props)
+  const [conversation, setConversation] = useState<ConversationMessage[]>([])
+  const [sessions, setSessions] = useState<AISession[]>([])
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -263,6 +266,28 @@ export default function AIConversationPanel({
     try { localStorage.setItem('ai-panel-height', String(panelHeight)) } catch { /* noop */ }
   }, [panelHeight])
 
+  // Load sessions for the current note whenever noteId changes
+  useEffect(() => {
+    setConversation([])
+    setCurrentSessionId(null)
+    setSessions([])
+    setShowHistory(false)
+    if (!noteId) return
+    aiSessionsApi.list(noteId).then((data) => {
+      setSessions(data)
+      if (data.length > 0) {
+        const latest = data[0]
+        setCurrentSessionId(latest.id)
+        try { setConversation(JSON.parse(latest.messages) as ConversationMessage[]) } catch { setConversation([]) }
+        setContextScope(latest.context_scope as ContextScope)
+        setUseSummaries(latest.use_summaries)
+        setIncludeLinkedFiles(latest.include_linked_files)
+        setPlanMode(latest.plan_mode)
+      }
+    }).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteId])
+
   useEffect(() => {
     try { localStorage.setItem('ai-context-scope', contextScope) } catch { /* noop */ }
   }, [contextScope])
@@ -338,6 +363,89 @@ export default function AIConversationPanel({
     document.body.style.cursor = isMobileRef.current ? 'ns-resize' : 'ew-resize'
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
+  }
+
+  async function persistCurrentSession(msgs: ConversationMessage[], sessionId?: string | null) {
+    const sid = sessionId ?? currentSessionId
+    if (!sid || !noteId) return
+    try {
+      const updated = await aiSessionsApi.update(noteId, sid, {
+        messages: JSON.stringify(msgs),
+        context_scope: contextScope,
+        use_summaries: useSummaries,
+        include_linked_files: includeLinkedFiles,
+        plan_mode: planMode,
+      })
+      setSessions((prev) =>
+        [updated, ...prev.filter((s) => s.id !== sid)]
+      )
+    } catch { /* best-effort */ }
+  }
+
+  async function autoCreateSession(firstMessage: string): Promise<string | null> {
+    if (!noteId) return null
+    const name = firstMessage.length > 50 ? `${firstMessage.slice(0, 47)}…` : firstMessage
+    try {
+      const session = await aiSessionsApi.create(noteId, {
+        name,
+        messages: '[]',
+        context_scope: contextScope,
+        use_summaries: useSummaries,
+        include_linked_files: includeLinkedFiles,
+        plan_mode: planMode,
+      })
+      setCurrentSessionId(session.id)
+      setSessions((prev) => [session, ...prev])
+      return session.id
+    } catch { return null }
+  }
+
+  async function handleNewSession() {
+    if (currentSessionId && conversation.length > 0) {
+      await persistCurrentSession(conversation)
+    }
+    setConversation([])
+    setCurrentSessionId(null)
+    setFrozenContext(null)
+    setPendingPlan(null)
+    setShowHistory(false)
+  }
+
+  function handleOpenSession(session: AISession) {
+    try {
+      setConversation(JSON.parse(session.messages) as ConversationMessage[])
+    } catch {
+      setConversation([])
+    }
+    setCurrentSessionId(session.id)
+    setContextScope(session.context_scope as ContextScope)
+    setUseSummaries(session.use_summaries)
+    setIncludeLinkedFiles(session.include_linked_files)
+    setPlanMode(session.plan_mode)
+    setFrozenContext(null)
+    setPendingPlan(null)
+    setShowHistory(false)
+  }
+
+  async function handleDeleteSession(id: string) {
+    if (!noteId) return
+    try {
+      await aiSessionsApi.remove(noteId, id)
+      setSessions((prev) => prev.filter((s) => s.id !== id))
+      if (currentSessionId === id) {
+        setConversation([])
+        setCurrentSessionId(null)
+      }
+    } catch { /* best-effort */ }
+  }
+
+  async function handleRenameSession(id: string, newName: string) {
+    if (!noteId || !newName.trim()) { setRenamingId(null); return }
+    try {
+      const updated = await aiSessionsApi.update(noteId, id, { name: newName.trim() })
+      setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)))
+    } catch { /* best-effort */ }
+    setRenamingId(null)
   }
 
   async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
@@ -567,10 +675,8 @@ export default function AIConversationPanel({
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
       if (results.some((r) => r.annotationsChanged)) await onAnnotationsChanged?.()
 
-      // Persist the conversation directly — immediate, conversation-only DB write that
-      // survives refreshOpenNote's re-hydrate (which defeats the debounced autosave).
-      if (onPersistConversation) await onPersistConversation(finalMessages)
-      else onConversationChange(finalMessages)
+      setConversation(finalMessages)
+      await persistCurrentSession(finalMessages)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to run plan')
     } finally {
@@ -581,7 +687,9 @@ export default function AIConversationPanel({
 
   function cancelPlan() {
     if (!pendingPlan) return
-    onConversationChange([...pendingPlan.baseMessages, assistantMsg('_Plan cancelled._')])
+    const cancelled = [...pendingPlan.baseMessages, assistantMsg('_Plan cancelled._')]
+    setConversation(cancelled)
+    void persistCurrentSession(cancelled)
     setPendingPlan(null)
   }
 
@@ -596,9 +704,15 @@ export default function AIConversationPanel({
       timestamp: new Date().toISOString(),
     }
     const withUser = [...priorMessages, userMsg]
-    onConversationChange(withUser)
+    setConversation(withUser)
     setInput('')
     setLoading(true)
+
+    // Auto-create a session on the first message if one doesn't exist yet
+    let sessionId = currentSessionId
+    if (!sessionId && noteId) {
+      sessionId = await autoCreateSession(userContent.trim())
+    }
 
     try {
       const transcript = priorMessages
@@ -636,7 +750,9 @@ export default function AIConversationPanel({
             .map((a) => (a.type === 'respond' ? a.text : ''))
             .filter(Boolean)
             .join('\n\n') || '(no response)'
-        onConversationChange([...withUser, assistantMsg(text)])
+        const responded = [...withUser, assistantMsg(text)]
+        setConversation(responded)
+        void persistCurrentSession(responded, sessionId)
       } else if (planMode) {
         setPendingPlan({ plan, ctx, baseMessages: withUser })
       } else {
@@ -657,7 +773,7 @@ export default function AIConversationPanel({
         if (typeof d.message === 'string') msg = d.message
       }
       setError(msg)
-      onConversationChange(priorMessages)
+      setConversation(priorMessages)
     } finally {
       setLoading(false)
     }
@@ -677,12 +793,10 @@ export default function AIConversationPanel({
     })
   }
 
-  function handleClear() {
-    onConversationChange([])
-  }
-
   function handleDelete(idx: number) {
-    onConversationChange([...conversation.slice(0, idx), ...conversation.slice(idx + 1)])
+    const updated = [...conversation.slice(0, idx), ...conversation.slice(idx + 1)]
+    setConversation(updated)
+    void persistCurrentSession(updated)
   }
 
   if (!isOpen) {
@@ -726,20 +840,90 @@ export default function AIConversationPanel({
           <Sparkles className="w-4 h-4 text-blue-500" />
           AI Assistant
         </div>
-        <div className="flex items-center gap-2">
-          {conversation.length > 0 && (
-            <button
-              onClick={handleClear}
-              className="text-xs text-gray-400 hover:text-red-500 transition-colors"
-            >
-              Clear
-            </button>
-          )}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => void handleNewSession()}
+            className="btn-ghost p-1"
+            title="New session"
+            disabled={!noteId}
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setShowHistory((v) => !v)}
+            className={`btn-ghost p-1 ${showHistory ? 'text-blue-500' : ''}`}
+            title="Session history"
+            disabled={!noteId}
+          >
+            <History className="w-4 h-4" />
+          </button>
           <button onClick={onToggle} className="btn-ghost p-1" title="Close">
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
+
+      {/* Session history panel */}
+      {showHistory && (
+        <div className="absolute inset-x-0 top-[41px] bottom-0 z-20 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-700 flex flex-col overflow-hidden">
+          <div className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide border-b border-gray-100 dark:border-gray-700 shrink-0">
+            Session History
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {sessions.length === 0 && (
+              <div className="px-3 py-6 text-sm text-gray-400 text-center">No sessions yet.</div>
+            )}
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className={`group flex items-center gap-1 px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-50 dark:border-gray-800 ${
+                  session.id === currentSessionId ? 'bg-blue-50 dark:bg-blue-900/20' : ''
+                }`}
+              >
+                {renamingId === session.id ? (
+                  <input
+                    autoFocus
+                    value={renameText}
+                    onChange={(e) => setRenameText(e.target.value)}
+                    onBlur={() => void handleRenameSession(session.id, renameText || session.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleRenameSession(session.id, renameText || session.name)
+                      if (e.key === 'Escape') setRenamingId(null)
+                    }}
+                    className="flex-1 text-sm input py-0.5"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <div className="flex-1 min-w-0" onClick={() => handleOpenSession(session)}>
+                    <div className="text-sm text-gray-800 dark:text-gray-100 truncate">{session.name}</div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      {new Date(session.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </div>
+                  </div>
+                )}
+                {renamingId !== session.id && (
+                  <>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-blue-500 transition-colors shrink-0"
+                      title="Rename"
+                      onClick={(e) => { e.stopPropagation(); setRenamingId(session.id); setRenameText(session.name) }}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                      title="Delete session"
+                      onClick={(e) => { e.stopPropagation(); void handleDeleteSession(session.id) }}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Message list */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">

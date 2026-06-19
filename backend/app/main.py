@@ -21,6 +21,7 @@ from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
 from app.routers import shared as shared_router
+from app.routers import ai_sessions as ai_sessions_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.models import AIProvider
 from sqlmodel import Session, select
@@ -124,6 +125,7 @@ app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users_router.router, prefix="/api/users", tags=["users"])
 app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(annotations.router, prefix="/api/notes", tags=["annotations"])
+app.include_router(ai_sessions_router.router, prefix="/api/notes", tags=["ai-sessions"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(folders.router, prefix="/api/folders", tags=["folders"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
