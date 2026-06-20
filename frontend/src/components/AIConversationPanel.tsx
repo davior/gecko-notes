@@ -78,6 +78,65 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
 
+function safeStringify(v: unknown): string {
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+// Short, human-readable error line shown in the chat. Unwraps the backend's
+// `detail`, which for AI-proxy failures holds the upstream API error body.
+function errorMessage(e: unknown, fallback = 'An error occurred'): string {
+  let msg = e instanceof Error ? e.message : fallback
+  const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail
+  if (typeof detail === 'string') {
+    try {
+      const parsed = JSON.parse(detail) as { error?: { message?: string } }
+      msg = parsed?.error?.message ?? detail
+    } catch { msg = detail }
+  } else if (detail && typeof detail === 'object') {
+    const m = (detail as Record<string, unknown>).message
+    if (typeof m === 'string') msg = m
+  }
+  return msg
+}
+
+// Full error dump for the collapsible "More details" panel: request line, HTTP
+// status, and the complete (pretty-printed) response body — so the cause of a
+// failure is visible in the chat without reopening the browser devtools.
+function formatErrorDetails(e: unknown): string {
+  const ax = e as {
+    message?: string
+    code?: string
+    response?: { status?: number; statusText?: string; data?: unknown }
+    config?: { method?: string; url?: string }
+  }
+  const lines: string[] = []
+  if (ax.config?.url) lines.push(`${(ax.config.method ?? 'POST').toUpperCase()} ${ax.config.url}`)
+
+  if (ax.response) {
+    const { status, statusText, data } = ax.response
+    lines.push(`Status: ${status ?? '?'}${statusText ? ` ${statusText}` : ''}`)
+    // FastAPI wraps the payload in `detail`; for proxy errors that's the raw
+    // upstream response text, often itself JSON — unwrap and parse it so it
+    // reads as structured JSON rather than an escaped one-line string.
+    let body: unknown = data
+    if (data && typeof data === 'object' && 'detail' in (data as Record<string, unknown>)) {
+      body = (data as Record<string, unknown>).detail
+    }
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body) } catch { /* leave as plain string */ }
+    }
+    lines.push('', typeof body === 'string' ? body : safeStringify(body))
+  } else if (ax.message) {
+    lines.push(ax.message)
+    if (ax.code) lines.push(`Code: ${ax.code}`)
+  } else if (e instanceof Error) {
+    lines.push(e.stack ?? e.message)
+  } else {
+    lines.push(String(e))
+  }
+  return lines.join('\n').trim() || 'No additional details available.'
+}
+
 function Spinner() {
   return (
     <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
@@ -184,6 +243,9 @@ export default function AIConversationPanel({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // Full request/response dump for the failed call, shown in a collapsible panel
+  // under the short error message. Empty when there's nothing extra to show.
+  const [errorDetails, setErrorDetails] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -611,7 +673,8 @@ export default function AIConversationPanel({
     try {
       setFrozenContext(await buildPlanContext())
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to freeze context')
+      setError(errorMessage(e, 'Failed to freeze context'))
+      setErrorDetails(formatErrorDetails(e))
     } finally {
       setFreezing(false)
     }
@@ -678,7 +741,8 @@ export default function AIConversationPanel({
       setConversation(finalMessages)
       await persistCurrentSession(finalMessages)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to run plan')
+      setError(errorMessage(e, 'Failed to run plan'))
+      setErrorDetails(formatErrorDetails(e))
     } finally {
       setExecuting(false)
       setPendingPlan(null)
@@ -696,6 +760,7 @@ export default function AIConversationPanel({
   async function handleSend(userContent: string, priorMessages: ConversationMessage[]) {
     if (!userContent.trim() || !aiService || loading || executing || pendingPlan) return
     setError('')
+    setErrorDetails('')
 
     const userMsg: ConversationMessage = {
       id: uid(),
@@ -759,20 +824,8 @@ export default function AIConversationPanel({
         await runPlan(plan, ctx, withUser)
       }
     } catch (e: unknown) {
-      let msg = e instanceof Error ? e.message : 'An error occurred'
-      // Axios errors: the backend wraps the upstream API error body in `detail`
-      const axiosErr = e as { response?: { data?: Record<string, unknown> } }
-      const detail = axiosErr.response?.data?.detail
-      if (typeof detail === 'string') {
-        try {
-          const parsed = JSON.parse(detail) as { error?: { message?: string } }
-          msg = parsed?.error?.message ?? detail
-        } catch { msg = detail }
-      } else if (typeof detail === 'object' && detail !== null) {
-        const d = detail as Record<string, unknown>
-        if (typeof d.message === 'string') msg = d.message
-      }
-      setError(msg)
+      setError(errorMessage(e))
+      setErrorDetails(formatErrorDetails(e))
       // Keep the user's question in the chat (and persist it) even though the
       // request failed — reverting to priorMessages would silently discard what
       // they typed. They can retry by editing the message.
@@ -1083,11 +1136,27 @@ export default function AIConversationPanel({
         )}
 
         {error && (
-          <div className="flex items-center justify-between bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-600 dark:text-red-400">
-            <span>{error}</span>
-            <button onClick={() => setError('')} className="ml-2 hover:text-red-800 dark:hover:text-red-300">
-              <X className="w-3.5 h-3.5" />
-            </button>
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-600 dark:text-red-400">
+            <div className="flex items-start justify-between gap-2">
+              <span className="min-w-0 break-words">{error}</span>
+              <button
+                onClick={() => { setError(''); setErrorDetails('') }}
+                className="shrink-0 hover:text-red-800 dark:hover:text-red-300"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {errorDetails && (
+              <details className="mt-1.5">
+                <summary className="cursor-pointer select-none text-[11px] text-red-500/90 dark:text-red-400/90 hover:text-red-700 dark:hover:text-red-300">
+                  More details…
+                </summary>
+                <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-red-200 dark:border-red-800/60 bg-red-100/50 dark:bg-red-950/40 p-2 font-mono text-[11px] leading-relaxed text-red-700 dark:text-red-300">
+                  {errorDetails}
+                </pre>
+              </details>
+            )}
           </div>
         )}
 
