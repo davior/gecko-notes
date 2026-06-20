@@ -773,7 +773,11 @@ export default function AIConversationPanel({
         if (typeof d.message === 'string') msg = d.message
       }
       setError(msg)
-      setConversation(priorMessages)
+      // Keep the user's question in the chat (and persist it) even though the
+      // request failed — reverting to priorMessages would silently discard what
+      // they typed. They can retry by editing the message.
+      setConversation(withUser)
+      void persistCurrentSession(withUser, sessionId)
     } finally {
       setLoading(false)
     }
