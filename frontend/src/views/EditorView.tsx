@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -16,6 +16,7 @@ import { noteSchema, ChildNoteChainContext } from '@/blocks/childNoteBlock'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
+import MetaFlyout from '@/components/MetaFlyout'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
@@ -141,7 +142,8 @@ export default function EditorView() {
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
   const [generatingMetadata, setGeneratingMetadata] = useState(false)
   const [summary, setSummary] = useState<string>('')
-  const [summaryOpen, setSummaryOpen] = useState(false)
+  // Bumped to pop the tags flyout open (e.g. to surface freshly generated suggestions).
+  const [tagFlyoutSignal, setTagFlyoutSignal] = useState(0)
   const [panelOpen, setPanelOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('ai-panel-open') !== 'false' } catch { return true }
   })
@@ -313,7 +315,6 @@ export default function EditorView() {
         setCategoryId(data.category_id)
         setTags([...data.tags])
         setSummary(data.summary ?? '')
-        setSummaryOpen(false)
         currentNoteContent.current = extractPlainText(parseNoteContent(data.content) as unknown[])
         annotationsApi.list(noteId).then((res) => setAnnotations(res.data)).catch(() => setAnnotations([]))
 
@@ -707,10 +708,12 @@ export default function EditorView() {
       onTagsGenerated(generatedTags)
       if (generatedSummary) {
         setSummary(generatedSummary)
-        setSummaryOpen(true)
         const noteId = createdNoteId.current || latestNoteId.current
         if (noteId) await notesStore.updateNote(noteId, { summary: generatedSummary })
       }
+      // Pop the tags flyout open so the new suggestions are immediately visible.
+      if (generatedTags.some((t) => !tags.includes(t))) setTagFlyoutSignal((n) => n + 1)
+      showToast('Metadata generated')
     } catch {
       showToast('Failed to generate metadata')
     } finally {
@@ -1065,69 +1068,64 @@ export default function EditorView() {
                   <div className="text-xs text-gray-400">Loading categories...</div>
                 )}
 
-                <div className="flex flex-wrap items-center gap-1">
-                  {tags.map((tag) => (
-                    <TagChip key={tag} tag={tag} removable onRemove={removeTag} />
-                  ))}
-                  <input
-                    value={newTagInput}
-                    onChange={(e) => setNewTagInput(e.target.value)}
-                    type="text"
-                    placeholder="Add tag..."
-                    className="text-xs px-2 py-0.5 border border-dashed border-gray-300 rounded-full focus:outline-none focus:border-blue-400 w-24"
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag() } }}
-                  />
-                </div>
-
-                <button
-                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1"
-                  disabled={generatingMetadata}
-                  onClick={handleGenerateMetadata}
-                >
-                  {generatingMetadata ? (
+                {/* Tags — folded into a flyout (icon + count) */}
+                <MetaFlyout
+                  openSignal={tagFlyoutSignal}
+                  title="Tags"
+                  trigger={
                     <>
-                      <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                      </svg>
-                      Generating...
+                      <Tag className="w-3.5 h-3.5" />
+                      <span>{tags.length > 0 ? tags.length : 'Add tags'}</span>
                     </>
-                  ) : '✦ Generate Metadata'}
-                </button>
+                  }
+                >
+                  <div className="p-3 space-y-2">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {tags.length > 0
+                        ? tags.map((tag) => <TagChip key={tag} tag={tag} removable onRemove={removeTag} />)
+                        : <span className="text-xs text-gray-400">No tags yet</span>}
+                    </div>
+                    <input
+                      value={newTagInput}
+                      onChange={(e) => setNewTagInput(e.target.value)}
+                      type="text"
+                      placeholder="Add tag..."
+                      className="w-full text-xs px-2 py-1 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg bg-transparent dark:text-gray-200 focus:outline-none focus:border-blue-400"
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag() } }}
+                    />
+                    {suggestedTags.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 pt-2 border-t border-gray-100 dark:border-gray-700">
+                        <span className="w-full text-xs text-gray-400">Suggestions</span>
+                        {suggestedTags.map((st) => (
+                          <button
+                            key={st}
+                            className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors dark:bg-blue-500/10 dark:text-blue-300 dark:border-blue-500/30"
+                            onClick={() => addSuggestedTag(st)}
+                          >
+                            + #{st}
+                          </button>
+                        ))}
+                        <button className="ml-auto text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" onClick={() => setSuggestedTags([])}>
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </MetaFlyout>
 
-
-              </div>
-
-              {deepgramApiKey && !ttsDocked && (
-                <TTSPlaybackControls
-                  tts={tts}
-                  anchorRef={exportAnchorRef}
-                  onPlayPause={handlePlayPause}
-                  dictation={dictation}
-                  onDictationToggle={dictation.toggleDictation}
-                  onRecordToggle={dictation.toggleRecording}
-                  insertMode={ttsInsertMode}
-                  onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
-                  ttsSpeed={tts.speed}
-                  onTtsSpeedChange={tts.setSpeed}
-                  onToggleDock={() => setTtsDocked(true)}
-                />
-              )}
-
-              {summary && (
-                <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                  <button
-                    className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                    onClick={() => setSummaryOpen((o) => !o)}
+                {/* AI Summary — only when present; it's metadata, kept un-prominent */}
+                {summary && (
+                  <MetaFlyout
+                    title="AI Summary"
+                    panelClassName="w-80"
+                    trigger={
+                      <>
+                        <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+                        <span>Summary</span>
+                      </>
+                    }
                   >
-                    <span className="flex items-center gap-1.5">
-                      <span className="text-purple-500">✦</span>
-                      AI Summary
-                    </span>
-                    <span className="text-gray-400">{summaryOpen ? '▲' : '▼'}</span>
-                  </button>
-                  {summaryOpen && (
-                    <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 leading-relaxed">
+                    <div className="px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
@@ -1148,14 +1146,56 @@ export default function EditorView() {
                         {processCiteTags(summary)}
                       </ReactMarkdown>
                     </div>
-                  )}
-                </div>
-              )}
+                  </MetaFlyout>
+                )}
 
-              <div className="flex gap-4 mt-2 text-xs text-gray-400">
-                {note && <span>Created {formatDate(note.created_at)}</span>}
-                {note && <span>Modified {formatDate(note.modified_at)}</span>}
+                {/* Generate tags + summary with AI */}
+                <button
+                  className="text-xs px-2 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-blue-500/10 dark:hover:text-blue-300"
+                  disabled={generatingMetadata}
+                  onClick={handleGenerateMetadata}
+                  title="Generate tags & summary with AI"
+                >
+                  {generatingMetadata ? (
+                    <>
+                      <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                      <span className="hidden sm:inline">Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Generate</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Timestamps — muted, pushed to the right */}
+                {note && (
+                  <div className="ml-auto flex items-center gap-3 text-xs text-gray-400">
+                    <span>Created {formatDate(note.created_at)}</span>
+                    <span>Modified {formatDate(note.modified_at)}</span>
+                  </div>
+                )}
               </div>
+
+              {deepgramApiKey && !ttsDocked && (
+                <TTSPlaybackControls
+                  tts={tts}
+                  anchorRef={exportAnchorRef}
+                  onPlayPause={handlePlayPause}
+                  dictation={dictation}
+                  onDictationToggle={dictation.toggleDictation}
+                  onRecordToggle={dictation.toggleRecording}
+                  insertMode={ttsInsertMode}
+                  onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
+                  ttsSpeed={tts.speed}
+                  onTtsSpeedChange={tts.setSpeed}
+                  onToggleDock={() => setTtsDocked(true)}
+                />
+              )}
 
               {dictation.interimText && (
                 <p className="text-xs text-gray-400 italic mt-1 px-1 truncate">
@@ -1163,23 +1203,6 @@ export default function EditorView() {
                 </p>
               )}
 
-              {suggestedTags.length > 0 && (
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-gray-400">Suggestions:</span>
-                  {suggestedTags.map((st) => (
-                    <button
-                      key={st}
-                      className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors"
-                      onClick={() => addSuggestedTag(st)}
-                    >
-                      + #{st}
-                    </button>
-                  ))}
-                  <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setSuggestedTags([])}>
-                    Dismiss
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
