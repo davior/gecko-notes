@@ -73,6 +73,38 @@ function normalizeHeading(s: string): string {
     .toLowerCase()
 }
 
+// A block's concatenated top-level inline text — used to match a section by its
+// heading text.
+function blockText(b: unknown): string {
+  const content = (b as Record<string, unknown>)?.content
+  return Array.isArray(content)
+    ? content.map((c) => String((c as Record<string, unknown>)?.text ?? '')).join('')
+    : ''
+}
+
+// Leading ATX heading level of a line ("### x" → 3), or 0 when it isn't one. A
+// run of "#" with no following space+text (e.g. "#tag", "###") is not a heading.
+function atxLevel(text: string): number {
+  const m = /^(#{1,6})\s+\S/.exec(text.trim())
+  return m ? m[1].length : 0
+}
+
+// The {level, text} of a block that acts as a section heading, or null if it
+// isn't one. A section heading is normally a real `heading` block (its level lives
+// in props), but a marker can also survive as a literal Markdown "### Title" line
+// inside a non-heading block — e.g. Markdown pasted into a paragraph that was never
+// parsed into a heading. Recognising both forms means edit_section can target a
+// literal "###" line instead of silently appending a duplicate section.
+function sectionHeading(b: unknown): { level: number; text: string } | null {
+  const text = blockText(b)
+  if ((b as Record<string, unknown>)?.type === 'heading') {
+    const level = Number(((b as Record<string, unknown>)?.props as Record<string, unknown> | undefined)?.level ?? 1)
+    return { level, text }
+  }
+  const level = atxLevel(text)
+  return level ? { level, text } : null
+}
+
 // Embed blocks (childNote / noteReference) can't be expressed in Markdown, so a
 // section rewrite from model Markdown can't reproduce them — collect them so
 // edit_section can re-insert them instead of silently dropping them.
@@ -166,26 +198,19 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         const blocks = parseBlocks(cur.data.content)
         const newBlocks = await mdToBlocks(action.content)
 
-        const isHeading = (b: unknown) => (b as Record<string, unknown>)?.type === 'heading'
-        const headingLevel = (b: unknown) =>
-          Number(((b as Record<string, unknown>)?.props as Record<string, unknown> | undefined)?.level ?? 1)
-        const headingText = (b: unknown) => {
-          const content = (b as Record<string, unknown>)?.content
-          return Array.isArray(content)
-            ? content.map((c) => String((c as Record<string, unknown>)?.text ?? '')).join('')
-            : ''
-        }
-
         // Find the section heading: prefer an exact (case-insensitive) match, else
         // substring. Both sides are normalized so a Markdown-style section value
-        // ("## Chapter 1") still matches the stored heading text ("Chapter 1").
+        // ("## Chapter 1") still matches the stored heading text ("Chapter 1"), and
+        // a section stored as a literal "###" line (not a real heading block) is
+        // matched too — sectionHeading() recognises both forms.
         const target = normalizeHeading(action.section)
-        let startIdx = target
-          ? blocks.findIndex((b) => isHeading(b) && normalizeHeading(headingText(b)) === target)
-          : -1
-        if (startIdx === -1 && target) {
-          startIdx = blocks.findIndex((b) => isHeading(b) && normalizeHeading(headingText(b)).includes(target))
-        }
+        const matchHeading = (pred: (h: string) => boolean) =>
+          blocks.findIndex((b) => {
+            const info = sectionHeading(b)
+            return info ? pred(normalizeHeading(info.text)) : false
+          })
+        let startIdx = target ? matchHeading((h) => h === target) : -1
+        if (startIdx === -1 && target) startIdx = matchHeading((h) => h.includes(target))
 
         if (startIdx === -1) {
           // Section not found — append it as a new section rather than failing.
@@ -202,10 +227,11 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         }
 
         // The section runs until the next heading of the same-or-higher level (or EOF).
-        const level = headingLevel(blocks[startIdx])
+        const level = sectionHeading(blocks[startIdx])?.level ?? 1
         let endIdx = blocks.length
         for (let i = startIdx + 1; i < blocks.length; i++) {
-          if (isHeading(blocks[i]) && headingLevel(blocks[i]) <= level) { endIdx = i; break }
+          const info = sectionHeading(blocks[i])
+          if (info && info.level <= level) { endIdx = i; break }
         }
 
         // Embedded child-notes/references can't be expressed in Markdown, so the
@@ -362,16 +388,12 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         const afterSection = action.insertAfterSection ? normalizeHeading(action.insertAfterSection) : ''
         if (afterSection) {
           for (let i = 0; i < blocks.length; i++) {
-            const block = blocks[i] as Record<string, unknown>
-            // Check if this is a heading block matching the section name. Normalize
-            // both sides so a Markdown-style heading ("## Chapter 1") still matches.
-            if (block.type === 'heading' && block.content) {
-              const content = block.content as Array<Record<string, unknown>>
-              const textContent = content.map((c) => c.text ?? '').join('')
-              if (normalizeHeading(textContent).includes(afterSection)) {
-                insertIndex = i + 1
-                break
-              }
+            // Match a real heading block or a literal "###" line, normalizing both
+            // sides so a Markdown-style heading ("## Chapter 1") still matches.
+            const info = sectionHeading(blocks[i])
+            if (info && normalizeHeading(info.text).includes(afterSection)) {
+              insertIndex = i + 1
+              break
             }
           }
         }
