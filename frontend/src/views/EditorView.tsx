@@ -687,6 +687,16 @@ export default function EditorView() {
 
   function removeTag(tag: string) { setTags((t) => t.filter((x) => x !== tag)) }
 
+  // Copy the bare tag name to the clipboard (clicking a chip in the tags flyout).
+  async function copyTag(tag: string) {
+    try {
+      await navigator.clipboard.writeText(tag)
+      showToast(`Copied #${tag}`)
+    } catch {
+      showToast('Could not copy tag')
+    }
+  }
+
   function addSuggestedTag(tag: string) {
     if (!tags.includes(tag)) setTags((t) => [...t, tag])
     setSuggestedTags((s) => s.filter((t) => t !== tag))
@@ -701,11 +711,14 @@ export default function EditorView() {
     setGeneratingMetadata(true)
     try {
       const content = extractPlainText(editor?.document as unknown[] ?? [])
-      const { tags: generatedTags, summary: generatedSummary } = await settingsStore.aiService.generateMetadata(
-        `${title}\n\n${content}`,
+      const isUntitled = !title.trim() || title.trim().toLowerCase() === 'untitled'
+      const { tags: generatedTags, summary: generatedSummary, title: generatedTitle } = await settingsStore.aiService.generateMetadata(
+        isUntitled ? content : `${title}\n\n${content}`,
         settingsStore.summaryPrompt,
+        isUntitled,
       )
       onTagsGenerated(generatedTags)
+      if (isUntitled && generatedTitle.trim()) setTitle(generatedTitle.trim())
       if (generatedSummary) {
         setSummary(generatedSummary)
         const noteId = createdNoteId.current || latestNoteId.current
@@ -1082,7 +1095,7 @@ export default function EditorView() {
                   <div className="p-3 space-y-2">
                     <div className="flex flex-wrap items-center gap-1">
                       {tags.length > 0
-                        ? tags.map((tag) => <TagChip key={tag} tag={tag} removable onRemove={removeTag} />)
+                        ? tags.map((tag) => <TagChip key={tag} tag={tag} removable onRemove={removeTag} onClick={copyTag} />)
                         : <span className="text-xs text-gray-400">No tags yet</span>}
                     </div>
                     <input
