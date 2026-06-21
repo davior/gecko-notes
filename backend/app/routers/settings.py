@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import logging
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta
@@ -20,6 +21,8 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _get_user_id(request: Request) -> str:
@@ -385,6 +388,48 @@ def activate_system_prompt(prompt_id: str, request: Request, session: Session = 
 
 # ─── AI Provider Proxies ─────────────────────────────────────────────────────
 
+async def _post_upstream(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    json_body: Dict[str, Any],
+    timeout: float,
+    provider_label: str,
+) -> httpx.Response:
+    """POST to an upstream AI provider, translating connection-level failures
+    into informative 5xx errors.
+
+    Without this, a network / DNS / TLS / timeout failure raises an uncaught
+    exception that FastAPI returns as an opaque ``500 Internal Server Error`` with
+    no body — so the only way to learn the cause was to read the server logs. We
+    surface the exception type and message in ``detail`` (which the client renders
+    in its error panel) while still logging the full traceback server-side. A
+    real HTTP error response from the provider is NOT handled here; the caller
+    forwards that (with the upstream body) via ``response.is_success``.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.post(url, headers=headers, json=json_body)
+    except httpx.TimeoutException as e:
+        logger.exception("Timed out contacting %s", provider_label)
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "upstream_timeout",
+                "message": f"Timed out after {timeout:.0f}s contacting {provider_label} ({type(e).__name__}).",
+            },
+        )
+    except httpx.RequestError as e:
+        logger.exception("Failed to reach %s", provider_label)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "upstream_unreachable",
+                "message": f"Could not reach {provider_label}: {type(e).__name__}: {e}",
+            },
+        )
+
+
 class AnthropicProxyRequest(BaseModel):
     provider_id: str
     model: str
@@ -431,17 +476,18 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     # Increase timeout when web search is enabled — searches add latency.
     timeout = 120.0 if uses_web_search else 60.0
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": decrypt_api_key(provider.api_key),
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": beta_flags,
-                "content-type": "application/json",
-            },
-            json=body,
-        )
+    response = await _post_upstream(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": decrypt_api_key(provider.api_key),
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": beta_flags,
+            "content-type": "application/json",
+        },
+        json_body=body,
+        timeout=timeout,
+        provider_label="Anthropic",
+    )
 
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -487,15 +533,16 @@ async def proxy_openai(
     if payload.temperature is not None:
         body["temperature"] = payload.temperature
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{base}/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
+    response = await _post_upstream(
+        f"{base}/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
+            "content-type": "application/json",
+        },
+        json_body=body,
+        timeout=60.0,
+        provider_label="the OpenAI-compatible API",
+    )
 
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -540,12 +587,13 @@ async def proxy_ollama(
     if payload.temperature is not None:
         body["options"] = {"temperature": payload.temperature}
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{base}/api/chat",
-            headers={"content-type": "application/json"},
-            json=body,
-        )
+    response = await _post_upstream(
+        f"{base}/api/chat",
+        headers={"content-type": "application/json"},
+        json_body=body,
+        timeout=60.0,
+        provider_label="Ollama",
+    )
 
     if not response.is_success:
         raise HTTPException(status_code=response.status_code, detail=response.text)
