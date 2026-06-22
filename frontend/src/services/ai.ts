@@ -18,6 +18,7 @@ export interface AICompleteOptions {
 }
 
 export interface NoteMetadata {
+  title: string
   tags: string[]
   summary: string
 }
@@ -26,7 +27,7 @@ export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
   generateTags(noteContent: string): Promise<string[]>
   generateSummary(noteContent: string, prompt: string): Promise<string>
-  generateMetadata(noteContent: string, summaryPrompt: string): Promise<NoteMetadata>
+  generateMetadata(noteContent: string, summaryPrompt: string, includeTitle?: boolean): Promise<NoteMetadata>
   summarise(noteContent: string): Promise<string>
   improveWriting(text: string): Promise<string>
   continueWriting(context: string): Promise<string>
@@ -49,9 +50,23 @@ function parseMetadataFromAI(raw: string): NoteMetadata {
   const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
   const parsed = JSON.parse(cleaned)
   return {
+    title: typeof parsed.title === 'string' ? parsed.title : '',
     tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
     summary: typeof parsed.summary === 'string' ? parsed.summary : '',
   }
+}
+
+// Build the system prompt for generateMetadata. When includeTitle is set it also
+// asks for a concise title (used when the note is still untitled). Shared by all
+// providers to avoid triplicating the instruction text.
+function buildMetadataSystem(summaryPrompt: string, includeTitle: boolean): string {
+  const titleInstruction = includeTitle
+    ? '\nAlso generate a concise title for this note (at most 8 words, plain text, no surrounding quotes).'
+    : ''
+  const fields = includeTitle
+    ? '"title" (string), "summary" (string) and "tags" (string array)'
+    : '"summary" (string) and "tags" (string array)'
+  return `${summaryPrompt}\n\nAlso generate 3–8 short lowercase tags for this note.${titleInstruction}\n\nReturn a JSON object with fields ${fields}. Return ONLY the JSON, no other text.`
 }
 
 export const DEFAULT_SUMMARY_PROMPT = `You are a knowledge indexing assistant. Create a dense, factual summary of the following note optimised for use in a Retrieval-Augmented Generation (RAG) system.
@@ -160,13 +175,13 @@ class AnthropicProvider implements AIService {
     return this.complete(noteContent, { systemPrompt: prompt })
   }
 
-  async generateMetadata(noteContent: string, summaryPrompt: string): Promise<NoteMetadata> {
-    const system = `${summaryPrompt}\n\nAlso generate 3–8 short lowercase tags for this note.\n\nReturn a JSON object with fields "summary" (string) and "tags" (string array). Return ONLY the JSON, no other text.`
+  async generateMetadata(noteContent: string, summaryPrompt: string, includeTitle = false): Promise<NoteMetadata> {
+    const system = buildMetadataSystem(summaryPrompt, includeTitle)
     const result = await this.complete(noteContent, { systemPrompt: system })
     try {
       return parseMetadataFromAI(result)
     } catch {
-      return { tags: [], summary: '' }
+      return { title: '', tags: [], summary: '' }
     }
   }
 
@@ -257,13 +272,13 @@ class OpenAIProvider implements AIService {
     return this.complete(noteContent, { systemPrompt: prompt })
   }
 
-  async generateMetadata(noteContent: string, summaryPrompt: string): Promise<NoteMetadata> {
-    const system = `${summaryPrompt}\n\nAlso generate 3–8 short lowercase tags for this note.\n\nReturn a JSON object with fields "summary" (string) and "tags" (string array). Return ONLY the JSON, no other text.`
+  async generateMetadata(noteContent: string, summaryPrompt: string, includeTitle = false): Promise<NoteMetadata> {
+    const system = buildMetadataSystem(summaryPrompt, includeTitle)
     const result = await this.complete(noteContent, { systemPrompt: system })
     try {
       return parseMetadataFromAI(result)
     } catch {
-      return { tags: [], summary: '' }
+      return { title: '', tags: [], summary: '' }
     }
   }
 
@@ -353,13 +368,13 @@ class OllamaProvider implements AIService {
     return this.complete(noteContent, { systemPrompt: prompt })
   }
 
-  async generateMetadata(noteContent: string, summaryPrompt: string): Promise<NoteMetadata> {
-    const system = `${summaryPrompt}\n\nAlso generate 3–8 short lowercase tags for this note.\n\nReturn a JSON object with fields "summary" (string) and "tags" (string array). Return ONLY the JSON, no other text.`
+  async generateMetadata(noteContent: string, summaryPrompt: string, includeTitle = false): Promise<NoteMetadata> {
+    const system = buildMetadataSystem(summaryPrompt, includeTitle)
     const result = await this.complete(noteContent, { systemPrompt: system })
     try {
       return parseMetadataFromAI(result)
     } catch {
-      return { tags: [], summary: '' }
+      return { title: '', tags: [], summary: '' }
     }
   }
 
