@@ -34,6 +34,17 @@ export interface ConversationMessage {
 
 type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
 
+// When replaying the conversation transcript to the planner, strip the note id out
+// of `/notes/<id>` links (keeping the visible title). Prior result summaries embed
+// these links, and without this the model can latch onto a real note id from an
+// earlier turn that isn't in the current context and target the wrong note. Only
+// the copy sent to the model is sanitized — the on-screen messages keep their links.
+function stripNoteLinks(text: string): string {
+  return text
+    .replace(/\[([^\]]*)\]\(\/notes\/[^)]*\)/g, '$1')
+    .replace(/\/notes\/[0-9a-fA-F-]{8,}/g, 'a note')
+}
+
 // Everything needed to generate and execute a plan for the current context.
 // Cached when the context is frozen so repeated requests reuse the same (cached)
 // system prompt and target-id sets.
@@ -781,7 +792,7 @@ export default function AIConversationPanel({
 
     try {
       const transcript = priorMessages
-        .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`)
+        .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${stripNoteLinks(m.content)}`)
         .join('\n\n')
       const fullPrompt = transcript
         ? `${transcript}\n\nHuman: ${userContent.trim()}`

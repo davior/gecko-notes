@@ -137,6 +137,16 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
     const mapped = refMap.get(idOrRef)
     if (mapped) return { id: mapped }
     if (ctx.validNoteIds.has(idOrRef)) return { id: idOrRef }
+    // Explicit sentinel for the open note.
+    if (/^(current|this|this_?note)$/i.test(idOrRef) && ctx.currentNoteId) return { id: ctx.currentNoteId }
+    // Tolerant fallback: when exactly one note is in context, an unrecognised id
+    // (e.g. a stale id the model copied from earlier in the conversation transcript)
+    // can only sensibly mean that note — resolve to it rather than failing. Ambiguous
+    // multi-note contexts still error so we never silently target the wrong note.
+    if (ctx.validNoteIds.size === 1) {
+      const only = ctx.validNoteIds.values().next().value
+      if (only) return { id: only }
+    }
     return { error: `Note "${idOrRef}" is not in context — skipped.` }
   }
 
