@@ -69,6 +69,16 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Per-provider output-token cap. Backfill the higher Anthropic default the
+        # form ships so existing Anthropic providers aren't capped lower than before.
+        # The UPDATE rides the ALTER (which throws once the column exists), so it
+        # runs exactly once and never overwrites a value the user later sets.
+        try:
+            conn.execute(text("ALTER TABLE aiprovider ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 16384"))
+            conn.execute(text("UPDATE aiprovider SET max_tokens = 64000 WHERE provider_type = 'anthropic'"))
+            conn.commit()
+        except Exception:
+            pass
         # Assign existing AI providers to first admin (admin-only migration)
         try:
             admin = conn.execute(text(

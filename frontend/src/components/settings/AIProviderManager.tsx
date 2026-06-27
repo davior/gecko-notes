@@ -4,9 +4,13 @@ import { useSettingsStore } from '@/stores/settings'
 import { settingsApi, type AIProvider } from '@/api/settings'
 
 type ProviderType = 'anthropic' | 'openai' | 'ollama' | 'custom'
-interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; enabled: boolean }
+interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; enabled: boolean }
 
-const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', enabled: true })
+// Sensible per-type output-token defaults. Anthropic 4.x models support 64000
+// (Opus up to 128000); most OpenAI-compatible models cap output near 16384.
+const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, openai: 16384, ollama: 16384, custom: 16384 }
+
+const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, enabled: true })
 
 const modelPlaceholders: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', ollama: 'llama3.2', custom: 'model-name',
@@ -42,7 +46,7 @@ export default function AIProviderManager() {
 
   function startEdit(p: AIProvider) {
     setEditingId(p.id)
-    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, enabled: p.enabled })
+    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], enabled: p.enabled })
     setTestResult(null); setShowForm(true)
   }
 
@@ -51,7 +55,8 @@ export default function AIProviderManager() {
   async function saveForm() {
     setSaving(true)
     try {
-      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, enabled: form.enabled }
+      const max_tokens = Math.min(200000, Math.max(1, Math.round(form.max_tokens) || defaultMaxTokens[form.provider_type]))
+      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, enabled: form.enabled }
       if (editingId) { await updateAIProvider(editingId, payload) } else { await createAIProvider(payload) }
       setShowForm(false); setEditingId(null); showToast('Provider saved', false)
     } catch { showToast('Failed to save provider', true) }
@@ -105,7 +110,7 @@ export default function AIProviderManager() {
             </div>
             <div>
               <label className="label">Provider Type</label>
-              <select value={f.provider_type} onChange={(e) => setF({ provider_type: e.target.value as ProviderType })} className="input">
+              <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t] }) }} className="input">
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
                 <option value="ollama">Ollama</option>
@@ -133,6 +138,16 @@ export default function AIProviderManager() {
             <div>
               <label className="label">Model</label>
               <input value={f.model} onChange={(e) => setF({ model: e.target.value })} type="text" className="input" placeholder={modelPlaceholders[f.provider_type] ?? 'model-name'} />
+            </div>
+            <div>
+              <label className="label">Max Output Tokens</label>
+              <input
+                value={f.max_tokens}
+                onChange={(e) => setF({ max_tokens: e.target.value === '' ? 0 : parseInt(e.target.value, 10) || 0 })}
+                type="number" min={1} max={200000} step={1024} className="input"
+                placeholder={String(defaultMaxTokens[f.provider_type])}
+              />
+              <p className="text-xs text-gray-400 mt-1">Caps the response length, not your note. Keep within the model's ceiling (e.g. 64000 for Claude Sonnet/Haiku, 128000 for Opus) — too high is rejected.</p>
             </div>
             <div className="flex items-center gap-2">
               <input id="enabled-check" type="checkbox" checked={f.enabled} onChange={(e) => setF({ enabled: e.target.checked })} className="rounded" />

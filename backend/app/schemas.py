@@ -1,6 +1,6 @@
 from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
 from datetime import datetime, timezone
-from pydantic import BaseModel, field_validator, PlainSerializer
+from pydantic import BaseModel, Field, field_validator, PlainSerializer
 
 T = TypeVar("T")
 
@@ -247,6 +247,7 @@ class AIProviderCreate(BaseModel):
     api_key: str = ''
     base_url: Optional[str] = None
     model: str
+    max_tokens: int = Field(default=16384, ge=1, le=200000)
     enabled: bool = True
     is_active: bool = False
 
@@ -257,6 +258,7 @@ class AIProviderUpdate(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     model: Optional[str] = None
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=200000)
     enabled: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -268,6 +270,7 @@ class AIProviderRead(BaseModel):
     api_key: str = ""
     base_url: Optional[str]
     model: str
+    max_tokens: int = 16384
     enabled: bool
     is_active: bool
 

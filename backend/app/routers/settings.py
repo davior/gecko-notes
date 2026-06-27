@@ -151,6 +151,7 @@ def create_ai_provider(payload: AIProviderCreate, request: Request, session: Ses
         api_key=encrypt_api_key(payload.api_key) if payload.api_key else "",
         base_url=payload.base_url,
         model=payload.model,
+        max_tokens=payload.max_tokens,
         enabled=payload.enabled,
         is_active=payload.is_active,
         user_id=user_id,
@@ -178,7 +179,7 @@ def update_ai_provider(
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
-    for field in ["name", "provider_type", "base_url", "model", "enabled", "is_active"]:
+    for field in ["name", "provider_type", "base_url", "model", "max_tokens", "enabled", "is_active"]:
         val = getattr(payload, field, None)
         if val is not None:
             setattr(provider, field, val)
@@ -687,6 +688,7 @@ class OllamaProxyRequest(BaseModel):
     model: str
     messages: List[Dict[str, Any]]
     temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 
 @router.post("/ai-providers/proxy/ollama")
@@ -708,8 +710,14 @@ async def proxy_ollama(
         "messages": payload.messages,
         "stream": False,
     }
+    # Ollama's output cap is options.num_predict (its equivalent of max_tokens).
+    options: Dict[str, Any] = {}
     if payload.temperature is not None:
-        body["options"] = {"temperature": payload.temperature}
+        options["temperature"] = payload.temperature
+    if payload.max_tokens is not None:
+        options["num_predict"] = payload.max_tokens
+    if options:
+        body["options"] = options
 
     response = await _post_upstream(
         f"{base}/api/chat",
