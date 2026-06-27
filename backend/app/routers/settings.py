@@ -430,6 +430,133 @@ async def _post_upstream(
         )
 
 
+async def _stream_anthropic_message(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    json_body: Dict[str, Any],
+    read_timeout: float,
+) -> Dict[str, Any]:
+    """Stream a Messages API response from Anthropic and reassemble the final
+    message into the same dict shape the non-streaming endpoint returns.
+
+    Why stream instead of a single blocking POST: a non-streaming request returns
+    no bytes until the *entire* completion is generated, so the read timeout has
+    to cover total generation time. A large note (tens of thousands of tokens of
+    system-prompt context) plus web-search latency (each server-side search pauses
+    generation) routinely pushes that past 120s, and the request fails with a
+    ReadTimeout 504 even though it would have eventually succeeded. Streaming keeps
+    a steady flow of SSE events (text deltas and periodic pings), so ``read_timeout``
+    bounds the gap *between* events — always small — rather than the whole request.
+
+    We accumulate the events back into the message dict so callers (and the
+    frontend) see the identical response they got from the blocking path.
+    """
+    body = {**json_body, "stream": True}
+    timeout = httpx.Timeout(read_timeout, connect=10.0, write=30.0, pool=10.0)
+
+    message: Dict[str, Any] = {}
+    json_buffers: Dict[int, str] = {}  # index -> accumulated input_json_delta text
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if not response.is_success:
+                    # Read the (small) error body so we can forward it like the
+                    # blocking path does — without aread() the body isn't loaded.
+                    await response.aread()
+                    raise HTTPException(status_code=response.status_code, detail=response.text)
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:"):].strip()
+                    if not payload:
+                        continue
+                    event = json.loads(payload)
+                    etype = event.get("type")
+
+                    if etype == "message_start":
+                        message = event.get("message", {}) or {}
+                        message.setdefault("content", [])
+                    elif etype == "content_block_start":
+                        idx = event.get("index", 0)
+                        block = event.get("content_block", {}) or {}
+                        content = message.setdefault("content", [])
+                        while len(content) <= idx:
+                            content.append({})
+                        content[idx] = block
+                    elif etype == "content_block_delta":
+                        idx = event.get("index", 0)
+                        content = message.setdefault("content", [])
+                        if idx >= len(content):
+                            continue
+                        block = content[idx]
+                        delta = event.get("delta", {}) or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            block["text"] = (block.get("text") or "") + delta.get("text", "")
+                        elif dtype == "input_json_delta":
+                            json_buffers[idx] = json_buffers.get(idx, "") + delta.get("partial_json", "")
+                        elif dtype == "thinking_delta":
+                            block["thinking"] = (block.get("thinking") or "") + delta.get("thinking", "")
+                        elif dtype == "signature_delta":
+                            block["signature"] = (block.get("signature") or "") + delta.get("signature", "")
+                        elif dtype == "citations_delta":
+                            citation = delta.get("citation")
+                            if citation is not None:
+                                block.setdefault("citations", []).append(citation)
+                    elif etype == "content_block_stop":
+                        idx = event.get("index", 0)
+                        raw = json_buffers.pop(idx, None)
+                        if raw is not None:
+                            content = message.get("content", [])
+                            if idx < len(content):
+                                try:
+                                    content[idx]["input"] = json.loads(raw) if raw else {}
+                                except json.JSONDecodeError:
+                                    content[idx]["input"] = {}
+                    elif etype == "message_delta":
+                        delta = event.get("delta", {}) or {}
+                        message.update(delta)  # stop_reason, stop_sequence
+                        usage = event.get("usage")
+                        if usage:
+                            message.setdefault("usage", {}).update(usage)
+                    elif etype == "message_stop":
+                        break
+                    elif etype == "error":
+                        err = event.get("error", {}) or {}
+                        raise HTTPException(
+                            status_code=502,
+                            detail={
+                                "code": "upstream_error",
+                                "message": f"Anthropic stream error: {err.get('type', 'error')}: {err.get('message', '')}",
+                            },
+                        )
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as e:
+        logger.exception("Timed out streaming from Anthropic")
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "upstream_timeout",
+                "message": f"Anthropic stopped sending data for {read_timeout:.0f}s ({type(e).__name__}).",
+            },
+        )
+    except httpx.RequestError as e:
+        logger.exception("Failed to reach Anthropic")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "upstream_unreachable",
+                "message": f"Could not reach Anthropic: {type(e).__name__}: {e}",
+            },
+        )
+
+    return message
+
+
 class AnthropicProxyRequest(BaseModel):
     provider_id: str
     model: str
@@ -473,10 +600,13 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     if uses_web_search:
         beta_flags += ",web-search-2025-03-05"
 
-    # Increase timeout when web search is enabled — searches add latency.
-    timeout = 120.0 if uses_web_search else 60.0
-
-    response = await _post_upstream(
+    # Stream the completion rather than blocking on one big POST: a large note plus
+    # web-search latency easily exceeds a fixed total timeout, and a non-streaming
+    # request returns nothing until it's fully generated, so it fails with a
+    # ReadTimeout. Streaming keeps SSE events flowing (deltas + pings), so the
+    # timeout only bounds the gap between events. We reassemble the final message
+    # so the response shape is unchanged for the caller.
+    data = await _stream_anthropic_message(
         "https://api.anthropic.com/v1/messages",
         headers={
             "x-api-key": decrypt_api_key(provider.api_key),
@@ -485,14 +615,8 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
             "content-type": "application/json",
         },
         json_body=body,
-        timeout=timeout,
-        provider_label="Anthropic",
+        read_timeout=120.0,
     )
-
-    if not response.is_success:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-
-    data = response.json()
     try:
         usage = data.get("usage") or {}
         tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
