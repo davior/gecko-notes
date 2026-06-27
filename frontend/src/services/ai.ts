@@ -114,7 +114,12 @@ class AnthropicProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 16384,
+      // Caps the *response* length (output tokens), not the note/input. 64000 is
+      // the Sonnet 4.x / Haiku 4.x ceiling (Opus supports up to 128000). Safe to
+      // set this high only because the proxy streams — before streaming, a larger
+      // cap made the upstream read timeout worse. Older models (≤ Claude 3.x) cap
+      // lower and may reject this with a 400.
+      max_tokens: 64000,
       messages,
     }
     if (systemPrompt) {
