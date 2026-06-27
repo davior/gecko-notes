@@ -83,7 +83,7 @@ Return only the summary text, no preamble or explanation.`
 // ─── Anthropic Provider ───────────────────────────────────────────────────────
 
 class AnthropicProvider implements AIService {
-  constructor(private config: { id: string; model: string }) {}
+  constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill, attachments, cacheSystem, enableWebSearch } = options
@@ -114,7 +114,12 @@ class AnthropicProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 16384,
+      // Caps the *response* length (output tokens), not the note/input. Configured
+      // per provider (Settings → AI Providers). Safe to set high because the proxy
+      // streams — before streaming, a larger cap made the upstream read timeout
+      // worse. Keep it within the model's output ceiling (e.g. 64000 for Sonnet/
+      // Haiku, 128000 for Opus) or Anthropic rejects the request with a 400.
+      max_tokens: this.config.maxTokens,
       messages,
     }
     if (systemPrompt) {
@@ -219,7 +224,7 @@ class AnthropicProvider implements AIService {
 // ─── OpenAI / Custom OpenAI-compatible Provider ───────────────────────────────
 
 class OpenAIProvider implements AIService {
-  constructor(private config: { id: string; model: string }) {}
+  constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill, attachments } = options
@@ -244,7 +249,7 @@ class OpenAIProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
-      max_tokens: 16384,
+      max_tokens: this.config.maxTokens,
       messages,
     }
     if (temperature !== undefined) body.temperature = temperature
@@ -316,7 +321,7 @@ class OpenAIProvider implements AIService {
 // ─── Ollama Provider ──────────────────────────────────────────────────────────
 
 class OllamaProvider implements AIService {
-  constructor(private config: { id: string; model: string }) {}
+  constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
     const { systemPrompt, temperature, prefill, attachments } = options
@@ -341,6 +346,7 @@ class OllamaProvider implements AIService {
     const body: Record<string, unknown> = {
       provider_id: this.config.id,
       model: this.config.model,
+      max_tokens: this.config.maxTokens,
       messages,
     }
     if (temperature !== undefined) body.temperature = temperature
@@ -408,17 +414,20 @@ export function createAIService(provider: AIProvider): AIService {
       return new AnthropicProvider({
         id: provider.id,
         model: provider.model,
+        maxTokens: provider.max_tokens ?? 16384,
       })
     case 'openai':
     case 'custom':
       return new OpenAIProvider({
         id: provider.id,
         model: provider.model,
+        maxTokens: provider.max_tokens ?? 16384,
       })
     case 'ollama':
       return new OllamaProvider({
         id: provider.id,
         model: provider.model,
+        maxTokens: provider.max_tokens ?? 16384,
       })
     default:
       throw new Error(`Unknown provider type: ${provider.provider_type}`)

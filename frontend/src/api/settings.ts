@@ -76,6 +76,7 @@ export interface AIProvider {
   api_key: string
   base_url: string | null
   model: string
+  max_tokens: number
   enabled: boolean
   is_active: boolean
 }
@@ -86,6 +87,7 @@ export interface AIProviderCreate {
   api_key?: string
   base_url?: string | null
   model: string
+  max_tokens?: number
   enabled?: boolean
   is_active?: boolean
 }
@@ -96,6 +98,7 @@ export interface AIProviderUpdate {
   api_key?: string
   base_url?: string | null
   model?: string
+  max_tokens?: number
   enabled?: boolean
   is_active?: boolean
 }

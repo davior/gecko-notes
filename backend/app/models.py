@@ -81,6 +81,7 @@ class AIProvider(SQLModel, table=True):
     api_key: str = Field(default='')
     base_url: Optional[str] = None
     model: str
+    max_tokens: int = Field(default=16384)  # cap on the model's response (output) length
     enabled: bool = True
     is_active: bool = False
     user_id: Optional[str] = Field(default=None, index=True)
