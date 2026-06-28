@@ -31,8 +31,12 @@ export interface ConversationRequest {
   instructions: string          // static system block (cached every request)
   referenceBlock?: string       // id/title lists + other notes' bodies (cached; stable per conversation)
   history: ConversationTurn[]   // prior turns; the latest is the rolling cache breakpoint
-  currentNoteText?: string      // live body of the open note — volatile, sent last, uncached
-  userRequest: string           // the new user message — volatile, sent last
+  currentNoteText?: string      // live body of the open note — cached behind its own breakpoint
+  userRequest: string           // the new user message — volatile, sent after the note breakpoint
+  // Extra turns appended AFTER the volatile note/request message, with no breakpoint — used by
+  // the per-document generation phase to add [assistant: <plan>, user: <step instruction>] while
+  // reusing the planning call's cached prefix verbatim. Planning calls pass none.
+  followups?: ConversationTurn[]
   attachments?: FileAttachment[]
   temperature?: number
   enableWebSearch?: boolean
@@ -74,27 +78,23 @@ function attachmentToBlock(a: FileAttachment): AnthropicContentBlock {
     : { type: 'document', source: { type: 'base64', media_type: a.mimeType, data: a.data }, title: a.name }
 }
 
-// Label for the open note's live body so the model treats the latest user message as
-// authoritative current context. Must match the wording referenced in PLAN_INSTRUCTIONS.
-function buildCurrentNoteMessage(currentNoteText: string | undefined, userRequest: string): string {
-  return currentNoteText
-    ? `Current note — live, reflects the latest edits:\n\n${currentNoteText}\n\n---\n\n${userRequest}`
-    : userRequest
-}
-
 // OpenAI/Ollama have no prompt cache, so flatten a ConversationRequest back into the
 // single system-string + transcript-prompt shape complete() already handles. This keeps
 // their behaviour identical to before this change (only Anthropic gets cache breakpoints).
+// Generation follow-ups (the plan + step instruction) are appended after the request as
+// Human/Assistant lines. The note's "live" label is in the Anthropic path; here the note
+// rides in the system string (no caching to optimise for).
 function flattenConversation(req: ConversationRequest): { prompt: string; options: AICompleteOptions } {
   const contextParts = [
     req.referenceBlock,
     req.currentNoteText ? `Current note:\n\n${req.currentNoteText}` : '',
   ].filter(Boolean)
   const systemPrompt = [req.instructions, ...contextParts].join('\n\n')
-  const transcript = req.history
-    .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`)
-    .join('\n\n')
-  const prompt = transcript ? `${transcript}\n\nHuman: ${req.userRequest}` : req.userRequest
+  const line = (m: ConversationTurn) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`
+  const hasExtra = req.history.length > 0 || (req.followups?.length ?? 0) > 0
+  const prompt = hasExtra
+    ? [...req.history.map(line), `Human: ${req.userRequest}`, ...(req.followups ?? []).map(line)].join('\n\n')
+    : req.userRequest
   return { prompt, options: { systemPrompt, attachments: req.attachments, temperature: req.temperature } }
 }
 
@@ -196,7 +196,7 @@ class AnthropicProvider implements AIService {
   // The volatile final message has no breakpoint, so editing the open note or asking a
   // new question never invalidates the cached instructions/reference/history prefix.
   async completeConversation(req: ConversationRequest): Promise<string> {
-    const { instructions, referenceBlock, currentNoteText, history, userRequest, attachments, temperature, enableWebSearch } = req
+    const { instructions, referenceBlock, currentNoteText, history, userRequest, followups, attachments, temperature, enableWebSearch } = req
 
     const system: { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[] = [
       { type: 'text', text: instructions, cache_control: { type: 'ephemeral' } },
@@ -212,14 +212,25 @@ class AnthropicProvider implements AIService {
         : { role: m.role, content: m.content }
     )
 
-    const finalText = buildCurrentNoteMessage(currentNoteText, userRequest)
-    if (attachments?.length) {
-      const blocks: AnthropicContentBlock[] = attachments.map(attachmentToBlock)
-      blocks.push({ type: 'text', text: finalText })
-      messages.push({ role: 'user', content: blocks })
+    // Final volatile user message. The live note body gets its OWN cache breakpoint (bp4)
+    // so per-document generation follow-ups reuse it; the request comes after it, and any
+    // follow-up turns come after that with no breakpoint.
+    const finalBlocks: AnthropicContentBlock[] = attachments?.length ? attachments.map(attachmentToBlock) : []
+    if (currentNoteText) {
+      finalBlocks.push({
+        type: 'text',
+        text: `Current note — live, reflects the latest edits:\n\n${currentNoteText}`,
+        cache_control: { type: 'ephemeral' },
+      })
+      finalBlocks.push({ type: 'text', text: `---\n\n${userRequest}` })
     } else {
-      messages.push({ role: 'user', content: finalText })
+      finalBlocks.push({ type: 'text', text: userRequest })
     }
+    messages.push({ role: 'user', content: finalBlocks })
+
+    // Generation follow-ups (the compact plan + a per-document step instruction) come after
+    // the cached prefix above — no breakpoint — so parallel generation calls all read it.
+    for (const f of followups ?? []) messages.push({ role: f.role, content: f.content })
 
     const body: Record<string, unknown> = {
       provider_id: this.config.id,

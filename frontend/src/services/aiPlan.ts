@@ -9,14 +9,16 @@ export interface ContextCategory { id: string; label: string }
 
 // All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
 // via the live editor's tryParseMarkdownToBlocks(). The model never emits BlockNote JSON.
+// `spec` (optional, content-bearing actions) defers the body: the planner describes what the
+// body should contain and leaves `content` empty; the body is written in a later per-step call.
 export type PlanAction =
   | { type: 'respond'; text: string; description?: string }
-  | { type: 'create_note'; title: string; content: string; ref?: string; description?: string }
-  | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; description?: string }
-  | { type: 'edit_section'; noteId: string; section: string; content: string; description?: string }
-  | { type: 'append_note'; noteId: string; content: string; description?: string }
+  | { type: 'create_note'; title: string; content: string; spec?: string; ref?: string; description?: string }
+  | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; spec?: string; description?: string }
+  | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
+  | { type: 'append_note'; noteId: string; content: string; spec?: string; description?: string }
   | { type: 'rename_note'; noteId: string; title: string; description?: string }
-  | { type: 'create_child_note'; parentId: string; title: string; content: string; ref?: string; description?: string }
+  | { type: 'create_child_note'; parentId: string; title: string; content: string; spec?: string; ref?: string; description?: string }
   | { type: 'move_note'; noteId: string; folderId: string | null; description?: string }
   | { type: 'set_tags'; noteId: string; tags: string[]; mode: 'replace' | 'add'; description?: string }
   | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
@@ -71,6 +73,7 @@ Action types (every action MAY also include an optional "description": one short
 Rules:
 - ANSWER BY DEFAULT — do NOT modify notes unless explicitly asked. If the user asks a question, asks you to explain, research, or summarise something in the chat, or otherwise just wants information, return ONLY a single "respond" action containing your answer. NEVER create, edit, append, rename, move, tag, annotate, or otherwise change a note unless the user EXPLICITLY tells you to change their notes (e.g. "create a note…", "add this to the note", "rename…", "tag…", "organise…"). When a request is ambiguous, or could be satisfied with a conversational answer, prefer a "respond" action over modifying notes.
 - All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies given to you — both in the "Context (note bodies)" section and in the latest "Current note — live" message — are Markdown; preserve their existing formatting (headings, bold, lists, links) when editing.
+- Deferred body generation (IMPORTANT for long or multiple bodies): For create_note, create_child_note, edit_note, edit_section and append_note you may EITHER write the body inline in "content", OR set "spec" to a precise description of what the body must contain and leave "content" empty (""). When a body would be long, or you are creating/rewriting MULTIPLE notes, PREFER "spec" and leave "content" empty — each spec'd body is written in a separate follow-up step that sees this same plan and context, which avoids truncation. Use inline "content" only for short, simple bodies. Never set both for the same action.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
 - For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Its live, up-to-date content is provided in the most recent user message (labelled "Current note — live"); other in-context notes appear in the "Context (note bodies)" section. Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
@@ -126,6 +129,9 @@ function validateAction(raw: unknown): PlanAction | null {
   const d = desc ? { description: desc } : {}
   const ref = asString(a.ref)
   const r = ref ? { ref } : {}
+  // Optional deferred-body description on content-bearing actions (see PlanAction `spec`).
+  const specVal = asString(a.spec)
+  const sp = specVal ? { spec: specVal } : {}
 
   switch (a.type) {
     case 'respond': {
@@ -136,23 +142,23 @@ function validateAction(raw: unknown): PlanAction | null {
     case 'create_note': {
       const title = asString(a.title)
       if (title === undefined) return null
-      return { type: 'create_note', title, content: asString(a.content) ?? '', ...r, ...d }
+      return { type: 'create_note', title, content: asString(a.content) ?? '', ...sp, ...r, ...d }
     }
     case 'edit_note': {
       const noteId = asString(a.noteId)
       if (!noteId) return null
-      return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...d }
+      return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'edit_section': {
       const noteId = asString(a.noteId)
       const section = asString(a.section)
       if (!noteId || !section) return null
-      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...d }
+      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'append_note': {
       const noteId = asString(a.noteId)
       if (!noteId) return null
-      return { type: 'append_note', noteId, content: asString(a.content) ?? '', ...d }
+      return { type: 'append_note', noteId, content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'rename_note': {
       const noteId = asString(a.noteId)
@@ -164,7 +170,7 @@ function validateAction(raw: unknown): PlanAction | null {
       const parentId = asString(a.parentId)
       const title = asString(a.title)
       if (!parentId || title === undefined) return null
-      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...r, ...d }
+      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...sp, ...r, ...d }
     }
     case 'move_note': {
       const noteId = asString(a.noteId)
@@ -283,4 +289,62 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'edit_annotation': return `Edit annotation in “${name(action.noteId)}”`
     case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
   }
+}
+
+// ─── Two-phase content generation ─────────────────────────────────────────────
+
+// The deferred-body description on a content-bearing action, or '' for other actions.
+function actionSpec(action: PlanAction): string {
+  switch (action.type) {
+    case 'create_note':
+    case 'create_child_note':
+    case 'edit_note':
+    case 'edit_section':
+    case 'append_note':
+      return action.spec ?? ''
+    default:
+      return ''
+  }
+}
+
+// True when an action deferred its body — a content-bearing action with a non-empty `spec`
+// and empty `content`. Such actions get their body written in a separate generation call.
+export function actionNeedsGeneration(action: PlanAction): boolean {
+  switch (action.type) {
+    case 'create_note':
+    case 'create_child_note':
+    case 'edit_note':
+    case 'edit_section':
+    case 'append_note':
+      return (action.spec ?? '').trim() !== '' && action.content.trim() === ''
+    default:
+      return false
+  }
+}
+
+// Compact JSON of the plan with note bodies omitted — the assistant turn shown to the model
+// during generation so it knows the whole plan and where the step it's writing fits.
+export function buildPlanSummary(plan: Plan): string {
+  const actions = plan.actions.map((a) => {
+    const copy: Record<string, unknown> = { ...a }
+    if (typeof copy.content === 'string' && copy.content) copy.content = '<written in a later step>'
+    return copy
+  })
+  return JSON.stringify({ actions })
+}
+
+// The user turn for one generation call: write a single body, Markdown only. The per-type
+// hint mirrors the inline-content rules in PLAN_INSTRUCTIONS so a deferred body behaves the
+// same as an inline one when the executor applies it.
+export function buildContentStepInstruction(action: PlanAction, index: number, labelMap: Map<string, string>): string {
+  const spec = actionSpec(action)
+  let hint = ''
+  if (action.type === 'edit_section') {
+    hint = `\n\nBegin with the section's heading line (e.g. "## ${action.section}") and rewrite that whole section.`
+  } else if (action.type === 'edit_note' && action.mode === 'replace') {
+    hint = `\n\nThis is the FULL replacement body for the note.`
+  }
+  return `Write the Markdown body for step ${index + 1} — ${defaultActionLabel(action, labelMap)}.${
+    spec ? `\n\nWhat the body must contain:\n${spec}` : ''
+  }${hint}\n\nOutput ONLY the Markdown body for this one item — no JSON, no code fences, no preamble, no commentary.`
 }
