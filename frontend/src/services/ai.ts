@@ -13,8 +13,29 @@ export interface AICompleteOptions {
   temperature?: number
   prefill?: string
   attachments?: FileAttachment[]
-  cacheSystem?: boolean  // When true: mark system prompt for Anthropic prompt cache
   enableWebSearch?: boolean  // When true: enable Anthropic's built-in web search tool
+}
+
+// One prior turn of a chat session, already note-link-stripped by the caller.
+export interface ConversationTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+// A full conversation request, broken into pieces by cache stability so the provider
+// can place prompt-cache breakpoints optimally (Anthropic) or flatten them into a
+// single prompt (OpenAI/Ollama). Order in the rendered prompt is: instructions →
+// referenceBlock → history → (currentNoteText + userRequest). Only the last group is
+// volatile; everything before it is a stable, cacheable prefix.
+export interface ConversationRequest {
+  instructions: string          // static system block (cached every request)
+  referenceBlock?: string       // id/title lists + other notes' bodies (cached; stable per conversation)
+  history: ConversationTurn[]   // prior turns; the latest is the rolling cache breakpoint
+  currentNoteText?: string      // live body of the open note — volatile, sent last, uncached
+  userRequest: string           // the new user message — volatile, sent last
+  attachments?: FileAttachment[]
+  temperature?: number
+  enableWebSearch?: boolean
 }
 
 export interface NoteMetadata {
@@ -25,6 +46,8 @@ export interface NoteMetadata {
 
 export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
+  // Cache-optimised chat turn used by the AI Conversation panel. See ConversationRequest.
+  completeConversation(req: ConversationRequest): Promise<string>
   generateTags(noteContent: string): Promise<string[]>
   generateSummary(noteContent: string, prompt: string): Promise<string>
   generateMetadata(noteContent: string, summaryPrompt: string, includeTitle?: boolean): Promise<NoteMetadata>
@@ -32,6 +55,47 @@ export interface AIService {
   improveWriting(text: string): Promise<string>
   continueWriting(context: string): Promise<string>
   testConnection(): Promise<boolean>
+}
+
+// Appended when a provider stops at its output-token cap so the user knows the reply
+// is incomplete and can ask to continue.
+const TRUNCATION_NOTICE =
+  '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
+
+// Anthropic user-content block shapes (text + base64 image/document attachments).
+type AnthropicContentBlock =
+  | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string }
+
+function attachmentToBlock(a: FileAttachment): AnthropicContentBlock {
+  return a.type === 'image'
+    ? { type: 'image', source: { type: 'base64', media_type: a.mimeType, data: a.data } }
+    : { type: 'document', source: { type: 'base64', media_type: a.mimeType, data: a.data }, title: a.name }
+}
+
+// Label for the open note's live body so the model treats the latest user message as
+// authoritative current context. Must match the wording referenced in PLAN_INSTRUCTIONS.
+function buildCurrentNoteMessage(currentNoteText: string | undefined, userRequest: string): string {
+  return currentNoteText
+    ? `Current note — live, reflects the latest edits:\n\n${currentNoteText}\n\n---\n\n${userRequest}`
+    : userRequest
+}
+
+// OpenAI/Ollama have no prompt cache, so flatten a ConversationRequest back into the
+// single system-string + transcript-prompt shape complete() already handles. This keeps
+// their behaviour identical to before this change (only Anthropic gets cache breakpoints).
+function flattenConversation(req: ConversationRequest): { prompt: string; options: AICompleteOptions } {
+  const contextParts = [
+    req.referenceBlock,
+    req.currentNoteText ? `Current note:\n\n${req.currentNoteText}` : '',
+  ].filter(Boolean)
+  const systemPrompt = [req.instructions, ...contextParts].join('\n\n')
+  const transcript = req.history
+    .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`)
+    .join('\n\n')
+  const prompt = transcript ? `${transcript}\n\nHuman: ${req.userRequest}` : req.userRequest
+  return { prompt, options: { systemPrompt, attachments: req.attachments, temperature: req.temperature } }
 }
 
 const TAG_GENERATION_PROMPT = `You are a tagging assistant. Analyse the following note content and return between 3 and 8 short, relevant tags as a JSON array of lowercase strings. Return ONLY the JSON array, no other text.
@@ -86,20 +150,11 @@ class AnthropicProvider implements AIService {
   constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill, attachments, cacheSystem, enableWebSearch } = options
-
-    type AnthropicContentBlock =
-      | { type: 'text'; text: string }
-      | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
-      | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string }
+    const { systemPrompt, temperature, prefill, attachments, enableWebSearch } = options
 
     let userContent: string | AnthropicContentBlock[]
     if (attachments?.length) {
-      const blocks: AnthropicContentBlock[] = attachments.map((a) =>
-        a.type === 'image'
-          ? { type: 'image', source: { type: 'base64', media_type: a.mimeType, data: a.data } }
-          : { type: 'document', source: { type: 'base64', media_type: a.mimeType, data: a.data }, title: a.name }
-      )
+      const blocks: AnthropicContentBlock[] = attachments.map(attachmentToBlock)
       blocks.push({ type: 'text', text: prompt })
       userContent = blocks
     } else {
@@ -122,33 +177,77 @@ class AnthropicProvider implements AIService {
       max_tokens: this.config.maxTokens,
       messages,
     }
-    if (systemPrompt) {
-      body.system = cacheSystem
-        ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
-        : systemPrompt
-    }
+    if (systemPrompt) body.system = systemPrompt
     if (temperature !== undefined) body.temperature = temperature
     if (enableWebSearch) {
       body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
     }
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
+    const text = this.extractPlanText(response.data)
+    const full = prefill ? prefill + text : text
+    return response.data?.stop_reason === 'max_tokens' ? full + TRUNCATION_NOTICE : full
+  }
 
-    // When web search is active the response content may contain server_tool_use and
-    // web_search_tool_result blocks before the final text block — collect all text blocks.
-    const contentBlocks: Array<{ type: string; text?: string; name?: string; input?: unknown }> = response.data?.content ?? []
-    const textParts = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '')
-    let text = textParts.join('')
+  // Cache-optimised chat turn for the AI Conversation panel. Layout (stable → volatile):
+  //   system:   [ instructions (cache breakpoint), referenceBlock (cache breakpoint) ]
+  //   messages: [ ...history (rolling cache breakpoint on the latest prior turn),
+  //               { user: live note body + new request + attachments } ]
+  // The volatile final message has no breakpoint, so editing the open note or asking a
+  // new question never invalidates the cached instructions/reference/history prefix.
+  async completeConversation(req: ConversationRequest): Promise<string> {
+    const { instructions, referenceBlock, currentNoteText, history, userRequest, attachments, temperature, enableWebSearch } = req
 
-    // If Claude stopped on a tool_use block, it invoked one of our *described* plan
-    // actions (edit_note, edit_section, …) as though it were a native tool instead of
-    // emitting the JSON envelope, so recover the plan from the tool_use block(s).
-    // This must NOT be gated on `!text`: when web search is enabled Claude interleaves
-    // running commentary ("let me search…", "now I'll add it to the article…") as text
-    // blocks, so `text` is non-empty even though the real action lives in a tool_use
-    // block — gating on `!text` silently dropped the action. Anthropic emits web_search
-    // as `server_tool_use`, so a plain `tool_use` block here is always a misfired action.
-    if (response.data?.stop_reason === 'tool_use') {
+    const system: { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[] = [
+      { type: 'text', text: instructions, cache_control: { type: 'ephemeral' } },
+    ]
+    if (referenceBlock) system.push({ type: 'text', text: referenceBlock, cache_control: { type: 'ephemeral' } })
+
+    // The rolling breakpoint goes on the last prior turn, so the cached conversation
+    // prefix grows by one turn each request instead of being re-billed in full.
+    const lastIdx = history.length - 1
+    const messages: { role: string; content: unknown }[] = history.map((m, i) =>
+      i === lastIdx
+        ? { role: m.role, content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }] }
+        : { role: m.role, content: m.content }
+    )
+
+    const finalText = buildCurrentNoteMessage(currentNoteText, userRequest)
+    if (attachments?.length) {
+      const blocks: AnthropicContentBlock[] = attachments.map(attachmentToBlock)
+      blocks.push({ type: 'text', text: finalText })
+      messages.push({ role: 'user', content: blocks })
+    } else {
+      messages.push({ role: 'user', content: finalText })
+    }
+
+    const body: Record<string, unknown> = {
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages,
+      system,
+    }
+    if (temperature !== undefined) body.temperature = temperature
+    if (enableWebSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+
+    const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
+    const text = this.extractPlanText(response.data)
+    return response.data?.stop_reason === 'max_tokens' ? text + TRUNCATION_NOTICE : text
+  }
+
+  // Join all text blocks. When web search runs, the content may interleave
+  // server_tool_use / web_search_tool_result blocks with text — we keep only text.
+  // If Claude misfired a *described* plan action (edit_note, …) as a native tool_use
+  // block instead of emitting the JSON envelope, recover the plan from it. This is NOT
+  // gated on empty text: with web search, Claude emits running commentary as text even
+  // when the real action lives in a tool_use block, so gating on `!text` would drop it.
+  private extractPlanText(
+    data: { content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>; stop_reason?: string } | undefined,
+  ): string {
+    const contentBlocks = data?.content ?? []
+    let text = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
+    if (data?.stop_reason === 'tool_use') {
       const actions = contentBlocks
         .filter((b) => b.type === 'tool_use' && b.input && typeof b.input === 'object')
         .map((b) => {
@@ -158,12 +257,7 @@ class AnthropicProvider implements AIService {
         })
       if (actions.length) text = JSON.stringify({ actions })
     }
-
-    const full = prefill ? prefill + text : text
-    if (response.data?.stop_reason === 'max_tokens') {
-      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
-    }
-    return full
+    return text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -263,6 +357,11 @@ class OpenAIProvider implements AIService {
     return full
   }
 
+  async completeConversation(req: ConversationRequest): Promise<string> {
+    const { prompt, options } = flattenConversation(req)
+    return this.complete(prompt, options)
+  }
+
   async generateTags(noteContent: string): Promise<string[]> {
     const prompt = TAG_GENERATION_PROMPT.replace('{note_content}', noteContent)
     const result = await this.complete(prompt)
@@ -358,6 +457,11 @@ class OllamaProvider implements AIService {
       return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
     }
     return full
+  }
+
+  async completeConversation(req: ConversationRequest): Promise<string> {
+    const { prompt, options } = flattenConversation(req)
+    return this.complete(prompt, options)
   }
 
   async generateTags(noteContent: string): Promise<string[]> {

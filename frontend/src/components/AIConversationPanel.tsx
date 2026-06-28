@@ -16,7 +16,8 @@ import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/ut
 import type { FileAttachment } from '@/services/ai'
 import {
   parsePlan,
-  buildPlanSystemPrompt,
+  buildPlanReferenceBlock,
+  PLAN_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type ContextNote,
@@ -45,11 +46,15 @@ function stripNoteLinks(text: string): string {
     .replace(/\/notes\/[0-9a-fA-F-]{8,}/g, 'a note')
 }
 
-// Everything needed to generate and execute a plan for the current context.
-// Cached when the context is frozen so repeated requests reuse the same (cached)
-// system prompt and target-id sets.
+// Everything needed to generate and execute a plan for the current context, split by
+// prompt-cache stability: `instructions` + `referenceBlock` form the cacheable prefix,
+// while `currentNoteText` is the volatile open-note body sent last (after the cache
+// breakpoint) so editing the note doesn't bust the cache. Freezing snapshots this whole
+// object so the pinned note/reference content is reused until the user unfreezes.
 interface PlanContext {
-  systemPrompt: string
+  instructions: string         // static system block (PLAN_INSTRUCTIONS)
+  referenceBlock: string       // id/title lists + other notes' bodies (stable, cacheable)
+  currentNoteText: string      // live body (+ annotations, attached file text) of the open note
   attachments: FileAttachment[]
   targetNotes: ContextNote[]
   folders: ContextFolder[]
@@ -521,7 +526,7 @@ export default function AIConversationPanel({
     setRenamingId(null)
   }
 
-  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
+  async function buildScopeContext(): Promise<{ referenceContextText: string; currentNoteText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
     const fileAttachments: FileAttachment[] = []
     const annotationIds = new Set<string>()
 
@@ -537,7 +542,7 @@ export default function AIConversationPanel({
     if (contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { contextText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
+      return { referenceContextText: '', currentNoteText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
@@ -593,9 +598,9 @@ export default function AIConversationPanel({
       }
     }
 
-    // Build context text — each note labelled with its id so the model can target it.
-    // Each note's annotations are appended so the model can read/edit/delete them.
-    const parts = await Promise.all(notes.map(async (n) => {
+    // Render one note as labelled Markdown (heading carries its id so the model can
+    // target it) plus its annotations, recording annotation ids for executor validation.
+    const renderNote = async (n: typeof notes[number]): Promise<string> => {
       const body = (useSummaries && n.summary) ? n.summary : n.content
       const heading = n.id
         ? `## ${n.title || 'This note'} [id: ${n.id}]`
@@ -618,7 +623,7 @@ export default function AIConversationPanel({
       }
       const base = heading ? `${heading}\n\n${body}` : body
       return base + annoSection
-    }))
+    }
 
     const targetNotes: ContextNote[] = notes
       .filter((n): n is typeof n & { id: string } => Boolean(n.id))
@@ -631,8 +636,19 @@ export default function AIConversationPanel({
       fileAttachments.push(...(fetched.filter(Boolean) as FileAttachment[]))
     }
 
-    // Pending uploaded files — images go as content blocks, text as context, others as placeholders
-    let contextText = parts.join('\n\n---\n\n')
+    // Split the open note from the rest. Its body is volatile (the user edits it most
+    // turns), so it travels in the final, uncached message; the other notes are part of
+    // the stable, cacheable reference block. For 'note' scope the single note IS the
+    // current one even if it has no id yet (a freshly created, unsaved note).
+    const rendered = await Promise.all(notes.map(renderNote))
+    const currentIndex = contextScope === 'note'
+      ? 0
+      : notes.findIndex((n) => Boolean(n.id) && n.id === noteId)
+    const currentNoteParts: string[] = currentIndex >= 0 ? [rendered[currentIndex]] : []
+    const referenceContextText = rendered.filter((_, i) => i !== currentIndex).join('\n\n---\n\n')
+
+    // Pending uploaded files — images go as content blocks; text/other ride with the
+    // volatile current-note message (they change per upload, so keep them out of cache).
     const processed = await Promise.all(pendingFiles.map(processFile))
     const fileTextParts: string[] = []
     for (const p of processed) {
@@ -645,18 +661,24 @@ export default function AIConversationPanel({
       }
     }
     if (fileTextParts.length > 0) {
-      const fileSection = `**Attached files:**\n\n${fileTextParts.join('\n\n')}`
-      contextText = contextText ? `${contextText}\n\n---\n${fileSection}` : fileSection
+      currentNoteParts.push(`**Attached files:**\n\n${fileTextParts.join('\n\n')}`)
     }
 
-    return { contextText, attachments: fileAttachments, targetNotes, annotationIds }
+    return {
+      referenceContextText,
+      currentNoteText: currentNoteParts.join('\n\n---\n\n'),
+      attachments: fileAttachments,
+      targetNotes,
+      annotationIds,
+    }
   }
 
-  // Assemble everything the planner needs: the labelled system prompt plus the
-  // id sets the executor validates against. Folders/categories come from the
-  // store/API so the model can move notes, retag, and create folders.
+  // Assemble everything the planner needs, split by cache stability: the static
+  // instructions + the reference block (cacheable prefix) and the live current-note
+  // body (volatile, sent last). Folders/categories come from the store/API so the model
+  // can move notes, retag, and create folders.
   async function buildPlanContext(): Promise<PlanContext> {
-    const { contextText, attachments, targetNotes, annotationIds } = await buildScopeContext()
+    const { referenceContextText, currentNoteText, attachments, targetNotes, annotationIds } = await buildScopeContext()
 
     let folders: ContextFolder[] = []
     try {
@@ -671,8 +693,8 @@ export default function AIConversationPanel({
     folders.forEach((f) => labelMap.set(f.id, f.name))
     cats.forEach((c) => labelMap.set(c.id, c.label))
 
-    const systemPrompt = buildPlanSystemPrompt({ contextText, targetNotes, folders, categories: cats })
-    return { systemPrompt, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
+    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats })
+    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, currentNoteText, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -791,25 +813,28 @@ export default function AIConversationPanel({
     }
 
     try {
-      const transcript = priorMessages
-        .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${stripNoteLinks(m.content)}`)
-        .join('\n\n')
-      const fullPrompt = transcript
-        ? `${transcript}\n\nHuman: ${userContent.trim()}`
-        : userContent.trim()
-
       // Use frozen context if locked; otherwise build fresh from current scope.
       const isFrozen = frozenContext !== null
       const ctx = isFrozen ? frozenContext! : await buildPlanContext()
 
-      // No prefill: it behaves inconsistently across providers (Anthropic
-      // continues from it; OpenAI/Ollama prepend it to a fresh full-JSON reply,
-      // yielding "{{"). The system prompt asks for JSON-only and parsePlan
-      // tolerantly extracts the object, so temperature:0 alone is enough.
-      const raw = await aiService.complete(fullPrompt, {
-        systemPrompt: ctx.systemPrompt,
+      // Prior turns become real message turns (note-link-stripped so the model can't
+      // latch onto a stale id from an old result summary). The live current-note body
+      // and the new request are sent last, after the cache breakpoint.
+      const history = priorMessages
+        .map((m) => ({ role: m.role, content: stripNoteLinks(m.content) }))
+        .filter((m) => m.content.trim().length > 0) // drop empty turns (invalid as text blocks)
+
+      // No prefill: it behaves inconsistently across providers (Anthropic continues from
+      // it; OpenAI/Ollama prepend it to a fresh full-JSON reply, yielding "{{"). The
+      // instructions ask for JSON-only and parsePlan tolerantly extracts the object, so
+      // temperature:0 alone is enough.
+      const raw = await aiService.completeConversation({
+        instructions: ctx.instructions,
+        referenceBlock: ctx.referenceBlock,
+        currentNoteText: ctx.currentNoteText || undefined,
+        history,
+        userRequest: userContent.trim(),
         attachments: ctx.attachments.length ? ctx.attachments : undefined,
-        cacheSystem: isFrozen,
         temperature: 0,
         enableWebSearch: true,
       })
@@ -1229,7 +1254,7 @@ export default function AIConversationPanel({
             <button
               onClick={() => void handleFreeze()}
               disabled={freezing || contextScope === 'none'}
-              title={frozenContext ? 'Context frozen — click to unfreeze' : 'Freeze context for prompt caching'}
+              title={frozenContext ? 'Context pinned — click to use the live note again' : 'Pin a snapshot of the note/context (ignore further edits until unpinned)'}
               className={`flex items-center gap-0.5 transition-colors disabled:opacity-40 ${
                 frozenContext ? 'text-amber-500 hover:text-amber-600' : 'text-gray-400 hover:text-blue-500'
               }`}

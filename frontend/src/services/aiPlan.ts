@@ -31,25 +31,22 @@ export interface Plan { actions: PlanAction[] }
 // Defensive ceiling so a runaway model can't queue thousands of mutations.
 export const MAX_PLAN_ACTIONS = 50
 
-interface BuildPromptOpts {
-  contextText: string
+interface BuildReferenceOpts {
+  // Bodies of the *other* in-context notes (folder/children scopes). The currently
+  // open note is NOT here — its live body is sent in the latest user message so edits
+  // to it don't invalidate the cached prefix this block lives in.
+  referenceContextText: string
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
 }
 
-export function buildPlanSystemPrompt({ contextText, targetNotes, folders, categories }: BuildPromptOpts): string {
-  const noteList = targetNotes.length
-    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
-    : '(none)'
-  const folderList = folders.length
-    ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
-    : '(none)'
-  const categoryList = categories.length
-    ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
-    : '(none)'
-
-  return `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
+// Static, never-changing instruction block. Kept separate (and a module constant) so
+// it can be marked as a stable Anthropic prompt-cache prefix on every request: it is
+// byte-identical across every turn, note, and session, so it should always be a cache
+// hit. Everything that varies (note lists, note bodies, the conversation) lives after
+// the cache breakpoint, in buildPlanReferenceBlock and the message array.
+export const PLAN_INSTRUCTIONS = `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
 
 Output format (JSON only — no prose, no markdown code fences):
 { "actions": [ <action>, ... ] }
@@ -73,9 +70,9 @@ Action types (every action MAY also include an optional "description": one short
 
 Rules:
 - ANSWER BY DEFAULT — do NOT modify notes unless explicitly asked. If the user asks a question, asks you to explain, research, or summarise something in the chat, or otherwise just wants information, return ONLY a single "respond" action containing your answer. NEVER create, edit, append, rename, move, tag, annotate, or otherwise change a note unless the user EXPLICITLY tells you to change their notes (e.g. "create a note…", "add this to the note", "rename…", "tag…", "organise…"). When a request is ambiguous, or could be satisfied with a conversational answer, prefer a "respond" action over modifying notes.
-- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies below are also given to you as Markdown — preserve their existing formatting (headings, bold, lists, links) when editing.
+- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies given to you — both in the "Context (note bodies)" section and in the latest "Current note — live" message — are Markdown; preserve their existing formatting (headings, bold, lists, links) when editing.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
-- For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
+- For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Its live, up-to-date content is provided in the most recent user message (labelled "Current note — live"); other in-context notes appear in the "Context (note bodies)" section. Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
 - Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
 - Choosing how to edit (IMPORTANT — preserve formatting and embedded blocks):
@@ -84,9 +81,24 @@ Rules:
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
-- Output ONLY the JSON object. No explanations and no code fences around it.
+- Output ONLY the JSON object. No explanations and no code fences around it.`
 
-Notes in context (id — title):
+// Dynamic context block: the id/title/folder/category lists plus the bodies of the
+// *other* in-context notes. Stable within a conversation (it changes only when notes
+// are added/renamed or the scope changes), so it sits behind its own cache breakpoint —
+// after PLAN_INSTRUCTIONS, before the volatile current-note body and the new request.
+export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories }: BuildReferenceOpts): string {
+  const noteList = targetNotes.length
+    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+    : '(none)'
+  const folderList = folders.length
+    ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
+    : '(none)'
+  const categoryList = categories.length
+    ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
+    : '(none)'
+
+  return `Notes in context (id — title):
 ${noteList}
 
 Folders (id — name):
@@ -96,7 +108,7 @@ Categories (id — label):
 ${categoryList}
 
 Context (note bodies):
-${contextText || '(no note content in context)'}`
+${referenceContextText || '(the currently open note is provided in the latest message; no other notes are in context)'}`
 }
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
