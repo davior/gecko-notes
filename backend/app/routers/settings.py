@@ -620,9 +620,21 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     )
     try:
         usage = data.get("usage") or {}
-        tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
-        if tokens:
-            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+        inp = int(usage.get("input_tokens", 0) or 0)
+        out = int(usage.get("output_tokens", 0) or 0)
+        cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        # Cache reads/writes are billable input too, so count them toward usage. Log the
+        # breakdown so the prompt-cache hit rate is observable end-to-end: a high
+        # cache_read with low input means the stable prefix is being reused; a
+        # cache_read of ~0 across turns means a cache miss (prefix changed or too small).
+        total = inp + out + cache_read + cache_write
+        if total:
+            _record_usage(session, user_id, "ai", payload.model, total, "tokens")
+        logger.info(
+            "anthropic usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
+            payload.model, inp, out, cache_read, cache_write,
+        )
     except Exception:
         pass
     return data

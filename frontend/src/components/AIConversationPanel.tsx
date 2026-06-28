@@ -13,10 +13,14 @@ import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
-import type { FileAttachment } from '@/services/ai'
+import type { FileAttachment, ConversationTurn } from '@/services/ai'
 import {
   parsePlan,
-  buildPlanSystemPrompt,
+  buildPlanReferenceBlock,
+  buildPlanSummary,
+  buildContentStepInstruction,
+  actionNeedsGeneration,
+  PLAN_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type ContextNote,
@@ -45,11 +49,34 @@ function stripNoteLinks(text: string): string {
     .replace(/\/notes\/[0-9a-fA-F-]{8,}/g, 'a note')
 }
 
-// Everything needed to generate and execute a plan for the current context.
-// Cached when the context is frozen so repeated requests reuse the same (cached)
-// system prompt and target-id sets.
+// Run an async op over items with a concurrency cap (chunked). Used to fan out the
+// per-document content-generation calls in parallel without flooding the provider.
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map(fn))
+  }
+}
+
+// Strip a code fence that wraps an *entire* generation result (the model is told not to add
+// one, but be defensive). Fences genuinely inside the body are left untouched.
+function stripCodeFence(text: string): string {
+  const t = text.trim()
+  if (!t.startsWith('```')) return t
+  return t.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '').trim()
+}
+
+// How many per-document generation calls to run at once (see Phase 2 plan).
+const GEN_CONCURRENCY = 5
+
+// Everything needed to generate and execute a plan for the current context, split by
+// prompt-cache stability: `instructions` + `referenceBlock` form the cacheable prefix,
+// while `currentNoteText` is the volatile open-note body sent last (after the cache
+// breakpoint) so editing the note doesn't bust the cache. Freezing snapshots this whole
+// object so the pinned note/reference content is reused until the user unfreezes.
 interface PlanContext {
-  systemPrompt: string
+  instructions: string         // static system block (PLAN_INSTRUCTIONS)
+  referenceBlock: string       // id/title lists + other notes' bodies (stable, cacheable)
+  currentNoteText: string      // live body (+ annotations, attached file text) of the open note
   attachments: FileAttachment[]
   targetNotes: ContextNote[]
   folders: ContextFolder[]
@@ -62,6 +89,10 @@ interface PendingPlan {
   plan: Plan
   ctx: PlanContext
   baseMessages: ConversationMessage[]
+  // Captured at planning time so the per-document generation calls (run on confirm) rebuild
+  // a byte-identical cached prefix — same history + request the planning call used.
+  history: ConversationTurn[]
+  userRequest: string
 }
 
 interface AIConversationPanelProps {
@@ -286,6 +317,7 @@ export default function AIConversationPanel({
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null)
   const [selectedSteps, setSelectedSteps] = useState<boolean[]>([])
   const [executing, setExecuting] = useState(false)
+  const [generating, setGenerating] = useState(false)  // Phase 2: filling deferred note bodies
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
@@ -521,7 +553,7 @@ export default function AIConversationPanel({
     setRenamingId(null)
   }
 
-  async function buildScopeContext(): Promise<{ contextText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
+  async function buildScopeContext(): Promise<{ referenceContextText: string; currentNoteText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
     const fileAttachments: FileAttachment[] = []
     const annotationIds = new Set<string>()
 
@@ -537,7 +569,7 @@ export default function AIConversationPanel({
     if (contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { contextText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
+      return { referenceContextText: '', currentNoteText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
@@ -593,9 +625,9 @@ export default function AIConversationPanel({
       }
     }
 
-    // Build context text — each note labelled with its id so the model can target it.
-    // Each note's annotations are appended so the model can read/edit/delete them.
-    const parts = await Promise.all(notes.map(async (n) => {
+    // Render one note as labelled Markdown (heading carries its id so the model can
+    // target it) plus its annotations, recording annotation ids for executor validation.
+    const renderNote = async (n: typeof notes[number]): Promise<string> => {
       const body = (useSummaries && n.summary) ? n.summary : n.content
       const heading = n.id
         ? `## ${n.title || 'This note'} [id: ${n.id}]`
@@ -618,7 +650,7 @@ export default function AIConversationPanel({
       }
       const base = heading ? `${heading}\n\n${body}` : body
       return base + annoSection
-    }))
+    }
 
     const targetNotes: ContextNote[] = notes
       .filter((n): n is typeof n & { id: string } => Boolean(n.id))
@@ -631,8 +663,19 @@ export default function AIConversationPanel({
       fileAttachments.push(...(fetched.filter(Boolean) as FileAttachment[]))
     }
 
-    // Pending uploaded files — images go as content blocks, text as context, others as placeholders
-    let contextText = parts.join('\n\n---\n\n')
+    // Split the open note from the rest. Its body is volatile (the user edits it most
+    // turns), so it travels in the final, uncached message; the other notes are part of
+    // the stable, cacheable reference block. For 'note' scope the single note IS the
+    // current one even if it has no id yet (a freshly created, unsaved note).
+    const rendered = await Promise.all(notes.map(renderNote))
+    const currentIndex = contextScope === 'note'
+      ? 0
+      : notes.findIndex((n) => Boolean(n.id) && n.id === noteId)
+    const currentNoteParts: string[] = currentIndex >= 0 ? [rendered[currentIndex]] : []
+    const referenceContextText = rendered.filter((_, i) => i !== currentIndex).join('\n\n---\n\n')
+
+    // Pending uploaded files — images go as content blocks; text/other ride with the
+    // volatile current-note message (they change per upload, so keep them out of cache).
     const processed = await Promise.all(pendingFiles.map(processFile))
     const fileTextParts: string[] = []
     for (const p of processed) {
@@ -645,18 +688,24 @@ export default function AIConversationPanel({
       }
     }
     if (fileTextParts.length > 0) {
-      const fileSection = `**Attached files:**\n\n${fileTextParts.join('\n\n')}`
-      contextText = contextText ? `${contextText}\n\n---\n${fileSection}` : fileSection
+      currentNoteParts.push(`**Attached files:**\n\n${fileTextParts.join('\n\n')}`)
     }
 
-    return { contextText, attachments: fileAttachments, targetNotes, annotationIds }
+    return {
+      referenceContextText,
+      currentNoteText: currentNoteParts.join('\n\n---\n\n'),
+      attachments: fileAttachments,
+      targetNotes,
+      annotationIds,
+    }
   }
 
-  // Assemble everything the planner needs: the labelled system prompt plus the
-  // id sets the executor validates against. Folders/categories come from the
-  // store/API so the model can move notes, retag, and create folders.
+  // Assemble everything the planner needs, split by cache stability: the static
+  // instructions + the reference block (cacheable prefix) and the live current-note
+  // body (volatile, sent last). Folders/categories come from the store/API so the model
+  // can move notes, retag, and create folders.
   async function buildPlanContext(): Promise<PlanContext> {
-    const { contextText, attachments, targetNotes, annotationIds } = await buildScopeContext()
+    const { referenceContextText, currentNoteText, attachments, targetNotes, annotationIds } = await buildScopeContext()
 
     let folders: ContextFolder[] = []
     try {
@@ -671,8 +720,8 @@ export default function AIConversationPanel({
     folders.forEach((f) => labelMap.set(f.id, f.name))
     cats.forEach((c) => labelMap.set(c.id, c.label))
 
-    const systemPrompt = buildPlanSystemPrompt({ contextText, targetNotes, folders, categories: cats })
-    return { systemPrompt, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
+    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats })
+    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, currentNoteText, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -715,7 +764,62 @@ export default function AIConversationPanel({
     return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
   }
 
-  async function runPlan(plan: Plan, ctx: PlanContext, baseMessages: ConversationMessage[]) {
+  // Phase 2: fill in deferred note bodies. For each action that declared a `spec` but left
+  // `content` empty, make a per-document generation call that reuses the planning call's
+  // cached prefix (same instructions/reference/history/current-note + request) and appends
+  // [assistant: <compact plan>, user: <step instruction>]. Runs in parallel (capped). Mutates
+  // the successful actions' `content` in place; returns a runnable plan with any failed
+  // actions removed plus their failures as result rows.
+  async function generatePlanContent(
+    plan: Plan,
+    ctx: PlanContext,
+    history: ConversationTurn[],
+    userRequest: string,
+  ): Promise<{ plan: Plan; genFailures: ActionResult[] }> {
+    const svc = aiService
+    const targets = plan.actions
+      .map((action, index) => ({ action, index }))
+      .filter(({ action }) => actionNeedsGeneration(action))
+    if (!targets.length || !svc) return { plan, genFailures: [] }
+
+    const planSummary = buildPlanSummary(plan)
+    const genFailures: ActionResult[] = []
+    const failedIdx = new Set<number>()
+
+    await mapWithConcurrency(targets, GEN_CONCURRENCY, async ({ action, index }) => {
+      try {
+        const raw = await svc.completeConversation({
+          instructions: ctx.instructions,
+          referenceBlock: ctx.referenceBlock,
+          currentNoteText: ctx.currentNoteText || undefined,
+          history,
+          userRequest,
+          followups: [
+            { role: 'assistant', content: planSummary },
+            { role: 'user', content: buildContentStepInstruction(action, index, ctx.labelMap) },
+          ],
+          temperature: 0,
+          enableWebSearch: false,
+        })
+        const body = stripCodeFence(raw)
+        if (!body.trim()) throw new Error('the model returned an empty body')
+        ;(action as { content: string }).content = body
+      } catch (e) {
+        failedIdx.add(index)
+        genFailures.push({ ok: false, message: `Couldn't write “${defaultActionLabel(action, ctx.labelMap)}”: ${errorMessage(e)}` })
+      }
+    })
+
+    return { plan: { actions: plan.actions.filter((_, i) => !failedIdx.has(i)) }, genFailures }
+  }
+
+  async function runPlan(
+    plan: Plan,
+    ctx: PlanContext,
+    baseMessages: ConversationMessage[],
+    history: ConversationTurn[],
+    userRequest: string,
+  ) {
     if (!editor) {
       setError('Editor is not ready yet — try again in a moment.')
       setPendingPlan(null)
@@ -723,11 +827,26 @@ export default function AIConversationPanel({
     }
     setExecuting(true)
     try {
+      // Phase 2: write any deferred note bodies (spec → content) before executing. Engaged
+      // only when at least one action deferred its body; otherwise this is a no-op.
+      let runnable = plan
+      let genFailures: ActionResult[] = []
+      if (plan.actions.some(actionNeedsGeneration)) {
+        setGenerating(true)
+        try {
+          const out = await generatePlanContent(plan, ctx, history, userRequest)
+          runnable = out.plan
+          genFailures = out.genFailures
+        } finally {
+          setGenerating(false)
+        }
+      }
+
       // Flush any unsaved edits to the open note so amend/append build on the
       // latest content and a later re-hydrate won't clobber the user's typing.
       await onBeforeExecute?.()
 
-      const results = await executePlan(plan, {
+      const execResults = await executePlan(runnable, {
         editor,
         currentNoteId: noteId ?? null,
         defaultCategoryId: defaultCategoryId ?? '',
@@ -737,6 +856,8 @@ export default function AIConversationPanel({
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
         validAnnotationIds: ctx.annotationIds,
       })
+      // Generation failures (excluded from execution) are surfaced alongside execution rows.
+      const results = [...genFailures, ...execResults]
 
       const finalMessages = [
         ...baseMessages,
@@ -791,25 +912,28 @@ export default function AIConversationPanel({
     }
 
     try {
-      const transcript = priorMessages
-        .map((m) => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${stripNoteLinks(m.content)}`)
-        .join('\n\n')
-      const fullPrompt = transcript
-        ? `${transcript}\n\nHuman: ${userContent.trim()}`
-        : userContent.trim()
-
       // Use frozen context if locked; otherwise build fresh from current scope.
       const isFrozen = frozenContext !== null
       const ctx = isFrozen ? frozenContext! : await buildPlanContext()
 
-      // No prefill: it behaves inconsistently across providers (Anthropic
-      // continues from it; OpenAI/Ollama prepend it to a fresh full-JSON reply,
-      // yielding "{{"). The system prompt asks for JSON-only and parsePlan
-      // tolerantly extracts the object, so temperature:0 alone is enough.
-      const raw = await aiService.complete(fullPrompt, {
-        systemPrompt: ctx.systemPrompt,
+      // Prior turns become real message turns (note-link-stripped so the model can't
+      // latch onto a stale id from an old result summary). The live current-note body
+      // and the new request are sent last, after the cache breakpoint.
+      const history = priorMessages
+        .map((m) => ({ role: m.role, content: stripNoteLinks(m.content) }))
+        .filter((m) => m.content.trim().length > 0) // drop empty turns (invalid as text blocks)
+
+      // No prefill: it behaves inconsistently across providers (Anthropic continues from
+      // it; OpenAI/Ollama prepend it to a fresh full-JSON reply, yielding "{{"). The
+      // instructions ask for JSON-only and parsePlan tolerantly extracts the object, so
+      // temperature:0 alone is enough.
+      const raw = await aiService.completeConversation({
+        instructions: ctx.instructions,
+        referenceBlock: ctx.referenceBlock,
+        currentNoteText: ctx.currentNoteText || undefined,
+        history,
+        userRequest: userContent.trim(),
         attachments: ctx.attachments.length ? ctx.attachments : undefined,
-        cacheSystem: isFrozen,
         temperature: 0,
         enableWebSearch: true,
       })
@@ -830,9 +954,9 @@ export default function AIConversationPanel({
         setConversation(responded)
         void persistCurrentSession(responded, sessionId)
       } else if (planMode) {
-        setPendingPlan({ plan, ctx, baseMessages: withUser })
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
       } else {
-        await runPlan(plan, ctx, withUser)
+        await runPlan(plan, ctx, withUser, history, userContent.trim())
       }
     } catch (e: unknown) {
       setError(errorMessage(e))
@@ -1229,7 +1353,7 @@ export default function AIConversationPanel({
             <button
               onClick={() => void handleFreeze()}
               disabled={freezing || contextScope === 'none'}
-              title={frozenContext ? 'Context frozen — click to unfreeze' : 'Freeze context for prompt caching'}
+              title={frozenContext ? 'Context pinned — click to use the live note again' : 'Pin a snapshot of the note/context (ignore further edits until unpinned)'}
               className={`flex items-center gap-0.5 transition-colors disabled:opacity-40 ${
                 frozenContext ? 'text-amber-500 hover:text-amber-600' : 'text-gray-400 hover:text-blue-500'
               }`}
@@ -1367,17 +1491,17 @@ export default function AIConversationPanel({
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
-                disabled={executing || selectedSteps.filter(Boolean).length === 0}
+                disabled={executing || generating || selectedSteps.filter(Boolean).length === 0}
                 onClick={() => {
                   const filtered = { actions: pendingPlan.plan.actions.filter((_, i) => selectedSteps[i]) }
-                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages)
+                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest)
                 }}
               >
-                {executing ? <><Spinner /> Running…</> : 'Approve & run'}
+                {generating ? <><Spinner /> Writing…</> : executing ? <><Spinner /> Running…</> : 'Approve & run'}
               </button>
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
-                disabled={executing}
+                disabled={executing || generating}
                 onClick={cancelPlan}
               >
                 Cancel

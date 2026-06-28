@@ -9,14 +9,16 @@ export interface ContextCategory { id: string; label: string }
 
 // All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
 // via the live editor's tryParseMarkdownToBlocks(). The model never emits BlockNote JSON.
+// `spec` (optional, content-bearing actions) defers the body: the planner describes what the
+// body should contain and leaves `content` empty; the body is written in a later per-step call.
 export type PlanAction =
   | { type: 'respond'; text: string; description?: string }
-  | { type: 'create_note'; title: string; content: string; ref?: string; description?: string }
-  | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; description?: string }
-  | { type: 'edit_section'; noteId: string; section: string; content: string; description?: string }
-  | { type: 'append_note'; noteId: string; content: string; description?: string }
+  | { type: 'create_note'; title: string; content: string; spec?: string; ref?: string; description?: string }
+  | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; spec?: string; description?: string }
+  | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
+  | { type: 'append_note'; noteId: string; content: string; spec?: string; description?: string }
   | { type: 'rename_note'; noteId: string; title: string; description?: string }
-  | { type: 'create_child_note'; parentId: string; title: string; content: string; ref?: string; description?: string }
+  | { type: 'create_child_note'; parentId: string; title: string; content: string; spec?: string; ref?: string; description?: string }
   | { type: 'move_note'; noteId: string; folderId: string | null; description?: string }
   | { type: 'set_tags'; noteId: string; tags: string[]; mode: 'replace' | 'add'; description?: string }
   | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
@@ -31,25 +33,22 @@ export interface Plan { actions: PlanAction[] }
 // Defensive ceiling so a runaway model can't queue thousands of mutations.
 export const MAX_PLAN_ACTIONS = 50
 
-interface BuildPromptOpts {
-  contextText: string
+interface BuildReferenceOpts {
+  // Bodies of the *other* in-context notes (folder/children scopes). The currently
+  // open note is NOT here — its live body is sent in the latest user message so edits
+  // to it don't invalidate the cached prefix this block lives in.
+  referenceContextText: string
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
 }
 
-export function buildPlanSystemPrompt({ contextText, targetNotes, folders, categories }: BuildPromptOpts): string {
-  const noteList = targetNotes.length
-    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
-    : '(none)'
-  const folderList = folders.length
-    ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
-    : '(none)'
-  const categoryList = categories.length
-    ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
-    : '(none)'
-
-  return `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
+// Static, never-changing instruction block. Kept separate (and a module constant) so
+// it can be marked as a stable Anthropic prompt-cache prefix on every request: it is
+// byte-identical across every turn, note, and session, so it should always be a cache
+// hit. Everything that varies (note lists, note bodies, the conversation) lives after
+// the cache breakpoint, in buildPlanReferenceBlock and the message array.
+export const PLAN_INSTRUCTIONS = `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
 
 Output format (JSON only — no prose, no markdown code fences):
 { "actions": [ <action>, ... ] }
@@ -73,9 +72,10 @@ Action types (every action MAY also include an optional "description": one short
 
 Rules:
 - ANSWER BY DEFAULT — do NOT modify notes unless explicitly asked. If the user asks a question, asks you to explain, research, or summarise something in the chat, or otherwise just wants information, return ONLY a single "respond" action containing your answer. NEVER create, edit, append, rename, move, tag, annotate, or otherwise change a note unless the user EXPLICITLY tells you to change their notes (e.g. "create a note…", "add this to the note", "rename…", "tag…", "organise…"). When a request is ambiguous, or could be satisfied with a conversational answer, prefer a "respond" action over modifying notes.
-- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies below are also given to you as Markdown — preserve their existing formatting (headings, bold, lists, links) when editing.
+- All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies given to you — both in the "Context (note bodies)" section and in the latest "Current note — live" message — are Markdown; preserve their existing formatting (headings, bold, lists, links) when editing.
+- Deferred body generation (IMPORTANT for long or multiple bodies): For create_note, create_child_note, edit_note, edit_section and append_note you may EITHER write the body inline in "content", OR set "spec" to a precise description of what the body must contain and leave "content" empty (""). When a body would be long, or you are creating/rewriting MULTIPLE notes, PREFER "spec" and leave "content" empty — each spec'd body is written in a separate follow-up step that sees this same plan and context, which avoids truncation. Use inline "content" only for short, simple bodies. Never set both for the same action.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
-- For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
+- For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Its live, up-to-date content is provided in the most recent user message (labelled "Current note — live"); other in-context notes appear in the "Context (note bodies)" section. Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
 - Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
 - Choosing how to edit (IMPORTANT — preserve formatting and embedded blocks):
@@ -84,9 +84,24 @@ Rules:
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
-- Output ONLY the JSON object. No explanations and no code fences around it.
+- Output ONLY the JSON object. No explanations and no code fences around it.`
 
-Notes in context (id — title):
+// Dynamic context block: the id/title/folder/category lists plus the bodies of the
+// *other* in-context notes. Stable within a conversation (it changes only when notes
+// are added/renamed or the scope changes), so it sits behind its own cache breakpoint —
+// after PLAN_INSTRUCTIONS, before the volatile current-note body and the new request.
+export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories }: BuildReferenceOpts): string {
+  const noteList = targetNotes.length
+    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+    : '(none)'
+  const folderList = folders.length
+    ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
+    : '(none)'
+  const categoryList = categories.length
+    ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
+    : '(none)'
+
+  return `Notes in context (id — title):
 ${noteList}
 
 Folders (id — name):
@@ -96,7 +111,7 @@ Categories (id — label):
 ${categoryList}
 
 Context (note bodies):
-${contextText || '(no note content in context)'}`
+${referenceContextText || '(the currently open note is provided in the latest message; no other notes are in context)'}`
 }
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
@@ -114,6 +129,9 @@ function validateAction(raw: unknown): PlanAction | null {
   const d = desc ? { description: desc } : {}
   const ref = asString(a.ref)
   const r = ref ? { ref } : {}
+  // Optional deferred-body description on content-bearing actions (see PlanAction `spec`).
+  const specVal = asString(a.spec)
+  const sp = specVal ? { spec: specVal } : {}
 
   switch (a.type) {
     case 'respond': {
@@ -124,23 +142,23 @@ function validateAction(raw: unknown): PlanAction | null {
     case 'create_note': {
       const title = asString(a.title)
       if (title === undefined) return null
-      return { type: 'create_note', title, content: asString(a.content) ?? '', ...r, ...d }
+      return { type: 'create_note', title, content: asString(a.content) ?? '', ...sp, ...r, ...d }
     }
     case 'edit_note': {
       const noteId = asString(a.noteId)
       if (!noteId) return null
-      return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...d }
+      return { type: 'edit_note', noteId, mode: a.mode === 'replace' ? 'replace' : 'amend', content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'edit_section': {
       const noteId = asString(a.noteId)
       const section = asString(a.section)
       if (!noteId || !section) return null
-      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...d }
+      return { type: 'edit_section', noteId, section, content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'append_note': {
       const noteId = asString(a.noteId)
       if (!noteId) return null
-      return { type: 'append_note', noteId, content: asString(a.content) ?? '', ...d }
+      return { type: 'append_note', noteId, content: asString(a.content) ?? '', ...sp, ...d }
     }
     case 'rename_note': {
       const noteId = asString(a.noteId)
@@ -152,7 +170,7 @@ function validateAction(raw: unknown): PlanAction | null {
       const parentId = asString(a.parentId)
       const title = asString(a.title)
       if (!parentId || title === undefined) return null
-      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...r, ...d }
+      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...sp, ...r, ...d }
     }
     case 'move_note': {
       const noteId = asString(a.noteId)
@@ -271,4 +289,62 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'edit_annotation': return `Edit annotation in “${name(action.noteId)}”`
     case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
   }
+}
+
+// ─── Two-phase content generation ─────────────────────────────────────────────
+
+// The deferred-body description on a content-bearing action, or '' for other actions.
+function actionSpec(action: PlanAction): string {
+  switch (action.type) {
+    case 'create_note':
+    case 'create_child_note':
+    case 'edit_note':
+    case 'edit_section':
+    case 'append_note':
+      return action.spec ?? ''
+    default:
+      return ''
+  }
+}
+
+// True when an action deferred its body — a content-bearing action with a non-empty `spec`
+// and empty `content`. Such actions get their body written in a separate generation call.
+export function actionNeedsGeneration(action: PlanAction): boolean {
+  switch (action.type) {
+    case 'create_note':
+    case 'create_child_note':
+    case 'edit_note':
+    case 'edit_section':
+    case 'append_note':
+      return (action.spec ?? '').trim() !== '' && action.content.trim() === ''
+    default:
+      return false
+  }
+}
+
+// Compact JSON of the plan with note bodies omitted — the assistant turn shown to the model
+// during generation so it knows the whole plan and where the step it's writing fits.
+export function buildPlanSummary(plan: Plan): string {
+  const actions = plan.actions.map((a) => {
+    const copy: Record<string, unknown> = { ...a }
+    if (typeof copy.content === 'string' && copy.content) copy.content = '<written in a later step>'
+    return copy
+  })
+  return JSON.stringify({ actions })
+}
+
+// The user turn for one generation call: write a single body, Markdown only. The per-type
+// hint mirrors the inline-content rules in PLAN_INSTRUCTIONS so a deferred body behaves the
+// same as an inline one when the executor applies it.
+export function buildContentStepInstruction(action: PlanAction, index: number, labelMap: Map<string, string>): string {
+  const spec = actionSpec(action)
+  let hint = ''
+  if (action.type === 'edit_section') {
+    hint = `\n\nBegin with the section's heading line (e.g. "## ${action.section}") and rewrite that whole section.`
+  } else if (action.type === 'edit_note' && action.mode === 'replace') {
+    hint = `\n\nThis is the FULL replacement body for the note.`
+  }
+  return `Write the Markdown body for step ${index + 1} — ${defaultActionLabel(action, labelMap)}.${
+    spec ? `\n\nWhat the body must contain:\n${spec}` : ''
+  }${hint}\n\nOutput ONLY the Markdown body for this one item — no JSON, no code fences, no preamble, no commentary.`
 }
