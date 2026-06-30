@@ -86,17 +86,6 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
                 />
               </span>
             )}
-            {onToggleSelect && (
-              <button
-                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
-                style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title={selected ? 'Deselect note' : 'Select note'}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              </button>
-            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-400' : 'text-gray-300 hover:text-gray-500'}`}
@@ -106,6 +95,17 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
+              </button>
+            )}
+            {onToggleSelect && (
+              <button
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                title={selected ? 'Deselect note' : 'Select note'}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -168,16 +168,6 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
             {note.is_shared && (
               <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
             )}
-            {onToggleSelect && (
-              <button
-                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
-                title={selected ? 'Deselect note' : 'Select note'}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              </button>
-            )}
             {onPin && (
               <button
                 className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-500' : 'text-gray-300 hover:text-gray-500'}`}
@@ -186,6 +176,16 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
+              </button>
+            )}
+            {onToggleSelect && (
+              <button
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                title={selected ? 'Deselect note' : 'Select note'}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
