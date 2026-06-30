@@ -1,4 +1,4 @@
-import { Pin, Globe, FolderInput, Trash2 } from 'lucide-react'
+import { Pin, Globe, CheckCircle2 } from 'lucide-react'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
 import CategoryBadge from './CategoryBadge'
@@ -26,12 +26,12 @@ interface Props {
   category?: Category
   onClick: (id: string) => void
   onPin?: (id: string) => void
-  onMove?: (id: string) => void
-  onDelete?: (id: string) => void
+  selected?: boolean
+  onToggleSelect?: (id: string) => void
   viewMode?: 'list' | 'card'
 }
 
-export default function NoteCard({ note, category, onClick, onPin, onMove, onDelete, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, viewMode = 'list' }: Props) {
   const visibleTags = note.tags.slice(0, 3)
 
   if (viewMode === 'card') {
@@ -42,7 +42,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
           hasImage
             ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
-        }`}
+        } ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
@@ -86,15 +86,15 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
                 />
               </span>
             )}
-            {onMove && (
+            {onToggleSelect && (
               <button
-                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
-                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title="Move to folder"
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                title={selected ? 'Deselect note' : 'Select note'}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
               >
-                <FolderInput className="w-3.5 h-3.5" />
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
             {onPin && (
@@ -106,17 +106,6 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
-                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title="Delete note"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -167,7 +156,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
   // List view
   return (
     <div
-      className="card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
+      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
@@ -179,14 +168,14 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
             {note.is_shared && (
               <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
             )}
-            {onMove && (
+            {onToggleSelect && (
               <button
-                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
-                title="Move to folder"
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                title={selected ? 'Deselect note' : 'Select note'}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
               >
-                <FolderInput className="w-3.5 h-3.5" />
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
             {onPin && (
@@ -197,16 +186,6 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
                 onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
               >
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
-                title="Delete note"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>

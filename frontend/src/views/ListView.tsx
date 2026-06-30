@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, ChevronDown } from 'lucide-react'
+import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, FolderInput, Trash2, ChevronDown } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
@@ -58,8 +58,10 @@ export default function ListView() {
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [aiResult, setAiResult] = useState('')
   const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
-  const [moveTarget, setMoveTarget] = useState<{ type: 'note' | 'folder'; id: string } | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<NoteListItem | null>(null)
+  const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [noteMoveOpen, setNoteMoveOpen] = useState(false)
+  const [noteDeleteOpen, setNoteDeleteOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [pinnedCollapsed, setPinnedCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem('pinnedCollapsed') === 'true' } catch { return false }
@@ -92,12 +94,14 @@ export default function ListView() {
 
   // Reload notes + folder chrome when the folder, sort, or category changes.
   useEffect(() => {
+    clearSelection()
     loadNotes(buildParams(), true)
     foldersStore.loadContents(folderId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortOrder, activeCategoryId, folderId])
 
   useEffect(() => {
+    clearSelection()
     if (searchDebounce.current) clearTimeout(searchDebounce.current)
     searchDebounce.current = setTimeout(() => loadNotes(buildParams(), true), 300)
     return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current) }
@@ -133,6 +137,18 @@ export default function ListView() {
 
   function toggleSort() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set())
   }
 
   function toggleView() {
@@ -185,15 +201,37 @@ export default function ListView() {
     const target = moveTarget
     setMoveTarget(null)
     try {
-      if (target.type === 'note') {
-        await foldersStore.moveNoteToFolder(target.id, destFolderId)
-      } else {
-        await foldersStore.moveFolder(target.id, destFolderId)
-      }
+      await foldersStore.moveFolder(target.id, destFolderId)
       loadNotes(buildParams(), true)
       foldersStore.loadContents(folderId)
     } catch {
       showToast('Could not move item there.')
+    }
+  }
+
+  async function handleBulkMoveSelect(destFolderId: string | null) {
+    setNoteMoveOpen(false)
+    const ids = Array.from(selectedIds)
+    try {
+      await Promise.all(ids.map((id) => foldersStore.moveNoteToFolder(id, destFolderId)))
+    } catch {
+      showToast('Could not move some notes there.')
+    } finally {
+      clearSelection()
+      loadNotes(buildParams(), true)
+      foldersStore.loadContents(folderId)
+    }
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds)
+    setNoteDeleteOpen(false)
+    try {
+      await Promise.all(ids.map((id) => deleteNote(id)))
+    } catch {
+      showToast('Could not delete some notes.')
+    } finally {
+      clearSelection()
     }
   }
 
@@ -222,6 +260,12 @@ export default function ListView() {
       if (data.type === 'note' && data.noteId) {
         await foldersStore.moveNoteToFolder(data.noteId, destFolderId)
         loadNotes(buildParams(), true)
+        setSelectedIds((prev) => {
+          if (!prev.has(data.noteId as string)) return prev
+          const next = new Set(prev)
+          next.delete(data.noteId as string)
+          return next
+        })
       } else if (data.type === 'folder' && data.folderId && data.folderId !== destFolderId) {
         await foldersStore.moveFolder(data.folderId, destFolderId)
         foldersStore.loadContents(folderId)
@@ -248,8 +292,8 @@ export default function ListView() {
           category={getCategoryById(note.category_id)}
           onClick={(id) => navigate(`/notes/${id}`)}
           onPin={pinNote}
-          onMove={(id) => setMoveTarget({ type: 'note', id })}
-          onDelete={(id) => setDeleteTarget(notes.find((n) => n.id === id) ?? null)}
+          selected={selectedIds.has(note.id)}
+          onToggleSelect={toggleSelect}
           viewMode={viewMode}
         />
       </DraggableNote>
@@ -259,7 +303,7 @@ export default function ListView() {
   const folderBarProps = {
     folders: subfolders,
     onOpen: openFolder,
-    onMove: (f: Folder) => setMoveTarget({ type: 'folder', id: f.id }),
+    onMove: (f: Folder) => setMoveTarget({ id: f.id }),
     onRename: handleRenameFolder,
     onDelete: handleDeleteFolder,
   }
@@ -342,6 +386,37 @@ export default function ListView() {
             {viewMode === 'list' ? 'Cards' : 'List'}
           </button>
         </div>
+
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{selectedIds.size} selected</span>
+            <div className="flex items-center gap-2">
+              <button
+                className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 flex items-center gap-1 transition-all"
+                title="Move selected to folder"
+                onClick={() => setNoteMoveOpen(true)}
+              >
+                <FolderInput className="w-3 h-3" />
+                Move
+              </button>
+              <button
+                className="text-xs px-3 py-1.5 rounded-full border border-red-200 dark:border-red-800 bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center gap-1 transition-all"
+                title="Delete selected"
+                onClick={() => setNoteDeleteOpen(true)}
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete
+              </button>
+              <button
+                className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                title="Clear selection"
+                onClick={clearSelection}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -483,26 +558,29 @@ export default function ListView() {
 
       {moveTarget && (
         <FolderPickerModal
-          title={moveTarget.type === 'folder' ? 'Move folder to' : 'Move note to'}
-          disabledIds={moveTarget.type === 'folder' ? new Set([moveTarget.id]) : undefined}
+          title="Move folder to"
+          disabledIds={new Set([moveTarget.id])}
           onSelect={handleMoveSelect}
           onClose={() => setMoveTarget(null)}
         />
       )}
 
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setDeleteTarget(null)}>
+      {noteMoveOpen && (
+        <FolderPickerModal
+          title={`Move ${selectedIds.size} note${selectedIds.size === 1 ? '' : 's'} to`}
+          onSelect={handleBulkMoveSelect}
+          onClose={() => setNoteMoveOpen(false)}
+        />
+      )}
+
+      {noteDeleteOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setNoteDeleteOpen(false)}>
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Note</h3>
-            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">Are you sure you want to delete &ldquo;{deleteTarget.title || 'Untitled'}&rdquo;? This cannot be undone.</p>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Notes</h3>
+            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">Are you sure you want to delete {selectedIds.size} note{selectedIds.size === 1 ? '' : 's'}? This cannot be undone.</p>
             <div className="flex gap-3">
-              <button
-                className="btn-danger flex-1"
-                onClick={async () => { await deleteNote(deleteTarget.id); setDeleteTarget(null) }}
-              >
-                Delete
-              </button>
-              <button className="btn-secondary flex-1" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button className="btn-danger flex-1" onClick={handleBulkDelete}>Delete</button>
+              <button className="btn-secondary flex-1" onClick={() => setNoteDeleteOpen(false)}>Cancel</button>
             </div>
           </div>
         </div>
