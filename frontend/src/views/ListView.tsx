@@ -325,8 +325,7 @@ export default function ListView() {
   const newNotePath = folderId ? `/notes/new?folder=${folderId}` : '/notes/new'
 
   return (
-    <div className="flex flex-col sm:flex-row h-screen bg-gray-50 dark:bg-gray-900">
-      <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
+    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
@@ -440,6 +439,8 @@ export default function ListView() {
         )}
       </header>
 
+      <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+      <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
           {loading && notes.length === 0 && subfolders.length === 0 ? (
@@ -627,6 +628,7 @@ export default function ListView() {
         currentFolderId={folderId}
         onNotesChanged={() => { void loadNotes(buildParams(), true) }}
       />
+      </div>
     </div>
   )
 }
