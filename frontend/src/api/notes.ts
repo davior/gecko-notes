@@ -11,6 +11,7 @@ export interface NoteListItem {
   tags: string[]
   is_pinned: boolean
   is_shared: boolean
+  share_token?: string | null
   created_at: string
   modified_at: string
 }
