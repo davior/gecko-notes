@@ -120,7 +120,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
             {note.title || 'Untitled'}
           </h3>
           <p
-            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-1.5"
+            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-1.5"
             style={hasImage ? { color: 'rgba(255,255,255,0.9)', textShadow } : undefined}
           >
             {note.content_preview || 'No content'}
@@ -193,7 +193,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
         <h3 className="font-semibold text-gray-900 dark:text-gray-100 text-sm leading-tight mb-1 truncate">
           {note.title || 'Untitled'}
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-2">{note.content_preview || 'No content'}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-2">{note.content_preview || 'No content'}</p>
         {note.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {note.tags.slice(0, 4).map((tag) => <TagChip key={tag} tag={tag} />)}
