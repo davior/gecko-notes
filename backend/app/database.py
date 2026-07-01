@@ -325,6 +325,46 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Allow a NULL note_id on aisession so the list-view AI Assistant can create
+        # "global" sessions not tied to any note. Older DBs created the column as
+        # NOT NULL; SQLite can't drop NOT NULL in place, so rebuild the table. Guarded
+        # on PRAGMA so it only runs once (skipped after the column is already nullable
+        # and on fresh installs where create_all already made it nullable).
+        try:
+            cols = conn.execute(text("PRAGMA table_info(aisession)")).fetchall()
+            # PRAGMA columns: (cid, name, type, notnull, dflt_value, pk)
+            note_id_col = next((c for c in cols if c[1] == "note_id"), None)
+            if note_id_col is not None and note_id_col[3] == 1:
+                conn.execute(text("""
+                    CREATE TABLE aisession_new (
+                        id TEXT PRIMARY KEY,
+                        note_id TEXT,
+                        user_id TEXT,
+                        name TEXT,
+                        messages TEXT,
+                        context_scope TEXT,
+                        use_summaries BOOLEAN,
+                        include_linked_files BOOLEAN,
+                        plan_mode BOOLEAN,
+                        created_at DATETIME,
+                        updated_at DATETIME
+                    )
+                """))
+                conn.execute(text("""
+                    INSERT INTO aisession_new
+                        (id, note_id, user_id, name, messages, context_scope,
+                         use_summaries, include_linked_files, plan_mode, created_at, updated_at)
+                    SELECT id, note_id, user_id, name, messages, context_scope,
+                           use_summaries, include_linked_files, plan_mode, created_at, updated_at
+                    FROM aisession
+                """))
+                conn.execute(text("DROP TABLE aisession"))
+                conn.execute(text("ALTER TABLE aisession_new RENAME TO aisession"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aisession_note_id ON aisession (note_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aisession_user_id ON aisession (user_id)"))
+                conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

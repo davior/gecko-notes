@@ -187,7 +187,7 @@ gecko-notes/
 ├── frontend/           # React SPA
 │   ├── src/
 │   │   ├── views/      # ListView, EditorView, SettingsView, LoginView, ProfileView, SharedNoteView
-│   │   ├── components/ # NoteCard, AIBar, AIConversationPanel, AnnotationLayer, DocumentOutline,
+│   │   ├── components/ # NoteCard, AIConversationPanel, AnnotationLayer, DocumentOutline,
 │   │   │               #   FolderIconBar, TTSPlaybackControls, ShareMenu, ExportMenu, settings/, etc.
 │   │   ├── stores/     # Zustand stores (notes, categories, folders, settings, auth)
 │   │   ├── api/        # Axios API client modules

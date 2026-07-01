@@ -339,7 +339,7 @@ class AISessionUpdate(BaseModel):
 
 class AISessionRead(BaseModel):
     id: str
-    note_id: str
+    note_id: Optional[str] = None
     name: str
     messages: str
     context_scope: str

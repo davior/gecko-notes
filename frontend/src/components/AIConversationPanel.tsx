@@ -8,7 +8,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
 import { settingsApi } from '@/api/settings'
-import { notesApi } from '@/api/notes'
+import { notesApi, type NoteListItem } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
@@ -68,6 +68,9 @@ function stripCodeFence(text: string): string {
 // How many per-document generation calls to run at once (see Phase 2 plan).
 const GEN_CONCURRENCY = 5
 
+// Max find_notes retrieval rounds per request (bounds an agentic search loop).
+const MAX_SEARCH_ROUNDS = 3
+
 // Everything needed to generate and execute a plan for the current context, split by
 // prompt-cache stability: `instructions` + `referenceBlock` form the cacheable prefix,
 // while `currentNoteText` is the volatile open-note body sent last (after the cache
@@ -76,6 +79,7 @@ const GEN_CONCURRENCY = 5
 interface PlanContext {
   instructions: string         // static system block (PLAN_INSTRUCTIONS)
   referenceBlock: string       // id/title lists + other notes' bodies (stable, cacheable)
+  referenceContextText: string // just the rendered other-note bodies (kept so find_notes can append and rebuild referenceBlock)
   currentNoteText: string      // live body (+ annotations, attached file text) of the open note
   attachments: FileAttachment[]
   targetNotes: ContextNote[]
@@ -98,6 +102,15 @@ interface PendingPlan {
 interface AIConversationPanelProps {
   isOpen: boolean
   onToggle: () => void
+  // 'editor' (default): scoped to the open note. 'list': the /notes list-view
+  // assistant — no open note, scope is the multiselected notes, sessions are global
+  // (null note_id), and it may search the library via find_notes.
+  mode?: 'editor' | 'list'
+  // List mode: the currently multiselected note ids (the scope for the request).
+  getSelectedNoteIds?: () => string[]
+  // List mode: called when the assistant runs a find_notes search, so the list view
+  // can show the hits (replacing "All notes" with a "Search Results" header).
+  onSearchResults?: (query: string, results: NoteListItem[]) => void
   getNoteContext: () => string
   noteId?: string | null
   noteTitle?: string
@@ -254,6 +267,9 @@ async function urlToAttachment(url: string): Promise<FileAttachment | null> {
 export default function AIConversationPanel({
   isOpen,
   onToggle,
+  mode = 'editor',
+  getSelectedNoteIds,
+  onSearchResults,
   getNoteContext,
   noteId,
   noteTitle,
@@ -270,6 +286,10 @@ export default function AIConversationPanel({
   getAnnotations,
   onAnnotationsChanged,
 }: AIConversationPanelProps) {
+  const isList = mode === 'list'
+  // Sessions are available when scoped to a saved note (editor) or in the global
+  // list-view assistant (null note_id). A brand-new, unsaved editor note has no id yet.
+  const sessionsEnabled = isList || !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
   const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
   const categories = useCategoriesStore((s) => s.categories)
@@ -377,8 +397,8 @@ export default function AIConversationPanel({
     setCurrentSessionId(null)
     setSessions([])
     setShowHistory(false)
-    if (!noteId) return
-    aiSessionsApi.list(noteId).then((data) => {
+    if (!sessionsEnabled) return
+    aiSessionsApi.list(noteId ?? null).then((data) => {
       setSessions(data)
       if (data.length > 0) {
         const latest = data[0]
@@ -472,9 +492,9 @@ export default function AIConversationPanel({
 
   async function persistCurrentSession(msgs: ConversationMessage[], sessionId?: string | null) {
     const sid = sessionId ?? currentSessionId
-    if (!sid || !noteId) return
+    if (!sid || !sessionsEnabled) return
     try {
-      const updated = await aiSessionsApi.update(noteId, sid, {
+      const updated = await aiSessionsApi.update(noteId ?? null, sid, {
         messages: JSON.stringify(msgs),
         context_scope: contextScope,
         use_summaries: useSummaries,
@@ -488,10 +508,10 @@ export default function AIConversationPanel({
   }
 
   async function autoCreateSession(firstMessage: string): Promise<string | null> {
-    if (!noteId) return null
+    if (!sessionsEnabled) return null
     const name = firstMessage.length > 50 ? `${firstMessage.slice(0, 47)}…` : firstMessage
     try {
-      const session = await aiSessionsApi.create(noteId, {
+      const session = await aiSessionsApi.create(noteId ?? null, {
         name,
         messages: '[]',
         context_scope: contextScope,
@@ -533,9 +553,9 @@ export default function AIConversationPanel({
   }
 
   async function handleDeleteSession(id: string) {
-    if (!noteId) return
+    if (!sessionsEnabled) return
     try {
-      await aiSessionsApi.remove(noteId, id)
+      await aiSessionsApi.remove(noteId ?? null, id)
       setSessions((prev) => prev.filter((s) => s.id !== id))
       if (currentSessionId === id) {
         setConversation([])
@@ -545,37 +565,55 @@ export default function AIConversationPanel({
   }
 
   async function handleRenameSession(id: string, newName: string) {
-    if (!noteId || !newName.trim()) { setRenamingId(null); return }
+    if (!sessionsEnabled || !newName.trim()) { setRenamingId(null); return }
     try {
-      const updated = await aiSessionsApi.update(noteId, id, { name: newName.trim() })
+      const updated = await aiSessionsApi.update(noteId ?? null, id, { name: newName.trim() })
       setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)))
     } catch { /* best-effort */ }
     setRenamingId(null)
+  }
+
+  // Give the model the note's real Markdown (headings/bold/lists/links) instead of
+  // plain text, so it can preserve formatting when editing/replacing. Falls back to
+  // plain text if the editor is unavailable or conversion throws (e.g. custom blocks).
+  // In list mode the editor is a headless instance created purely for conversion.
+  const blocksToMarkdown = (blocks: unknown[]): string => {
+    if (!editor) return extractPlainText(blocks)
+    try { return editor.blocksToMarkdownLossy(blocks) || extractPlainText(blocks) }
+    catch { return extractPlainText(blocks) }
+  }
+
+  // Fetch full note bodies by id and render each as Markdown (a NoteListItem only carries
+  // a preview). Shared by the list-view selection scope and the find_notes results.
+  type ScopeNote = { id?: string; title: string; content: string; summary?: string | null; blocks: unknown[] }
+  const fetchNotesById = async (ids: string[]): Promise<ScopeNote[]> => {
+    const fetched = await Promise.all(ids.map((id) => notesApi.get(id)))
+    return fetched.map((r) => {
+      let blocks: unknown[] = []
+      try { blocks = JSON.parse(r.data.content) } catch { /* ignore */ }
+      return { id: r.data.id, title: r.data.title, content: blocksToMarkdown(blocks), summary: r.data.summary, blocks }
+    })
   }
 
   async function buildScopeContext(): Promise<{ referenceContextText: string; currentNoteText: string; attachments: FileAttachment[]; targetNotes: ContextNote[]; annotationIds: Set<string> }> {
     const fileAttachments: FileAttachment[] = []
     const annotationIds = new Set<string>()
 
-    // Give the model the note's real Markdown (headings/bold/lists/links) instead of
-    // plain text, so it can preserve formatting when editing/replacing. Falls back to
-    // plain text if the editor is unavailable or conversion throws (e.g. custom blocks).
-    const blocksToMarkdown = (blocks: unknown[]): string => {
-      if (!editor) return extractPlainText(blocks)
-      try { return editor.blocksToMarkdownLossy(blocks) || extractPlainText(blocks) }
-      catch { return extractPlainText(blocks) }
-    }
-
-    if (contextScope === 'none') {
+    if (!isList && contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
       return { referenceContextText: '', currentNoteText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
-    let notes: { id?: string; title: string; content: string; summary?: string | null; blocks: unknown[] }[] = []
+    let notes: ScopeNote[] = []
 
-    if (contextScope === 'note') {
+    if (isList) {
+      // List-view assistant: scope is the multiselected notes. With no selection the
+      // context has no note bodies — the model is expected to use find_notes to locate them.
+      const ids = getSelectedNoteIds?.() ?? []
+      notes = ids.length ? await fetchNotesById(ids.slice(0, 50)) : []
+    } else if (contextScope === 'note') {
       const blocks = getNoteDocument?.() ?? []
       notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(blocks), summary: noteSummary, blocks }]
     } else {
@@ -604,19 +642,7 @@ export default function AIConversationPanel({
         listItems = res.data
       }
 
-      // Fetch full note content in parallel
-      const fetched = await Promise.all(listItems.map((item) => notesApi.get(item.id)))
-      notes = fetched.map((r) => {
-        let blocks: unknown[] = []
-        try { blocks = JSON.parse(r.data.content) } catch { /* ignore */ }
-        return {
-          id: r.data.id,
-          title: r.data.title,
-          content: blocksToMarkdown(blocks),
-          summary: r.data.summary,
-          blocks,
-        }
-      })
+      notes = await fetchNotesById(listItems.map((item) => item.id))
 
       // Prepend current note for children scope
       if (contextScope === 'children') {
@@ -668,7 +694,9 @@ export default function AIConversationPanel({
     // the stable, cacheable reference block. For 'note' scope the single note IS the
     // current one even if it has no id yet (a freshly created, unsaved note).
     const rendered = await Promise.all(notes.map(renderNote))
-    const currentIndex = contextScope === 'note'
+    // List mode has no open note, so nothing is the "current" (volatile) note — all
+    // selected notes go into the cacheable reference block.
+    const currentIndex = (!isList && contextScope === 'note')
       ? 0
       : notes.findIndex((n) => Boolean(n.id) && n.id === noteId)
     const currentNoteParts: string[] = currentIndex >= 0 ? [rendered[currentIndex]] : []
@@ -721,7 +749,7 @@ export default function AIConversationPanel({
     cats.forEach((c) => labelMap.set(c.id, c.label))
 
     const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats })
-    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, currentNoteText, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
+    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, referenceContextText, currentNoteText, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -907,19 +935,22 @@ export default function AIConversationPanel({
 
     // Auto-create a session on the first message if one doesn't exist yet
     let sessionId = currentSessionId
-    if (!sessionId && noteId) {
+    if (!sessionId && sessionsEnabled) {
       sessionId = await autoCreateSession(userContent.trim())
     }
 
     try {
+      const svc = aiService
+      const userRequest = userContent.trim()
+
       // Use frozen context if locked; otherwise build fresh from current scope.
       const isFrozen = frozenContext !== null
-      const ctx = isFrozen ? frozenContext! : await buildPlanContext()
+      let ctx = isFrozen ? frozenContext! : await buildPlanContext()
 
       // Prior turns become real message turns (note-link-stripped so the model can't
       // latch onto a stale id from an old result summary). The live current-note body
       // and the new request are sent last, after the cache breakpoint.
-      const history = priorMessages
+      let history = priorMessages
         .map((m) => ({ role: m.role, content: stripNoteLinks(m.content) }))
         .filter((m) => m.content.trim().length > 0) // drop empty turns (invalid as text blocks)
 
@@ -927,19 +958,86 @@ export default function AIConversationPanel({
       // it; OpenAI/Ollama prepend it to a fresh full-JSON reply, yielding "{{"). The
       // instructions ask for JSON-only and parsePlan tolerantly extracts the object, so
       // temperature:0 alone is enough.
-      const raw = await aiService.completeConversation({
+      const planOnce = async (): Promise<Plan> => parsePlan(await svc.completeConversation({
         instructions: ctx.instructions,
         referenceBlock: ctx.referenceBlock,
         currentNoteText: ctx.currentNoteText || undefined,
         history,
-        userRequest: userContent.trim(),
+        userRequest,
         attachments: ctx.attachments.length ? ctx.attachments : undefined,
         temperature: 0,
         enableWebSearch: true,
-      })
+      }))
+
+      let plan = await planOnce()
       setPendingFiles([])
 
-      const plan = parsePlan(raw)
+      // find_notes is a retrieval step: run the search(es), surface the hits in the list
+      // view, fold the found notes into the planning context, then re-plan so the model
+      // can act on them. Bounded so a looping model can't search forever.
+      let searchRounds = 0
+      while (searchRounds < MAX_SEARCH_ROUNDS && plan.actions.some((a) => a.type === 'find_notes')) {
+        searchRounds++
+        const queries: string[] = []
+        for (const a of plan.actions) if (a.type === 'find_notes') queries.push(a.query)
+
+        // Search the library; dedupe hits across all queries in this round.
+        const seen = new Set<string>()
+        const foundListItems: NoteListItem[] = []
+        for (const q of queries) {
+          try {
+            const res = await notesApi.list({ search: q, limit: 50 })
+            for (const item of res.data) {
+              if (!seen.has(item.id)) { seen.add(item.id); foundListItems.push(item) }
+            }
+          } catch { /* skip a failed search */ }
+        }
+
+        // Reflect the search in the list view (Search Results header + populated results).
+        if (queries[0] !== undefined) onSearchResults?.(queries[0], foundListItems)
+
+        // Fetch full bodies and fold them into the context so the model can consolidate/edit them.
+        const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
+        const foundTargets: ContextNote[] = foundNotes
+          .filter((n): n is typeof n & { id: string } => Boolean(n.id))
+          .map((n) => ({ id: n.id, title: n.title || 'Untitled' }))
+        const foundRendered = foundNotes.map((n) =>
+          `## ${n.title || 'Untitled'} [id: ${n.id}]\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
+
+        const mergedTargets: ContextNote[] = [...ctx.targetNotes]
+        const mergedIds = new Set(mergedTargets.map((n) => n.id))
+        for (const t of foundTargets) if (!mergedIds.has(t.id)) { mergedIds.add(t.id); mergedTargets.push(t) }
+        const mergedRefText = [ctx.referenceContextText, ...foundRendered].filter(Boolean).join('\n\n---\n\n')
+        const mergedLabelMap = new Map(ctx.labelMap)
+        mergedTargets.forEach((n) => mergedLabelMap.set(n.id, n.title || 'Untitled'))
+        ctx = {
+          ...ctx,
+          referenceContextText: mergedRefText,
+          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories }),
+          targetNotes: mergedTargets,
+          labelMap: mergedLabelMap,
+        }
+
+        // Record the search as a turn so the model sees its own query and the results.
+        const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+        const summary = foundListItems.length
+          ? `Search results for ${queries.map((q) => `"${q}"`).join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
+          : `Search for ${queries.map((q) => `"${q}"`).join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`
+        history = [
+          ...history,
+          { role: 'assistant', content: JSON.stringify({ actions: queries.map((q) => ({ type: 'find_notes', query: q })) }) },
+          { role: 'user', content: summary },
+        ]
+
+        plan = await planOnce()
+      }
+
+      // Drop any leftover find_notes (retrieval-only; never executed by planExecutor).
+      if (plan.actions.some((a) => a.type === 'find_notes')) {
+        plan = { actions: plan.actions.filter((a) => a.type !== 'find_notes') }
+        if (plan.actions.length === 0) plan = { actions: [{ type: 'respond', text: '_(No matching notes found.)_' }] }
+      }
+
       const onlyRespond = plan.actions.every((a) => a.type === 'respond')
 
       if (onlyRespond) {
@@ -1037,7 +1135,7 @@ export default function AIConversationPanel({
             onClick={() => void handleNewSession()}
             className="btn-ghost p-1"
             title="New session"
-            disabled={!noteId}
+            disabled={!sessionsEnabled}
           >
             <Plus className="w-4 h-4" />
           </button>
@@ -1045,7 +1143,7 @@ export default function AIConversationPanel({
             onClick={() => setShowHistory((v) => !v)}
             className={`btn-ghost p-1 ${showHistory ? 'text-blue-500' : ''}`}
             title="Session history"
-            disabled={!noteId}
+            disabled={!sessionsEnabled}
           >
             <History className="w-4 h-4" />
           </button>
@@ -1242,13 +1340,15 @@ export default function AIConversationPanel({
                     <><Copy className="w-3 h-3" />Copy</>
                   )}
                 </button>
-                <button
-                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                  title="Add to note"
-                  onClick={() => void onAddToNote(msg.content)}
-                >
-                  <Plus className="w-3 h-3" />Add to note
-                </button>
+                {!isList && (
+                  <button
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                    title="Add to note"
+                    onClick={() => void onAddToNote(msg.content)}
+                  >
+                    <Plus className="w-3 h-3" />Add to note
+                  </button>
+                )}
                 <button
                   className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-500 transition-colors px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20"
                   title="Delete from here"
@@ -1302,21 +1402,29 @@ export default function AIConversationPanel({
         <div className="shrink-0 border-t border-gray-100 dark:border-gray-700">
           {/* Context scope controls */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1.5 pb-1 text-xs text-gray-500 dark:text-gray-400">
-            <label className="flex items-center gap-1 shrink-0">
-              <span className="text-gray-400 dark:text-gray-500">Context:</span>
-              <select
-                value={contextScope}
-                onChange={(e) => setContextScope(e.target.value as ContextScope)}
-                disabled={!!frozenContext}
-                className="text-xs border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 disabled:opacity-50"
-              >
-                <option value="none">None</option>
-                <option value="note">This note</option>
-                <option value="children" disabled={!noteId}>+ Children</option>
-                <option value="folder" disabled={!noteFolderId}>Folder</option>
-                <option value="subfolder" disabled={!noteFolderId}>Subfolder</option>
-              </select>
-            </label>
+            {isList ? (
+              // List mode: the scope is the multiselected notes (no note-editor scope
+              // selector). With no selection the assistant searches the library itself.
+              <span className="flex items-center gap-1 shrink-0 text-gray-400 dark:text-gray-500">
+                Scope: selected notes
+              </span>
+            ) : (
+              <label className="flex items-center gap-1 shrink-0">
+                <span className="text-gray-400 dark:text-gray-500">Context:</span>
+                <select
+                  value={contextScope}
+                  onChange={(e) => setContextScope(e.target.value as ContextScope)}
+                  disabled={!!frozenContext}
+                  className="text-xs border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 disabled:opacity-50"
+                >
+                  <option value="none">None</option>
+                  <option value="note">This note</option>
+                  <option value="children" disabled={!noteId}>+ Children</option>
+                  <option value="folder" disabled={!noteFolderId}>Folder</option>
+                  <option value="subfolder" disabled={!noteFolderId}>Subfolder</option>
+                </select>
+              </label>
+            )}
 
             <label className="flex items-center gap-1 cursor-pointer select-none">
               <input
@@ -1350,16 +1458,18 @@ export default function AIConversationPanel({
               Plan mode
             </label>
 
-            <button
-              onClick={() => void handleFreeze()}
-              disabled={freezing || contextScope === 'none'}
-              title={frozenContext ? 'Context pinned — click to use the live note again' : 'Pin a snapshot of the note/context (ignore further edits until unpinned)'}
-              className={`flex items-center gap-0.5 transition-colors disabled:opacity-40 ${
-                frozenContext ? 'text-amber-500 hover:text-amber-600' : 'text-gray-400 hover:text-blue-500'
-              }`}
-            >
-              {freezing ? <Spinner /> : frozenContext ? <Lock className="w-3 h-3" /> : <LockOpen className="w-3 h-3" />}
-            </button>
+            {!isList && (
+              <button
+                onClick={() => void handleFreeze()}
+                disabled={freezing || contextScope === 'none'}
+                title={frozenContext ? 'Context pinned — click to use the live note again' : 'Pin a snapshot of the note/context (ignore further edits until unpinned)'}
+                className={`flex items-center gap-0.5 transition-colors disabled:opacity-40 ${
+                  frozenContext ? 'text-amber-500 hover:text-amber-600' : 'text-gray-400 hover:text-blue-500'
+                }`}
+              >
+                {freezing ? <Spinner /> : frozenContext ? <Lock className="w-3 h-3" /> : <LockOpen className="w-3 h-3" />}
+              </button>
+            )}
 
             <button
               onClick={() => fileInputRef.current?.click()}
