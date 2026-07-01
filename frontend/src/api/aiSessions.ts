@@ -2,7 +2,8 @@ import client from './client'
 
 export interface AISession {
   id: string
-  note_id: string
+  // null = a "global" session (list-view AI Assistant), not tied to a note.
+  note_id: string | null
   name: string
   messages: string
   context_scope: string
@@ -31,17 +32,22 @@ export interface AISessionUpdate {
   plan_mode?: boolean
 }
 
+// A null noteId targets the global (note-less) session endpoints; otherwise the
+// note-scoped ones. This keeps a single call site working for both the editor
+// (note-scoped) and the list view (global) AI Assistants.
+const base = (noteId: string | null) => (noteId ? `/notes/${noteId}/ai-sessions` : '/ai-sessions')
+
 export const aiSessionsApi = {
-  list(noteId: string): Promise<AISession[]> {
-    return client.get(`/notes/${noteId}/ai-sessions`).then((r) => r.data.data)
+  list(noteId: string | null): Promise<AISession[]> {
+    return client.get(base(noteId)).then((r) => r.data.data)
   },
-  create(noteId: string, data: AISessionCreate): Promise<AISession> {
-    return client.post(`/notes/${noteId}/ai-sessions`, data).then((r) => r.data.data)
+  create(noteId: string | null, data: AISessionCreate): Promise<AISession> {
+    return client.post(base(noteId), data).then((r) => r.data.data)
   },
-  update(noteId: string, sessionId: string, data: AISessionUpdate): Promise<AISession> {
-    return client.patch(`/notes/${noteId}/ai-sessions/${sessionId}`, data).then((r) => r.data.data)
+  update(noteId: string | null, sessionId: string, data: AISessionUpdate): Promise<AISession> {
+    return client.patch(`${base(noteId)}/${sessionId}`, data).then((r) => r.data.data)
   },
-  remove(noteId: string, sessionId: string): Promise<void> {
-    return client.delete(`/notes/${noteId}/ai-sessions/${sessionId}`).then(() => undefined)
+  remove(noteId: string | null, sessionId: string): Promise<void> {
+    return client.delete(`${base(noteId)}/${sessionId}`).then(() => undefined)
   },
 }

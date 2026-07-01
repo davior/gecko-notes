@@ -165,6 +165,11 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'respond':
         return { ok: true, message: action.text, kind: 'respond' }
 
+      // find_notes is a retrieval step resolved by the AI panel before execution; it is
+      // never sent here. Handled for exhaustiveness (and as a defensive no-op).
+      case 'find_notes':
+        return { ok: true, message: `Searched notes for “${action.query}”.`, kind: 'respond' }
+
       case 'create_note': {
         if (!ctx.defaultCategoryId) return { ok: false, message: 'Cannot create note: no category available.' }
         const blocks = await mdToBlocks(action.content)

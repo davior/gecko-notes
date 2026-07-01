@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, Copy, FolderPlus, FolderInput, Trash2, ChevronDown } from 'lucide-react'
+import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2, ChevronDown } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
+import { useCreateBlockNote } from '@blocknote/react'
 import { Folder as FolderIcon } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
 import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
-import AIBar from '@/components/AIBar'
+import AIConversationPanel from '@/components/AIConversationPanel'
+import { noteSchema } from '@/blocks/childNoteBlock'
 import UserAvatar from '@/components/UserAvatar'
 import { useNotesStore } from '@/stores/notes'
 import { useFoldersStore } from '@/stores/folders'
@@ -56,7 +58,7 @@ export default function ListView() {
     (defaultSortOrder as 'modified_at' | 'created_at') || 'modified_at',
   )
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
-  const [aiResult, setAiResult] = useState('')
+  const [panelOpen, setPanelOpen] = useState(false)
   const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -72,6 +74,11 @@ export default function ListView() {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryScrollRef = useRef<HTMLDivElement>(null)
+
+  // Headless BlockNote editor: powers the list-view AI Assistant's markdown↔blocks
+  // conversion for context building and plan execution (there is no on-screen editor here).
+  const aiEditor = useCreateBlockNote({ schema: noteSchema })
+  const defaultCategoryId = categories[0]?.id ?? ''
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -181,10 +188,6 @@ export default function ListView() {
   function openFolder(id: string | null) {
     if (id) setSearchParams({ folder: id })
     else setSearchParams({})
-  }
-
-  async function copyAIResult() {
-    await navigator.clipboard.writeText(aiResult)
   }
 
   async function handleNewFolder() {
@@ -321,7 +324,8 @@ export default function ListView() {
   const newNotePath = folderId ? `/notes/new?folder=${folderId}` : '/notes/new'
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex flex-col sm:flex-row h-screen bg-gray-50 dark:bg-gray-900">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
@@ -341,7 +345,20 @@ export default function ListView() {
           <UserAvatar />
         </div>
 
-        <FolderBreadcrumb breadcrumb={breadcrumb} onNavigate={openFolder} />
+        {searchQuery ? (
+          <div className="flex items-center gap-1.5 px-1.5 py-0.5">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Search Results</span>
+            <button
+              onClick={() => setSearchQuery('')}
+              title="Clear search"
+              className="p-0.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <FolderBreadcrumb breadcrumb={breadcrumb} onNavigate={openFolder} />
+        )}
 
         <div ref={categoryScrollRef} className="flex items-center gap-2 overflow-x-auto pt-[0.2em] pb-1">
           <button
@@ -526,40 +543,6 @@ export default function ListView() {
         </DragOverlay>
       </DndContext>
 
-      {/* AI result pane */}
-      {aiResult && (
-        <div className="shrink-0 mx-4 mb-2 rounded-xl border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-blue-700 dark:text-blue-400 uppercase tracking-wide">AI Response</span>
-            <div className="flex items-center gap-2">
-              <button
-                className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
-                onClick={copyAIResult}
-              >
-                <Copy className="w-3 h-3" />
-                Copy
-              </button>
-              <button
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                onClick={() => setAiResult('')}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-          <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{aiResult}</p>
-        </div>
-      )}
-
-      <div className="shrink-0 no-print">
-        <AIBar
-          getNoteContext={() => ''}
-          getSelectedText={() => ''}
-          onResult={(text) => setAiResult(text)}
-          placeholder="Ask AI a question…"
-        />
-      </div>
-
       {toast && (
         <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">
           {toast}
@@ -603,6 +586,24 @@ export default function ListView() {
       >
         <Plus className="w-6 h-6" />
       </Link>
+      </div>
+
+      {/* List-view AI Assistant: scope is the multiselected notes; with none selected
+          it searches the library. Global session (null noteId). */}
+      <AIConversationPanel
+        isOpen={panelOpen}
+        onToggle={() => setPanelOpen((o) => !o)}
+        mode="list"
+        getSelectedNoteIds={() => Array.from(selectedIds)}
+        onSearchResults={(query) => setSearchQuery(query)}
+        getNoteContext={() => ''}
+        noteId={null}
+        onAddToNote={async () => {}}
+        editor={aiEditor}
+        defaultCategoryId={defaultCategoryId}
+        currentFolderId={folderId}
+        onNotesChanged={() => { void loadNotes(buildParams(), true) }}
+      />
     </div>
   )
 }

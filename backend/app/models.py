@@ -119,7 +119,9 @@ class SystemPrompt(SQLModel, table=True):
 
 class AISession(SQLModel, table=True):
     id: str = Field(primary_key=True)
-    note_id: str = Field(index=True)
+    # Null note_id marks a "global" session (the list-view AI Assistant), which is
+    # not tied to any single open note. Note-scoped sessions carry the note's id.
+    note_id: Optional[str] = Field(default=None, index=True)
     user_id: str = Field(index=True)
     name: str
     messages: str = Field(default='[]')

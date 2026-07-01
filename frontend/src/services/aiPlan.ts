@@ -13,6 +13,10 @@ export interface ContextCategory { id: string; label: string }
 // body should contain and leaves `content` empty; the body is written in a later per-step call.
 export type PlanAction =
   | { type: 'respond'; text: string; description?: string }
+  // Retrieval step (list-view AI Assistant): search the note library for `query`.
+  // Resolved inside the panel — NOT by planExecutor — so results can be fed back into
+  // a follow-up planning round and reflected in the list view.
+  | { type: 'find_notes'; query: string; description?: string }
   | { type: 'create_note'; title: string; content: string; spec?: string; ref?: string; description?: string }
   | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; spec?: string; description?: string }
   | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
@@ -55,6 +59,7 @@ Output format (JSON only — no prose, no markdown code fences):
 
 Action types (every action MAY also include an optional "description": one short plain sentence summarising it for a confirmation preview):
 - respond:           { "type":"respond", "text":"<markdown>" }
+- find_notes:        { "type":"find_notes", "query":"<search text>" }
 - create_note:       { "type":"create_note", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
 - edit_note:         { "type":"edit_note", "noteId":"<id>", "mode":"replace"|"amend", "content":"<markdown>" }
 - edit_section:       { "type":"edit_section", "noteId":"<id>", "section":"<heading text>", "content":"<markdown incl. the section heading>" }
@@ -71,6 +76,7 @@ Action types (every action MAY also include an optional "description": one short
 - delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
 
 Rules:
+- Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request (e.g. "find all notes about bacteria", "find notes titled 'Testimony…' and consolidate them"). Return a plan whose ONLY action is a single find_notes with a concise search query (the app matches it against note titles and bodies). The matching notes are then added to your context and you are asked to continue: at that point either return a "respond" action (for a pure "find" request — the results are already shown to the user) or emit mutation actions targeting the found note ids (for a "find and act" request). The search is a substring match over title AND body, so it may return extra notes — pick the right ones yourself by their titles/bodies (e.g. for "title starting with 'Testimony'", keep only notes whose title actually starts with "Testimony"). Do NOT use find_notes when notes are already listed in context, or when the request only creates brand-new notes.
 - ANSWER BY DEFAULT — do NOT modify notes unless explicitly asked. If the user asks a question, asks you to explain, research, or summarise something in the chat, or otherwise just wants information, return ONLY a single "respond" action containing your answer. NEVER create, edit, append, rename, move, tag, annotate, or otherwise change a note unless the user EXPLICITLY tells you to change their notes (e.g. "create a note…", "add this to the note", "rename…", "tag…", "organise…"). When a request is ambiguous, or could be satisfied with a conversational answer, prefer a "respond" action over modifying notes.
 - All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies given to you — both in the "Context (note bodies)" section and in the latest "Current note — live" message — are Markdown; preserve their existing formatting (headings, bold, lists, links) when editing.
 - Deferred body generation (IMPORTANT for long or multiple bodies): For create_note, create_child_note, edit_note, edit_section and append_note you may EITHER write the body inline in "content", OR set "spec" to a precise description of what the body must contain and leave "content" empty (""). When a body would be long, or you are creating/rewriting MULTIPLE notes, PREFER "spec" and leave "content" empty — each spec'd body is written in a separate follow-up step that sees this same plan and context, which avoids truncation. Use inline "content" only for short, simple bodies. Never set both for the same action.
@@ -138,6 +144,11 @@ function validateAction(raw: unknown): PlanAction | null {
       const text = asString(a.text)
       if (text === undefined) return null
       return { type: 'respond', text, ...d }
+    }
+    case 'find_notes': {
+      const query = asString(a.query)
+      if (!query) return null
+      return { type: 'find_notes', query, ...d }
     }
     case 'create_note': {
       const title = asString(a.title)
@@ -274,6 +285,7 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
   const name = (id: string) => labelMap.get(id) ?? id
   switch (action.type) {
     case 'respond': return `Reply: ${truncate(action.text)}`
+    case 'find_notes': return `Search notes for “${truncate(action.query, 60)}”`
     case 'create_note': return `Create note “${action.title || 'Untitled'}”`
     case 'edit_note': return `${action.mode === 'amend' ? 'Amend' : 'Replace'} note “${name(action.noteId)}”`
     case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`
