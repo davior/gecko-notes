@@ -1,4 +1,4 @@
-import { Pin, Globe, FolderInput, Trash2 } from 'lucide-react'
+import { Pin, Globe, CheckCircle2 } from 'lucide-react'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
 import CategoryBadge from './CategoryBadge'
@@ -26,13 +26,22 @@ interface Props {
   category?: Category
   onClick: (id: string) => void
   onPin?: (id: string) => void
-  onMove?: (id: string) => void
-  onDelete?: (id: string) => void
+  selected?: boolean
+  onToggleSelect?: (id: string) => void
+  onShareClick?: (url: string) => void
   viewMode?: 'list' | 'card'
 }
 
-export default function NoteCard({ note, category, onClick, onPin, onMove, onDelete, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list' }: Props) {
   const visibleTags = note.tags.slice(0, 3)
+
+  function handleShareClick(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (note.share_token && onShareClick) {
+      const url = `${window.location.origin}/api/shared/${note.share_token}/preview`
+      onShareClick(url)
+    }
+  }
 
   if (viewMode === 'card') {
     const hasImage = Boolean(note.first_image_url)
@@ -42,7 +51,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
           hasImage
             ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
-        }`}
+        } ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
@@ -79,22 +88,16 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
               {relativeDate(note.modified_at)}
             </span>
             {note.is_shared && (
-              <span title="Shared publicly">
+              <button
+                title="Shared publicly — click to copy link"
+                className="p-0.5 rounded transition-colors text-green-400 hover:bg-white/10"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={handleShareClick}
+              >
                 <Globe
-                  className="w-3.5 h-3.5 text-green-400"
+                  className="w-3.5 h-3.5"
                   style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
                 />
-              </span>
-            )}
-            {onMove && (
-              <button
-                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
-                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title="Move to folder"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
-              >
-                <FolderInput className="w-3.5 h-3.5" />
               </button>
             )}
             {onPin && (
@@ -108,15 +111,15 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
               </button>
             )}
-            {onDelete && (
+            {onToggleSelect && (
               <button
-                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
-                style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title="Delete note"
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                title={selected ? 'Deselect note' : 'Select note'}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -131,7 +134,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
             {note.title || 'Untitled'}
           </h3>
           <p
-            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-1.5"
+            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-1.5"
             style={hasImage ? { color: 'rgba(255,255,255,0.9)', textShadow } : undefined}
           >
             {note.content_preview || 'No content'}
@@ -167,7 +170,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
   // List view
   return (
     <div
-      className="card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
+      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
@@ -177,16 +180,13 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-gray-400">{relativeDate(note.modified_at)}</span>
             {note.is_shared && (
-              <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
-            )}
-            {onMove && (
               <button
-                className="p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors"
-                title="Move to folder"
+                title="Shared publicly — click to copy link"
+                className="p-0.5 rounded transition-colors text-green-400 hover:bg-gray-100 dark:hover:bg-gray-700"
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onMove(note.id) }}
+                onClick={handleShareClick}
               >
-                <FolderInput className="w-3.5 h-3.5" />
+                <Globe className="w-3.5 h-3.5" />
               </button>
             )}
             {onPin && (
@@ -199,14 +199,14 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
                 <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
               </button>
             )}
-            {onDelete && (
+            {onToggleSelect && (
               <button
-                className="p-0.5 rounded text-gray-300 hover:text-red-500 transition-colors"
-                title="Delete note"
+                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                title={selected ? 'Deselect note' : 'Select note'}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onDelete(note.id) }}
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -214,7 +214,7 @@ export default function NoteCard({ note, category, onClick, onPin, onMove, onDel
         <h3 className="font-semibold text-gray-900 dark:text-gray-100 text-sm leading-tight mb-1 truncate">
           {note.title || 'Untitled'}
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-2">{note.content_preview || 'No content'}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-2">{note.content_preview || 'No content'}</p>
         {note.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {note.tags.slice(0, 4).map((tag) => <TagChip key={tag} tag={tag} />)}

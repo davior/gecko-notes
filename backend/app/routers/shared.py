@@ -44,7 +44,7 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
     except Exception:
         tags = []
 
-    content_preview = extract_plain_text(note.content, 200)
+    content_preview = extract_plain_text(note.content, 400)
     first_image_url = extract_first_image(note.content)
 
     return DataResponse(data=SharedNoteRead(
@@ -102,7 +102,7 @@ def get_shared_note_preview(token: str, request: Request, session: Session = Dep
 
     author = session.get(User, note.user_id) if note.user_id else None
 
-    content_preview = extract_plain_text(note.content, 200)
+    content_preview = extract_plain_text(note.content, 400)
     first_image_url = extract_first_image(note.content)
 
     # Construct absolute URLs using X-Forwarded headers (from reverse proxy) or fallback to request.url

@@ -161,6 +161,7 @@ class NoteListItem(BaseModel):
     tags: List[str]
     is_pinned: bool
     is_shared: bool = False
+    share_token: Optional[str] = None
     created_at: UTCDatetime
     modified_at: UTCDatetime
 

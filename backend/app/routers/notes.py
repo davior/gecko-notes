@@ -122,7 +122,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
     return NoteListItem(
         id=note.id,
         title=note.title,
-        content_preview=extract_plain_text(note.content, 120),
+        content_preview=extract_plain_text(note.content, 240),
         first_image_url=extract_first_image(note.content),
         category_id=note.category_id,
         folder_id=note.folder_id,
@@ -130,6 +130,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
+        share_token=note.share_token,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
@@ -155,7 +156,7 @@ def version_to_list_item(version: NoteVersion) -> NoteVersionListItem:
     return NoteVersionListItem(
         id=version.id,
         title=version.title,
-        content_preview=extract_plain_text(version.content, 120),
+        content_preview=extract_plain_text(version.content, 240),
         created_at=version.created_at,
     )
 
