@@ -151,6 +151,15 @@ export default function ListView() {
     setSelectedIds(new Set())
   }
 
+  async function handleShareClick(url: string) {
+    try {
+      await navigator.clipboard.writeText(url)
+      showToast('Shared link copied to clipboard!')
+    } catch {
+      showToast('Failed to copy link')
+    }
+  }
+
   function toggleView() {
     const next: ViewMode = viewMode === 'list' ? 'card' : 'list'
     localStorage.setItem('viewMode', next)
@@ -294,6 +303,7 @@ export default function ListView() {
           onPin={pinNote}
           selected={selectedIds.has(note.id)}
           onToggleSelect={toggleSelect}
+          onShareClick={handleShareClick}
           viewMode={viewMode}
         />
       </DraggableNote>

@@ -28,11 +28,20 @@ interface Props {
   onPin?: (id: string) => void
   selected?: boolean
   onToggleSelect?: (id: string) => void
+  onShareClick?: (url: string) => void
   viewMode?: 'list' | 'card'
 }
 
-export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list' }: Props) {
   const visibleTags = note.tags.slice(0, 3)
+
+  function handleShareClick(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (note.share_token && onShareClick) {
+      const url = `${window.location.origin}/shared/${note.share_token}`
+      onShareClick(url)
+    }
+  }
 
   if (viewMode === 'card') {
     const hasImage = Boolean(note.first_image_url)
@@ -79,12 +88,17 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
               {relativeDate(note.modified_at)}
             </span>
             {note.is_shared && (
-              <span title="Shared publicly">
+              <button
+                title="Shared publicly — click to copy link"
+                className="p-0.5 rounded transition-colors text-green-400 hover:bg-white/10"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={handleShareClick}
+              >
                 <Globe
-                  className="w-3.5 h-3.5 text-green-400"
+                  className="w-3.5 h-3.5"
                   style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
                 />
-              </span>
+              </button>
             )}
             {onPin && (
               <button
@@ -166,7 +180,14 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-gray-400">{relativeDate(note.modified_at)}</span>
             {note.is_shared && (
-              <span title="Shared publicly"><Globe className="w-3.5 h-3.5 text-green-400" /></span>
+              <button
+                title="Shared publicly — click to copy link"
+                className="p-0.5 rounded transition-colors text-green-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={handleShareClick}
+              >
+                <Globe className="w-3.5 h-3.5" />
+              </button>
             )}
             {onPin && (
               <button

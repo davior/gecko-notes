@@ -130,6 +130,7 @@ def note_to_list_item(note: Note) -> NoteListItem:
         tags=tags,
         is_pinned=note.is_pinned,
         is_shared=note.is_shared,
+        share_token=note.share_token,
         created_at=note.created_at,
         modified_at=note.modified_at,
     )
