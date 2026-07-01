@@ -59,6 +59,7 @@ export default function ListView() {
   )
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [panelOpen, setPanelOpen] = useState(false)
+  const [fabMenuOpen, setFabMenuOpen] = useState(false)
   const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -325,7 +326,7 @@ export default function ListView() {
 
   return (
     <div className="flex flex-col sm:flex-row h-screen bg-gray-50 dark:bg-gray-900">
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
@@ -390,13 +391,6 @@ export default function ListView() {
             </button>
           ))}
           <div className="flex-1" />
-          <button
-            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all"
-            onClick={handleNewFolder}
-          >
-            <FolderPlus className="w-3 h-3" />
-            New folder
-          </button>
           <button
             className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all"
             onClick={toggleSort}
@@ -579,13 +573,42 @@ export default function ListView() {
         </div>
       )}
 
-      <Link
-        to={newNotePath}
-        className="fixed bottom-20 right-6 w-12 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center transition-colors no-print"
-        aria-label="New note"
-      >
-        <Plus className="w-6 h-6" />
-      </Link>
+      {/* Close the "+" menu when clicking anywhere outside it */}
+      {fabMenuOpen && (
+        <div className="fixed inset-0 z-30" onClick={() => setFabMenuOpen(false)} />
+      )}
+
+      {/* Add menu: anchored to the notes column (not the viewport) so it never
+          overlaps the AI Assistant panel. Offers New Note / New Folder. */}
+      <div className="absolute bottom-6 right-6 z-40 no-print">
+        {fabMenuOpen && (
+          <div className="absolute bottom-full right-0 mb-3 w-44 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden p-1">
+            <Link
+              to={newNotePath}
+              onClick={() => setFabMenuOpen(false)}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Plus className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              New Note
+            </Link>
+            <button
+              onClick={() => { setFabMenuOpen(false); void handleNewFolder() }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
+            >
+              <FolderPlus className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              New Folder
+            </button>
+          </div>
+        )}
+        <button
+          onClick={() => setFabMenuOpen((o) => !o)}
+          aria-label="Add"
+          aria-expanded={fabMenuOpen}
+          className="w-12 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all"
+        >
+          <Plus className={`w-6 h-6 transition-transform ${fabMenuOpen ? 'rotate-45' : ''}`} />
+        </button>
+      </div>
       </div>
 
       {/* List-view AI Assistant: scope is the multiselected notes; with none selected
