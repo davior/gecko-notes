@@ -38,7 +38,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
   function handleShareClick(e: React.MouseEvent) {
     e.stopPropagation()
     if (note.share_token && onShareClick) {
-      const url = `${window.location.origin}/shared/${note.share_token}`
+      const url = `${window.location.origin}/api/shared/${note.share_token}/preview`
       onShareClick(url)
     }
   }
