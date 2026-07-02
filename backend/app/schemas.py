@@ -209,6 +209,10 @@ class SharedNoteRead(BaseModel):
     content_preview: str = ""
     first_image_url: Optional[str] = None
     like_count: int = 0
+    # Maps ids of childNote/noteReference blocks in `content` to the share
+    # token of that note, for notes that are also shared. Lets the shared
+    # view link to other shared notes instead of the private edit URL.
+    linked_shared_notes: dict[str, str] = {}
 
     class Config:
         from_attributes = True

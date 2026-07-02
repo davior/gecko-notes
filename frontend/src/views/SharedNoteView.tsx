@@ -8,6 +8,7 @@ import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import type { PartialBlock } from '@blocknote/core'
 import { noteSchema } from '@/blocks/childNoteBlock'
+import { SharedLinkContext } from '@/blocks/sharedLinkContext'
 import DocumentOutline from '@/components/DocumentOutline'
 import { sharedApi, type SharedNote } from '@/api/shared'
 import { applyThemeToDom } from '@/stores/settings'
@@ -69,6 +70,7 @@ function SharedNoteBody({ note }: { note: SharedNote }) {
   const editorTheme: 'light' | 'dark' = note.theme ? note.theme.mode : 'light'
 
   return (
+    <SharedLinkContext.Provider value={{ shareTokens: note.linked_shared_notes }}>
     <div className="shared-body flex flex-1 min-h-0 flex-col sm:flex-row">
       {/* Document outline (left) */}
       <DocumentOutline
@@ -135,6 +137,7 @@ function SharedNoteBody({ note }: { note: SharedNote }) {
         </main>
       </div>
     </div>
+    </SharedLinkContext.Provider>
   )
 }
 

@@ -12,6 +12,7 @@ export interface SharedNote {
   author_avatar_url: string | null
   theme: Theme | null
   like_count: number
+  linked_shared_notes: Record<string, string>
 }
 
 export const sharedApi = {

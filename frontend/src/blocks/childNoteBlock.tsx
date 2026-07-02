@@ -5,8 +5,10 @@ import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteSchema, defaultBlockSpecs, type PartialBlock } from '@blocknote/core'
 import { ChevronRight, ChevronDown, FileText, ExternalLink, Repeat } from 'lucide-react'
 import { notesApi } from '@/api/notes'
+import { sharedApi } from '@/api/shared'
 import { noteReferenceBlock } from './noteReferenceBlock'
 import { audioBlock } from './audioBlock'
+import { SharedLinkContext } from './sharedLinkContext'
 
 // Tracks the chain of child-note ids currently being rendered so an embed that
 // references one of its own ancestors is shown as a circular reference instead
@@ -71,23 +73,48 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(false)
 
+  // In the public shared view, only load/link to the child note when it is
+  // also shared — otherwise there's no accessible (unauthenticated) way to
+  // fetch it, and it must never fall back to the private edit URL.
+  const sharedLink = useContext(SharedLinkContext)
+  const sharedToken = sharedLink?.shareTokens[childNoteId]
+  const unavailable = !!sharedLink && !sharedToken
+
   const toggle = useCallback(async () => {
     if (isCircular) return
     const next = !open
     setOpen(next)
     if (next && content === null && !error) {
+      if (unavailable) {
+        setError(true)
+        return
+      }
       setLoading(true)
       try {
-        const res = await notesApi.get(childNoteId)
-        setContent(res.data.content)
-        if (res.data.title) setDisplayTitle(res.data.title)
+        if (sharedLink && sharedToken) {
+          const res = await sharedApi.get(sharedToken)
+          setContent(res.data.content)
+          if (res.data.title) setDisplayTitle(res.data.title)
+        } else {
+          const res = await notesApi.get(childNoteId)
+          setContent(res.data.content)
+          if (res.data.title) setDisplayTitle(res.data.title)
+        }
       } catch {
         setError(true)
       } finally {
         setLoading(false)
       }
     }
-  }, [open, content, error, childNoteId])
+  }, [open, content, error, childNoteId, sharedLink, sharedToken, unavailable])
+
+  function handleOpenClick() {
+    if (sharedLink) {
+      if (sharedToken) navigate(`/shared/${sharedToken}`)
+      return
+    }
+    navigate(`/notes/${childNoteId}`)
+  }
 
   return (
     <div
@@ -110,9 +137,10 @@ function ChildNotePanel({ childNoteId, title }: PanelProps) {
           {isCircular && <span className="text-xs text-amber-500 shrink-0">(circular reference)</span>}
         </button>
         <button
-          className="shrink-0 flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
-          title="Open child note"
-          onClick={() => navigate(`/notes/${childNoteId}`)}
+          className="shrink-0 flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default"
+          title={unavailable ? 'This note is not shared' : 'Open child note'}
+          onClick={handleOpenClick}
+          disabled={unavailable}
         >
           <ExternalLink className="w-4 h-4" />
         </button>

@@ -1,12 +1,12 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from sqlmodel import Session, select
+from sqlmodel import Session, select, col
 
 from app.database import get_session
 from app.models import Note, User, UserSetting, Theme
 from app.schemas import DataResponse, SharedNoteRead, ThemeRead, LikeCountRead
-from app.routers.notes import extract_first_image, extract_plain_text
+from app.routers.notes import extract_first_image, extract_plain_text, extract_linked_note_ids
 
 router = APIRouter()
 
@@ -47,6 +47,14 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
     content_preview = extract_plain_text(note.content, 400)
     first_image_url = extract_first_image(note.content)
 
+    linked_ids = extract_linked_note_ids(note.content)
+    linked_shared_notes: dict[str, str] = {}
+    if linked_ids:
+        linked_notes = session.exec(
+            select(Note).where(col(Note.id).in_(linked_ids), Note.is_shared == True)
+        ).all()
+        linked_shared_notes = {n.id: n.share_token for n in linked_notes if n.share_token}
+
     return DataResponse(data=SharedNoteRead(
         id=note.id,
         title=note.title,
@@ -60,6 +68,7 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
         content_preview=content_preview,
         first_image_url=first_image_url,
         like_count=note.like_count or 0,
+        linked_shared_notes=linked_shared_notes,
     ))
 
 
