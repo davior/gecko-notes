@@ -26,4 +26,4 @@ export const audioBlock = createReactBlockSpec(
       </div>
     ),
   },
-)
+)()

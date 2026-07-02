@@ -179,7 +179,7 @@ export const childNoteBlock = createReactBlockSpec(
       />
     ),
   },
-)
+)()
 
 // Shared editor schema: the default blocks plus the childNote block. Apply this
 // to every useCreateBlockNote call so notes containing child blocks render
