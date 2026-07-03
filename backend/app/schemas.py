@@ -209,6 +209,15 @@ class SharedNoteRead(BaseModel):
     content_preview: str = ""
     first_image_url: Optional[str] = None
     like_count: int = 0
+    # Maps ids of childNote/noteReference blocks in `content` to the share
+    # token of that note, for notes that are also shared. Lets the shared
+    # view link to other shared notes instead of the private edit URL.
+    linked_shared_notes: dict[str, str] = {}
+    # Title of the parent note (if this note has one), shown even when the
+    # parent isn't shared. parent_share_token is only set when the parent is
+    # also shared, which is what makes the "Up to {parent}" link navigable.
+    parent_title: Optional[str] = None
+    parent_share_token: Optional[str] = None
 
     class Config:
         from_attributes = True

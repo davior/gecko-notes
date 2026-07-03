@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2, ChevronDown } from 'lucide-react'
+import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2, ChevronDown, Upload } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
@@ -18,6 +18,7 @@ import { useNotesStore } from '@/stores/notes'
 import { useFoldersStore } from '@/stores/folders'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
+import { parseMarkdownFrontmatter } from '@/utils/markdown'
 import type { NoteListItem } from '@/api/notes'
 import type { Folder } from '@/api/folders'
 
@@ -45,7 +46,7 @@ export default function ListView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
 
-  const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote } = useNotesStore()
+  const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, createNote } = useNotesStore()
   const foldersStore = useFoldersStore()
   const { breadcrumb, subfolders } = foldersStore
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
@@ -75,6 +76,8 @@ export default function ListView() {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryScrollRef = useRef<HTMLDivElement>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const [importing, setImporting] = useState(false)
 
   // Headless BlockNote editor: powers the list-view AI Assistant's markdown↔blocks
   // conversion for context building and plan execution (there is no on-screen editor here).
@@ -195,6 +198,46 @@ export default function ListView() {
     const name = window.prompt('New folder name')?.trim()
     if (!name) return
     await foldersStore.createFolder({ name, parent_folder_id: folderId })
+  }
+
+  function titleFromFilename(filename: string): string {
+    return filename.replace(/\.(md|markdown)$/i, '').trim() || 'Untitled'
+  }
+
+  // Imports one or more .md files as new notes in the currently open folder.
+  async function handleImportMarkdown(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setImporting(true)
+    let imported = 0
+    let failed = 0
+    try {
+      for (const file of Array.from(files)) {
+        try {
+          const raw = await file.text()
+          const { title, tags, body } = parseMarkdownFrontmatter(raw)
+          const blocks = await aiEditor.tryParseMarkdownToBlocks(body)
+          await createNote({
+            title: title || titleFromFilename(file.name),
+            content: JSON.stringify(blocks.length > 0 ? blocks : [{ type: 'paragraph' }]),
+            category_id: defaultCategoryId,
+            folder_id: folderId,
+            tags,
+          })
+          imported++
+        } catch {
+          failed++
+        }
+      }
+    } finally {
+      setImporting(false)
+      if (importInputRef.current) importInputRef.current.value = ''
+      loadNotes(buildParams(), true)
+      showToast(
+        failed === 0
+          ? `Imported ${imported} note${imported !== 1 ? 's' : ''}`
+          : `Imported ${imported} note${imported !== 1 ? 's' : ''}, ${failed} failed`,
+      )
+    }
   }
 
   async function handleRenameFolder(folder: Folder) {
@@ -580,10 +623,18 @@ export default function ListView() {
       )}
 
       {/* Add menu: anchored to the notes column (not the viewport) so it never
-          overlaps the AI Assistant panel. Offers New Note / New Folder. */}
+          overlaps the AI Assistant panel. Offers New Note / New Folder / Import Markdown. */}
       <div className="absolute bottom-6 right-6 z-40 no-print">
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".md,.markdown"
+          multiple
+          className="hidden"
+          onChange={(e) => void handleImportMarkdown(e.target.files)}
+        />
         {fabMenuOpen && (
-          <div className="absolute bottom-full right-0 mb-3 w-44 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden p-1">
+          <div className="absolute bottom-full right-0 mb-3 w-48 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden p-1">
             <Link
               to={newNotePath}
               onClick={() => setFabMenuOpen(false)}
@@ -598,6 +649,14 @@ export default function ListView() {
             >
               <FolderPlus className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               New Folder
+            </button>
+            <button
+              onClick={() => { setFabMenuOpen(false); importInputRef.current?.click() }}
+              disabled={importing}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left disabled:opacity-50"
+            >
+              <Upload className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              {importing ? 'Importing…' : 'Import Markdown'}
             </button>
           </div>
         )}

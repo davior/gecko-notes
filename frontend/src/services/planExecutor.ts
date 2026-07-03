@@ -15,7 +15,7 @@ import type { Plan, PlanAction } from './aiPlan'
 export interface PlanEditor {
   // Method signatures (not arrow properties) so the real editor's more specifically
   // typed block params remain assignable to this structural view.
-  tryParseMarkdownToBlocks(markdown: string): Promise<unknown[]>
+  tryParseMarkdownToBlocks(markdown: string): unknown[]
   blocksToMarkdownLossy(blocks?: unknown[]): string
 }
 

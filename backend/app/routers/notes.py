@@ -91,6 +91,34 @@ def extract_plain_text(content_str: str, max_chars: int = 200) -> str:
         return content_str[:max_chars] if content_str else ""
 
 
+def extract_linked_note_ids(content_str: str) -> List[str]:
+    """Return the ids of all notes referenced via childNote or noteReference blocks."""
+    try:
+        blocks = json.loads(content_str)
+    except Exception:
+        return []
+
+    ids: List[str] = []
+
+    def walk(block_list):
+        for block in block_list:
+            if not isinstance(block, dict):
+                continue
+            props = block.get("props", {}) or {}
+            if block.get("type") == "childNote":
+                child_id = props.get("childNoteId")
+                if child_id:
+                    ids.append(child_id)
+            elif block.get("type") == "noteReference":
+                ref_id = props.get("noteId")
+                if ref_id:
+                    ids.append(ref_id)
+            walk(block.get("children", []) or [])
+
+    walk(blocks)
+    return ids
+
+
 def note_to_read(note: Note) -> NoteRead:
     try:
         tags = json.loads(note.tags)

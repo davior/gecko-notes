@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
@@ -13,6 +13,8 @@ import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import { filterSuggestionItems, type PartialBlock } from '@blocknote/core'
 import { noteSchema, ChildNoteChainContext } from '@/blocks/childNoteBlock'
+import { EditorNoteContext } from '@/blocks/editorNoteContext'
+import type { EditorReferrerState } from '@/blocks/noteReferrerState'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -116,6 +118,10 @@ export default function EditorView() {
   const navigate = useNavigate()
   const { id: noteId } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
+  const location = useLocation()
+  // Set only when this note was reached by clicking a noteReference block
+  // (see noteReferenceBlock.tsx); absent on a direct visit/refresh of this URL.
+  const referrer = location.state as EditorReferrerState | undefined
   const isNew = !noteId
   // When creating a note from inside a folder view, the FAB carries ?folder=<id>
   // so the new note is created directly in that folder.
@@ -172,6 +178,15 @@ export default function EditorView() {
   const isSaving = useRef(false)
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
+  // Latches true the first time the editor UI has mounted, and stays true for the
+  // rest of this EditorView instance's lifetime (i.e. across parent <-> child note
+  // navigation, which changes `noteId` but keeps the same component/editor alive).
+  // Without this, `loaded` briefly flips false on every note switch and the JSX
+  // below would unmount BlockNoteView, tearing down and recreating the underlying
+  // ProseMirror view. BlockNote's TableHandlesController keeps a document-level
+  // mousemove listener alive across that teardown for one tick and throws
+  // ("editor view is not available") if it fires before the new view exists.
+  const editorEverLoaded = useRef(false)
   const defaultCategoryId = categoriesStore.categories[0]?.id ?? ''
   const latestTitle = useRef(title)
   const latestCategoryId = useRef(categoryId)
@@ -987,6 +1002,12 @@ export default function EditorView() {
   const activeGlassTheme = activeThemeId ? themes.find((t) => t.id === activeThemeId) : null
   const editorTheme: 'light' | 'dark' = activeGlassTheme ? activeGlassTheme.mode : theme
 
+  if (loaded) editorEverLoaded.current = true
+  // True on the very first load of this EditorView instance; false on every
+  // subsequent note switch, so the editor UI (and its BlockNoteView) stays
+  // mounted once shown instead of tearing down and rebuilding on navigation.
+  const showEditorChrome = loaded || editorEverLoaded.current
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-white dark:bg-gray-900">
       <header className="shrink-0 border-b border-gray-100 dark:border-gray-700 dark:bg-gray-900 no-print">
@@ -1011,6 +1032,15 @@ export default function EditorView() {
                 <X className="w-4 h-4" />
               </button>
             </div>
+          )}
+          {referrer && referrer.fromNoteId !== noteId && (
+            <button
+              className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
+              title="Go back to the note you referenced this from"
+              onClick={() => navigate(`/notes/${referrer.fromNoteId}`)}
+            >
+              <ArrowLeft className="w-4 h-4" /> Back to {referrer.fromTitle || 'note'}
+            </button>
           )}
           <div className="flex-1" />
           <button
@@ -1052,7 +1082,7 @@ export default function EditorView() {
 
       <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
         {/* Document outline (left) */}
-        {loaded && (
+        {showEditorChrome && (
           <DocumentOutline
             editor={editor}
             scrollContainerRef={editorScrollRef}
@@ -1062,7 +1092,7 @@ export default function EditorView() {
 
         {/* Editor column */}
         <div className="flex flex-col flex-1 min-w-0 min-h-0">
-          {loaded && (
+          {showEditorChrome && (
             <div className="shrink-0 px-6 pt-4 pb-2 no-print">
               <textarea
                 ref={titleRef}
@@ -1220,7 +1250,7 @@ export default function EditorView() {
           )}
 
           <div ref={editorScrollRef} className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
-            {!loaded ? (
+            {!showEditorChrome ? (
               <div className="flex items-center justify-center h-full">
                 <svg className="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -1229,6 +1259,7 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
+                <EditorNoteContext.Provider value={noteId ? { id: noteId, title } : null}>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
                   <div ref={annotationContainerRef} className="relative">
                     <BlockNoteView
@@ -1263,6 +1294,7 @@ export default function EditorView() {
                     />
                   </div>
                 </ChildNoteChainContext.Provider>
+                </EditorNoteContext.Provider>
               </EditorErrorBoundary>
             )}
           </div>
