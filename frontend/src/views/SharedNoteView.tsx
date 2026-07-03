@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Component } from 'react'
 import type { ReactNode } from 'react'
-import { useParams } from 'react-router-dom'
-import { Globe, Printer } from 'lucide-react'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
+import { Globe, Printer, ArrowLeft } from 'lucide-react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -9,6 +9,7 @@ import '@blocknote/core/fonts/inter.css'
 import type { PartialBlock } from '@blocknote/core'
 import { noteSchema } from '@/blocks/childNoteBlock'
 import { SharedLinkContext } from '@/blocks/sharedLinkContext'
+import type { SharedReferrerState } from '@/blocks/noteReferrerState'
 import DocumentOutline from '@/components/DocumentOutline'
 import { sharedApi, type SharedNote } from '@/api/shared'
 import { applyThemeToDom } from '@/stores/settings'
@@ -64,13 +65,13 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { hasError:
 // scrollable column. Rendered only once `note` is available so the read-only
 // editor can be created with its content (and the outline derived from it)
 // directly, without a hydration step.
-function SharedNoteBody({ note }: { note: SharedNote }) {
+function SharedNoteBody({ note, token }: { note: SharedNote; token: string }) {
   const editor = useCreateBlockNote({ schema: noteSchema, initialContent: parseContent(note.content) as never })
   const scrollRef = useRef<HTMLDivElement>(null)
   const editorTheme: 'light' | 'dark' = note.theme ? note.theme.mode : 'light'
 
   return (
-    <SharedLinkContext.Provider value={{ shareTokens: note.linked_shared_notes }}>
+    <SharedLinkContext.Provider value={{ shareTokens: note.linked_shared_notes, currentToken: token, currentTitle: note.title }}>
     <div className="shared-body flex flex-1 min-h-0 flex-col sm:flex-row">
       {/* Document outline (left) */}
       <DocumentOutline
@@ -143,6 +144,11 @@ function SharedNoteBody({ note }: { note: SharedNote }) {
 
 export default function SharedNoteView() {
   const { token } = useParams<{ token: string }>()
+  const navigate = useNavigate()
+  const location = useLocation()
+  // Set only when this shared note was reached by clicking a noteReference block
+  // (see noteReferenceBlock.tsx); absent on a direct visit/refresh of this URL.
+  const referrer = location.state as SharedReferrerState | undefined
   const [note, setNote] = useState<SharedNote | null>(null)
   const [notFound, setNotFound] = useState(false)
 
@@ -203,8 +209,21 @@ export default function SharedNoteView() {
 
       {/* Header */}
       <header className="no-print shrink-0 border-b border-gray-100 dark:border-gray-700 z-10" style={{ background: 'rgba(var(--glass-rgb,255,255,255), var(--glass-opacity,0.85))', backdropFilter: 'blur(var(--glass-blur,8px))' }}>
-        <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between">
-          <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
+        <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight shrink-0">Gecko Notes</span>
+            {referrer && referrer.fromToken !== token && (
+              <button
+                type="button"
+                className="flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 min-w-0"
+                title="Go back to the note you referenced this from"
+                onClick={() => navigate(`/shared/${referrer.fromToken}`)}
+              >
+                <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Back to {referrer.fromTitle || 'note'}</span>
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
             {token && (
               <SharePageActions key={token} token={token} title={note.title} initialLikeCount={note.like_count} />
@@ -232,7 +251,7 @@ export default function SharedNoteView() {
           links change the URL but keep this component mounted) remounts the BlockNote
           editor with fresh content, instead of useCreateBlockNote's initialContent
           silently keeping the previous note's document. */}
-      <SharedNoteBody key={note.id} note={note} />
+      <SharedNoteBody key={note.id} note={note} token={token ?? ''} />
     </div>
   )
 }

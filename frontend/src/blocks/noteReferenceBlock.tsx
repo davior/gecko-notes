@@ -3,10 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { createReactBlockSpec } from '@blocknote/react'
 import { FileText, ArrowRight } from 'lucide-react'
 import { SharedLinkContext } from './sharedLinkContext'
+import { EditorNoteContext } from './editorNoteContext'
+import type { EditorReferrerState, SharedReferrerState } from './noteReferrerState'
 
 function NoteReferencePanel({ noteId, noteTitle }: { noteId: string; noteTitle: string }) {
   const navigate = useNavigate()
   const sharedLink = useContext(SharedLinkContext)
+  const editorNote = useContext(EditorNoteContext)
 
   if (!noteId) {
     return (
@@ -24,10 +27,19 @@ function NoteReferencePanel({ noteId, noteTitle }: { noteId: string; noteTitle: 
 
   function handleClick() {
     if (sharedLink) {
-      if (sharedToken) navigate(`/shared/${sharedToken}`)
+      if (sharedToken) {
+        // Carry along where we navigated from so the referenced note's shared
+        // page can offer a link back — only present for this in-app click, not
+        // for a direct visit/refresh of the referenced note's URL.
+        const state: SharedReferrerState = { fromToken: sharedLink.currentToken, fromTitle: sharedLink.currentTitle }
+        navigate(`/shared/${sharedToken}`, { state })
+      }
       return
     }
-    navigate(`/notes/${noteId}`)
+    const state: EditorReferrerState | undefined = editorNote
+      ? { fromNoteId: editorNote.id, fromTitle: editorNote.title }
+      : undefined
+    navigate(`/notes/${noteId}`, { state })
   }
 
   return (

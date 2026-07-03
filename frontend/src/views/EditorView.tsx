@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
@@ -13,6 +13,8 @@ import '@blocknote/mantine/style.css'
 import '@blocknote/core/fonts/inter.css'
 import { filterSuggestionItems, type PartialBlock } from '@blocknote/core'
 import { noteSchema, ChildNoteChainContext } from '@/blocks/childNoteBlock'
+import { EditorNoteContext } from '@/blocks/editorNoteContext'
+import type { EditorReferrerState } from '@/blocks/noteReferrerState'
 
 import CategoryPicker from '@/components/CategoryPicker'
 import TagChip from '@/components/TagChip'
@@ -116,6 +118,10 @@ export default function EditorView() {
   const navigate = useNavigate()
   const { id: noteId } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
+  const location = useLocation()
+  // Set only when this note was reached by clicking a noteReference block
+  // (see noteReferenceBlock.tsx); absent on a direct visit/refresh of this URL.
+  const referrer = location.state as EditorReferrerState | undefined
   const isNew = !noteId
   // When creating a note from inside a folder view, the FAB carries ?folder=<id>
   // so the new note is created directly in that folder.
@@ -1027,6 +1033,15 @@ export default function EditorView() {
               </button>
             </div>
           )}
+          {referrer && referrer.fromNoteId !== noteId && (
+            <button
+              className="btn-ghost px-2 py-1.5 text-xs flex items-center gap-1 text-blue-600 dark:text-blue-400"
+              title="Go back to the note you referenced this from"
+              onClick={() => navigate(`/notes/${referrer.fromNoteId}`)}
+            >
+              <ArrowLeft className="w-4 h-4" /> Back to {referrer.fromTitle || 'note'}
+            </button>
+          )}
           <div className="flex-1" />
           <button
             className={`btn-ghost p-2 ${note?.is_pinned ? 'text-blue-500' : ''}`}
@@ -1244,6 +1259,7 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
+                <EditorNoteContext.Provider value={noteId ? { id: noteId, title } : null}>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
                   <div ref={annotationContainerRef} className="relative">
                     <BlockNoteView
@@ -1278,6 +1294,7 @@ export default function EditorView() {
                     />
                   </div>
                 </ChildNoteChainContext.Provider>
+                </EditorNoteContext.Provider>
               </EditorErrorBoundary>
             )}
           </div>
