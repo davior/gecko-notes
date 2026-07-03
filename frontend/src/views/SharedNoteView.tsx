@@ -207,7 +207,7 @@ export default function SharedNoteView() {
           <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight">Gecko Notes</span>
           <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
             {token && (
-              <SharePageActions token={token} title={note.title} initialLikeCount={note.like_count} />
+              <SharePageActions key={token} token={token} title={note.title} initialLikeCount={note.like_count} />
             )}
             <button
               type="button"
@@ -228,7 +228,11 @@ export default function SharedNoteView() {
       </header>
 
       {/* Outline + content */}
-      <SharedNoteBody note={note} />
+      {/* Keyed on the note id so navigating to a different shared note (child/reference
+          links change the URL but keep this component mounted) remounts the BlockNote
+          editor with fresh content, instead of useCreateBlockNote's initialContent
+          silently keeping the previous note's document. */}
+      <SharedNoteBody key={note.id} note={note} />
     </div>
   )
 }
