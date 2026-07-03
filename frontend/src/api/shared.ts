@@ -13,6 +13,11 @@ export interface SharedNote {
   theme: Theme | null
   like_count: number
   linked_shared_notes: Record<string, string>
+  // Title of the parent note, present whenever this note has one — even if
+  // the parent isn't shared. parent_share_token is only set when it is,
+  // which is what makes the "Up to {parent}" link navigable.
+  parent_title: string | null
+  parent_share_token: string | null
 }
 
 export const sharedApi = {

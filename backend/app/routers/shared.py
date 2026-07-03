@@ -55,6 +55,15 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
         ).all()
         linked_shared_notes = {n.id: n.share_token for n in linked_notes if n.share_token}
 
+    parent_title = None
+    parent_share_token = None
+    if note.parent_note_id:
+        parent = session.get(Note, note.parent_note_id)
+        if parent:
+            parent_title = parent.title
+            if parent.is_shared and parent.share_token:
+                parent_share_token = parent.share_token
+
     return DataResponse(data=SharedNoteRead(
         id=note.id,
         title=note.title,
@@ -69,6 +78,8 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
         first_image_url=first_image_url,
         like_count=note.like_count or 0,
         linked_shared_notes=linked_shared_notes,
+        parent_title=parent_title,
+        parent_share_token=parent_share_token,
     ))
 
 

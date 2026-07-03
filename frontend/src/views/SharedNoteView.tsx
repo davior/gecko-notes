@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Component } from 'react'
 import type { ReactNode } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
-import { Globe, Printer, ArrowLeft } from 'lucide-react'
+import { Globe, Printer, ArrowLeft, ArrowUp } from 'lucide-react'
 import { useCreateBlockNote } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -212,6 +212,27 @@ export default function SharedNoteView() {
         <div className="w-full md:w-4/5 mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm tracking-tight shrink-0">Gecko Notes</span>
+            {note.parent_title && (
+              note.parent_share_token ? (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 min-w-0"
+                  title="Go to parent note"
+                  onClick={() => navigate(`/shared/${note.parent_share_token}`)}
+                >
+                  <ArrowUp className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Up to {note.parent_title}</span>
+                </button>
+              ) : (
+                <span
+                  className="flex items-center gap-1 text-xs font-medium text-gray-400 dark:text-gray-600 cursor-default min-w-0"
+                  title="This note is not shared"
+                >
+                  <ArrowUp className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Up to {note.parent_title}</span>
+                </span>
+              )
+            )}
             {referrer && referrer.fromToken !== token && (
               <button
                 type="button"
