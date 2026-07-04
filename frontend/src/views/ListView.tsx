@@ -774,7 +774,10 @@ export default function ListView() {
         onToggle={() => setPanelOpen((o) => !o)}
         mode="list"
         getSelectedNoteIds={() => Array.from(selectedIds)}
-        onSearchResults={(query) => setSearchQuery(query)}
+        onSearchResults={(label, results) => {
+          setSearchQuery(label)
+          setDeepResults(results)
+        }}
         getNoteContext={() => ''}
         noteId={null}
         onAddToNote={async () => {}}

@@ -8,7 +8,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
 import { settingsApi } from '@/api/settings'
-import { notesApi, type NoteListItem } from '@/api/notes'
+import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
@@ -24,6 +24,7 @@ import {
   PLAN_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
+  type PlanAction,
   type ContextNote,
   type ContextFolder,
   type ContextCategory,
@@ -145,8 +146,11 @@ interface AIConversationPanelProps {
   // List mode: the currently multiselected note ids (the scope for the request).
   getSelectedNoteIds?: () => string[]
   // List mode: called when the assistant runs a find_notes search, so the list view
-  // can show the hits (replacing "All notes" with a "Search Results" header).
-  onSearchResults?: (query: string, results: NoteListItem[]) => void
+  // can show the hits (replacing "All notes" with a "Search Results" header). `label`
+  // is a human-readable, always-non-empty description of the search (query and/or
+  // folder scope) — never the raw query alone, since find_notes may be folder-scoped
+  // with no query text at all.
+  onSearchResults?: (label: string, results: NoteListItem[]) => void
   getNoteContext: () => string
   noteId?: string | null
   noteTitle?: string
@@ -170,6 +174,37 @@ interface AIConversationPanelProps {
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
+
+// Resolve a find_notes action's folder scope + free-text query into notesApi.list()
+// params. 'current' resolves against the folder currently being viewed
+// (ctx.currentFolderId — itself possibly null, meaning the root). When `folderId`
+// is absent, this is identical to the old unscoped behavior (global substring search).
+function findNotesParams(action: Extract<PlanAction, { type: 'find_notes' }>, ctx: PlanContext): ListNotesParams {
+  const params: ListNotesParams = { limit: 50 }
+  if (action.query) params.search = action.query
+  if (action.folderId !== undefined) {
+    const resolved = action.folderId === 'current' ? ctx.currentFolderId : action.folderId
+    params.in_folder = true
+    if (resolved !== null) params.folder_id = resolved
+    if (action.recursive) params.recursive = true
+  }
+  return params
+}
+
+// Human-readable description of a find_notes action's scope — used both in the
+// round summary sent back to the model and as the list view's "Search Results"
+// label. Always returns a non-empty string: the caller relies on this to avoid
+// tripping a "search box is empty" reset in the list view.
+function describeFindNotes(action: Extract<PlanAction, { type: 'find_notes' }>, ctx: PlanContext): string {
+  const parts: string[] = []
+  if (action.query) parts.push(`"${action.query}"`)
+  if (action.folderId !== undefined) {
+    const resolved = action.folderId === 'current' ? ctx.currentFolderId : action.folderId
+    const folderName = resolved === null ? 'the root' : (ctx.folders.find((f) => f.id === resolved)?.name ?? resolved)
+    parts.push(`folder "${folderName}"${action.recursive ? ' (recursive)' : ''}`)
+  }
+  return parts.join(' in ') || 'notes'
 }
 
 function safeStringify(v: unknown): string {
@@ -1060,23 +1095,30 @@ export default function AIConversationPanel({
       let searchRounds = 0
       while (searchRounds < MAX_SEARCH_ROUNDS && plan.actions.some((a) => a.type === 'find_notes')) {
         searchRounds++
-        const queries: string[] = []
-        for (const a of plan.actions) if (a.type === 'find_notes') queries.push(a.query)
+        const findActions = plan.actions.filter(
+          (a): a is Extract<PlanAction, { type: 'find_notes' }> => a.type === 'find_notes',
+        )
 
-        // Search the library; dedupe hits across all queries in this round.
+        // Search the library; dedupe hits across all find_notes actions in this round.
+        // Each action independently scopes by free-text query, folder, or both.
         const seen = new Set<string>()
         const foundListItems: NoteListItem[] = []
-        for (const q of queries) {
+        for (const a of findActions) {
           try {
-            const res = await notesApi.list({ search: q, limit: 50 })
+            const res = await notesApi.list(findNotesParams(a, ctx))
             for (const item of res.data) {
               if (!seen.has(item.id)) { seen.add(item.id); foundListItems.push(item) }
             }
           } catch { /* skip a failed search */ }
         }
 
-        // Reflect the search in the list view (Search Results header + populated results).
-        if (queries[0] !== undefined) onSearchResults?.(queries[0], foundListItems)
+        // Reflect the search in the list view (Search Results header + populated
+        // results). The label is never empty: an explicit action.description wins,
+        // else describeFindNotes always synthesizes something (query, folder scope,
+        // or the literal "notes" fallback) — this matters because the list view uses
+        // an empty search box to reset out of its search-results display.
+        const label = findActions.map((a) => a.description || describeFindNotes(a, ctx)).join(', ') || 'Search results'
+        onSearchResults?.(label, foundListItems)
 
         // Fetch full bodies and fold them into the context so the model can consolidate/edit them.
         const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
@@ -1102,12 +1144,13 @@ export default function AIConversationPanel({
 
         // Record the search as a turn so the model sees its own query and the results.
         const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
+        const scopeDescriptions = findActions.map((a) => describeFindNotes(a, ctx))
         const summary = foundListItems.length
-          ? `Search results for ${queries.map((q) => `"${q}"`).join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
-          : `Search for ${queries.map((q) => `"${q}"`).join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`
+          ? `Search results for ${scopeDescriptions.join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
+          : `Search for ${scopeDescriptions.join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`
         history = [
           ...history,
-          { role: 'assistant', content: JSON.stringify({ actions: queries.map((q) => ({ type: 'find_notes', query: q })) }) },
+          { role: 'assistant', content: JSON.stringify({ actions: findActions }) },
           { role: 'user', content: summary },
         ]
 
