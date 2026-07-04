@@ -13,10 +13,15 @@ export interface ContextCategory { id: string; label: string }
 // body should contain and leaves `content` empty; the body is written in a later per-step call.
 export type PlanAction =
   | { type: 'respond'; text: string; description?: string }
-  // Retrieval step (list-view AI Assistant): search the note library for `query`.
-  // Resolved inside the panel — NOT by planExecutor — so results can be fed back into
-  // a follow-up planning round and reflected in the list view.
-  | { type: 'find_notes'; query: string; description?: string }
+  // Retrieval step (list-view AI Assistant): search the note library for `query`
+  // and/or scope to a folder. Resolved inside the panel — NOT by planExecutor —
+  // so results can be fed back into a follow-up planning round and reflected in
+  // the list view. `folderId`: absent = no folder scope (global query search);
+  // null = the root; a real id, or the literal "current" = the folder currently
+  // being viewed (resolved at execution time). `recursive` includes descendant
+  // folders — ignored when `folderId` is absent. At least one of `query`/`folderId`
+  // must be set (enforced by validateAction).
+  | { type: 'find_notes'; query?: string; folderId?: string | null; recursive?: boolean; description?: string }
   | { type: 'create_note'; title: string; content: string; spec?: string; ref?: string; description?: string }
   | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; spec?: string; description?: string }
   | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
@@ -73,7 +78,7 @@ Output format (JSON only — no prose, no markdown code fences):
 
 Action types (every action MAY also include an optional "description": one short plain sentence summarising it for a confirmation preview):
 - respond:           { "type":"respond", "text":"<markdown>" }
-- find_notes:        { "type":"find_notes", "query":"<search text>" }
+- find_notes:        { "type":"find_notes", "query":"<search text>" } — or/also scope by folder: add "folderId":"<id>"|"current"|null and optionally "recursive":true (see "Finding notes" rule below)
 - create_note:       { "type":"create_note", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
 - edit_note:         { "type":"edit_note", "noteId":"<id>", "mode":"replace"|"amend", "content":"<markdown>" }
 - edit_section:       { "type":"edit_section", "noteId":"<id>", "section":"<heading text>", "content":"<markdown incl. the section heading>" }
@@ -90,11 +95,14 @@ Action types (every action MAY also include an optional "description": one short
 - delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
 
 Rules:
-- Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request (e.g. "find all notes about bacteria", "find notes titled 'Testimony…' and consolidate them"). Return a plan whose ONLY action is a single find_notes with a concise search query (the app matches it against note titles and bodies). The matching notes are then added to your context and you are asked to continue: at that point either return a "respond" action (for a pure "find" request — the results are already shown to the user) or emit mutation actions targeting the found note ids (for a "find and act" request). The search is a substring match over title AND body, so it may return extra notes — pick the right ones yourself by their titles/bodies (e.g. for "title starting with 'Testimony'", keep only notes whose title actually starts with "Testimony"). Do NOT use find_notes when notes are already listed in context, or when the request only creates brand-new notes.
+- Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request. Scope a find_notes action by free text, by folder, or both:
+  - "query": a concise search string — matched as a substring over note titles AND bodies, so it may return extra notes; pick the right ones yourself by their titles/bodies (e.g. for "title starting with 'Testimony'", keep only notes whose title actually starts with "Testimony").
+  - "folderId": scope to one folder — a folder id from the "Folders" list below, "current" (the folder currently being viewed — see the reference block header), or null (the root). Add "recursive":true to also include every folder nested beneath it, however deep — you do NOT need to know the folder hierarchy yourself. Examples: "find the notes in this folder" → {"type":"find_notes","folderId":"current"}; "find all notes in the sub-folders of this folder" → {"type":"find_notes","folderId":"current","recursive":true}; "notes about invoices in this folder" → {"type":"find_notes","folderId":"current","query":"invoices"}.
+  At least one of "query" or "folderId" is required. Return a plan whose ONLY action(s) are find_notes (usually one, but you may emit more than one, e.g. to search two different folders — the hits are merged). The matching notes are then added to your context and you are asked to continue: at that point either return a "respond" action (for a pure "find" request — the results are already shown to the user) or emit mutation actions targeting the found note ids (for a "find and act" request, e.g. find the sub-folder notes, then move_note each into the current folder). Do NOT use find_notes when notes are already listed in context, or when the request only creates brand-new notes.
 - ANSWER BY DEFAULT — do NOT modify notes unless explicitly asked. If the user asks a question, asks you to explain, research, or summarise something in the chat, or otherwise just wants information, return ONLY a single "respond" action containing your answer. NEVER create, edit, append, rename, move, tag, annotate, or otherwise change a note unless the user EXPLICITLY tells you to change their notes (e.g. "create a note…", "add this to the note", "rename…", "tag…", "organise…"). When a request is ambiguous, or could be satisfied with a conversational answer, prefer a "respond" action over modifying notes.
 - All note "content" is MARKDOWN. Never output BlockNote or raw JSON as a note body. The note bodies given to you — both in the "Context (note bodies)" section and in the latest "Current note — live" message — are Markdown; preserve their existing formatting (headings, bold, lists, links) when editing.
 - Deferred body generation (IMPORTANT for long or multiple bodies): For create_note, create_child_note, edit_note, edit_section and append_note you may EITHER write the body inline in "content", OR set "spec" to a precise description of what the body must contain and leave "content" empty (""). When a body would be long, or you are creating/rewriting MULTIPLE notes, PREFER "spec" and leave "content" empty — each spec'd body is written in a separate follow-up step that sees this same plan and context, which avoids truncation. Use inline "content" only for short, simple bodies. Never set both for the same action.
-- "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
+- "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id. (Exception: find_notes's "folderId" may also be "current" or null — see "Finding notes" above.)
 - For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Its live, up-to-date content is provided in the most recent user message (labelled "Current note — live"); other in-context notes appear in the "Context (note bodies)" section. Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
 - Dates and the current folder: every note in "Notes in context" is annotated with its creation and last-modified timestamps in ISO-8601 UTC (e.g. "(created 2026-07-01T…Z, modified 2026-07-03T…Z)"). The reference block header also states the current date and the folder the user is currently viewing. Use these to satisfy date-based requests — e.g. "created more than 3 days ago", "modified this week", "the oldest notes", "sort by date" — computing any relative dates against the stated current date. When the user says "here", "this folder", or "in here", it means the folder currently being viewed: use its id as "parentFolderId" for create_folder and as "folderId" for move_note (a null current folder means the root). Newly created notes are automatically placed in the current folder, so create_note needs no folder id.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
@@ -173,8 +181,18 @@ function validateAction(raw: unknown): PlanAction | null {
     }
     case 'find_notes': {
       const query = asString(a.query)
-      if (!query) return null
-      return { type: 'find_notes', query, ...d }
+      // Distinguish "absent" (no folder scope) from an explicit `null` (root) —
+      // asString(undefined) also yields undefined, so this can't reuse that helper.
+      const folderIdGiven = a.folderId === null || typeof a.folderId === 'string'
+      if (!query && !folderIdGiven) return null
+      const folderId = folderIdGiven ? (a.folderId === null ? null : (a.folderId as string)) : undefined
+      return {
+        type: 'find_notes',
+        ...(query ? { query } : {}),
+        ...(folderIdGiven ? { folderId } : {}),
+        ...(a.recursive === true ? { recursive: true } : {}),
+        ...d,
+      }
     }
     case 'create_note': {
       const title = asString(a.title)
@@ -339,6 +357,14 @@ export function parsePlan(raw: string): Plan {
   if (!raw || !raw.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
   // No parseable plan JSON → the whole message IS the reply. Never drop it.
   const proseFallback = (): Plan => ({ actions: [{ type: 'respond', text: raw.trim() || '(no response)' }] })
+  // A plan JSON envelope WAS located but yielded no usable action (e.g. every action
+  // failed validation, as with an empty find_notes query). Show only the prose around
+  // it — never the literal JSON — falling back to a generic message when there's no
+  // prose at all (the model emitted ONLY invalid JSON).
+  const invalidPlanFallback = (located: LocatedPlan): Plan => {
+    const outside = extractOutsideProse(located)
+    return { actions: [{ type: 'respond', text: outside || "I couldn't come up with a valid plan for that — could you rephrase your request?" }] }
+  }
 
   try {
     const located = locatePlanJson(raw)
@@ -349,14 +375,14 @@ export function parsePlan(raw: string): Plan {
     // and rendered as a normal reply rather than shown as raw JSON.
     const isBareAction = parsed !== null && typeof parsed === 'object' && 'type' in parsed
     const actionsRaw = isBareAction ? [parsed] : (parsed as { actions?: unknown }).actions
-    if (!Array.isArray(actionsRaw)) return proseFallback()
+    if (!Array.isArray(actionsRaw)) return invalidPlanFallback(located)
 
     const actions: PlanAction[] = []
     for (const a of actionsRaw.slice(0, MAX_PLAN_ACTIONS)) {
       const valid = validateAction(a)
       if (valid) actions.push(valid)
     }
-    if (actions.length === 0) return proseFallback()
+    if (actions.length === 0) return invalidPlanFallback(located)
 
     // Prepend any outside prose as a respond action so it shows first (respond-only
     // plans) or above the mutation table (mixed plans) and survives a plan cancel.
@@ -386,7 +412,15 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
   const name = (id: string) => labelMap.get(id) ?? id
   switch (action.type) {
     case 'respond': return `Reply: ${truncate(action.text)}`
-    case 'find_notes': return `Search notes for “${truncate(action.query, 60)}”`
+    case 'find_notes': {
+      const parts: string[] = []
+      if (action.query) parts.push(`“${truncate(action.query, 60)}”`)
+      if (action.folderId !== undefined) {
+        const folderLabel = action.folderId === 'current' ? 'the current folder' : action.folderId === null ? 'the root' : name(action.folderId)
+        parts.push(action.recursive ? `in ${folderLabel} and its subfolders` : `in ${folderLabel}`)
+      }
+      return `Search notes${parts.length ? ' for ' + parts.join(' ') : ''}`
+    }
     case 'create_note': return `Create note “${action.title || 'Untitled'}”`
     case 'edit_note': return `${action.mode === 'amend' ? 'Amend' : 'Replace'} note “${name(action.noteId)}”`
     case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`

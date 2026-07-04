@@ -1,6 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2, ChevronDown, Upload } from 'lucide-react'
+import {
+  Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2,
+  ChevronDown, Upload, CheckCircle2, Circle, Loader2,
+} from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
@@ -19,13 +22,24 @@ import { useFoldersStore } from '@/stores/folders'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { parseMarkdownFrontmatter } from '@/utils/markdown'
+import { notesApi } from '@/api/notes'
 import type { NoteListItem } from '@/api/notes'
 import type { Folder } from '@/api/folders'
+import { generateNoteFilter } from '@/services/smartQuery'
 
 type ViewMode = 'list' | 'card'
 
 function storedViewMode(): ViewMode {
   return (localStorage.getItem('viewMode') as ViewMode) ?? 'list'
+}
+
+// Instant, no-DB filter over notes already loaded for the current folder view — the
+// "no Enter" search tier. Same substring match (title + body) the backend previously
+// did server-side, just client-side and scoped to whatever's already fetched.
+function filterLocally(list: NoteListItem[], query: string): NoteListItem[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return list
+  return list.filter((n) => n.title.toLowerCase().includes(q) || n.content_preview.toLowerCase().includes(q))
 }
 
 // Wrap a NoteCard so it can be dragged onto a folder.
@@ -52,8 +66,14 @@ export default function ListView() {
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const categories = useCategoriesStore((s) => s.categories)
   const defaultSortOrder = useSettingsStore((s) => s.defaultSortOrder)
+  const aiService = useSettingsStore((s) => s.aiService)
 
   const [searchQuery, setSearchQuery] = useState('')
+  // Results of the last Enter-triggered deep search (AI-generated filter, or the plain
+  // keyword fallback), spanning all folders. null ⇒ showing the normal folder-scoped
+  // view (optionally locally filtered by searchQuery as-you-type).
+  const [deepResults, setDeepResults] = useState<NoteListItem[] | null>(null)
+  const [deepLoading, setDeepLoading] = useState(false)
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null)
   const [sortOrder, setSortOrder] = useState<'modified_at' | 'created_at'>(
     (defaultSortOrder as 'modified_at' | 'created_at') || 'modified_at',
@@ -74,7 +94,6 @@ export default function ListView() {
     try { return localStorage.getItem('notesCollapsed') === 'true' } catch { return false }
   })
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryScrollRef = useRef<HTMLDivElement>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const [importing, setImporting] = useState(false)
@@ -95,28 +114,29 @@ export default function ListView() {
     category_id: activeCategoryId ?? undefined,
     in_folder: true,
     folder_id: folderId ?? undefined,
-    search: searchQuery || undefined,
-  }), [sortOrder, activeCategoryId, searchQuery, folderId])
+  }), [sortOrder, activeCategoryId, folderId])
 
   function showToast(msg: string) {
     setToast(msg)
     setTimeout(() => setToast(''), 3000)
   }
 
-  // Reload notes + folder chrome when the folder, sort, or category changes.
+  // Reload notes + folder chrome when the folder, sort, or category changes. Also
+  // leaves deep-search-results mode — those controls belong to normal browsing.
   useEffect(() => {
     clearSelection()
+    setDeepResults(null)
     loadNotes(buildParams(), true)
     foldersStore.loadContents(folderId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortOrder, activeCategoryId, folderId])
 
+  // As-you-type filtering is purely local (see filterLocally/displayNotes below) — no
+  // network call, so no debounce. Clearing the box back to '' also drops deep-search
+  // results, since the X button and backspacing-to-empty both just set searchQuery('').
   useEffect(() => {
     clearSelection()
-    if (searchDebounce.current) clearTimeout(searchDebounce.current)
-    searchDebounce.current = setTimeout(() => loadNotes(buildParams(), true), 300)
-    return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (searchQuery === '') setDeepResults(null)
   }, [searchQuery])
 
   useEffect(() => {
@@ -124,7 +144,7 @@ export default function ListView() {
     if (!sentinel) return
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loading) {
+        if (entries[0].isIntersecting && hasMore && !loading && deepResults === null) {
           loadMore(buildParams())
         }
       },
@@ -132,7 +152,7 @@ export default function ListView() {
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, loading, buildParams])
+  }, [hasMore, loading, buildParams, deepResults])
 
   useEffect(() => {
     const el = categoryScrollRef.current
@@ -148,6 +168,40 @@ export default function ListView() {
 
   function toggleSort() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
+  }
+
+  // The "Enter" search tier: always tries the AI-generated structured filter (any
+  // query length or syntax — no word-count/advanced-syntax gating), searching across
+  // ALL of the user's notes. Falls back to the existing global keyword search when no
+  // AI provider is configured, or if generation/execution fails for any reason.
+  async function runDeepSearch() {
+    const query = searchQuery.trim()
+    if (!query) { setDeepResults(null); return }
+    clearSelection()
+    setDeepLoading(true)
+    try {
+      if (aiService) {
+        try {
+          const filter = await generateNoteFilter(aiService, { query, categories })
+          const result = await notesApi.smartSearch(filter)
+          setDeepResults(result.data)
+          return
+        } catch {
+          // AI filter generation or execution failed — fall through to keyword search.
+        }
+      }
+      const result = await notesApi.list({
+        search: query,
+        sort: sortOrder,
+        order: 'desc',
+        category_id: activeCategoryId ?? undefined,
+      })
+      setDeepResults(result.data)
+    } catch {
+      showToast('Search failed. Please try again.')
+    } finally {
+      setDeepLoading(false)
+    }
   }
 
   function toggleSelect(id: string) {
@@ -331,10 +385,24 @@ export default function ListView() {
     }
   }
 
-  // The "Pinned" section only exists at the root. Inside a folder every note in
-  // that folder is shown together, with no separate pinned grouping.
-  const pinnedNotes = folderId ? [] : notes.filter((n) => n.is_pinned)
-  const unpinnedNotes = folderId ? notes : notes.filter((n) => !n.is_pinned)
+  const inDeepMode = deepResults !== null
+  // Deep-search results are shown as-is (they may match on tags/dates/category, not
+  // just a literal substring, so re-filtering them locally would hide valid matches).
+  // Otherwise, the current folder's notes are filtered instantly as the user types.
+  const localNotes = useMemo(() => filterLocally(notes, searchQuery), [notes, searchQuery])
+  const displayNotes = deepResults ?? localNotes
+
+  // The "Pinned" section only exists at the root, and only outside deep-search mode
+  // (results there span folders, so pinning grouping doesn't apply). Inside a folder
+  // every note in that folder is shown together, with no separate pinned grouping.
+  const pinnedNotes = folderId ? [] : localNotes.filter((n) => n.is_pinned)
+  const unpinnedNotes = folderId ? localNotes : localNotes.filter((n) => !n.is_pinned)
+
+  const allSelectableIds = displayNotes.map((n) => n.id)
+  const allSelected = allSelectableIds.length > 0 && allSelectableIds.every((id) => selectedIds.has(id))
+  function toggleSelectAll() {
+    setSelectedIds(allSelected ? new Set() : new Set(allSelectableIds))
+  }
 
   const gridClass = viewMode === 'card'
     ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3'
@@ -375,26 +443,29 @@ export default function ListView() {
             <span className="text-2xl">🦎</span>
             Gecko Notes
           </h1>
-          <div className="relative flex-1">
+          <form onSubmit={(e) => { e.preventDefault(); void runDeepSearch() }} className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               type="text"
-              placeholder="Search notes..."
-              className="input pl-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
+              placeholder="Search notes... (press Enter to search everywhere)"
+              className="input pl-9 pr-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
             />
-          </div>
+            {deepLoading && (
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 animate-spin" />
+            )}
+          </form>
           <UserAvatar />
         </div>
 
         {searchQuery ? (
-          <div className="flex items-center gap-1.5 px-1.5 py-0.5">
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Search Results</span>
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-full w-fit bg-blue-100 dark:bg-blue-900/40">
+            <span className="text-sm font-medium text-blue-800 dark:text-blue-200">Search Results</span>
             <button
               onClick={() => setSearchQuery('')}
               title="Clear search"
-              className="p-0.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              className="p-0.5 rounded-full text-blue-500 dark:text-blue-300 hover:text-blue-700 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -433,6 +504,15 @@ export default function ListView() {
             </button>
           ))}
           <div className="flex-1" />
+          <button
+            className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all disabled:opacity-50"
+            title={allSelected ? 'Deselect all notes' : 'Select all notes'}
+            disabled={allSelectableIds.length === 0}
+            onClick={toggleSelectAll}
+          >
+            {allSelected ? <CheckCircle2 className="w-3 h-3" /> : <Circle className="w-3 h-3" />}
+            {allSelected ? 'Deselect All' : 'Select All'}
+          </button>
           <button
             className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-400 shrink-0 flex items-center gap-1 transition-all"
             onClick={toggleSort}
@@ -486,7 +566,7 @@ export default function ListView() {
       <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
-          {loading && notes.length === 0 && subfolders.length === 0 ? (
+          {deepLoading || (loading && notes.length === 0 && subfolders.length === 0 && !inDeepMode) ? (
             <div className={gridClass}>
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className={`card dark:bg-gray-800 dark:border-gray-700 animate-pulse ${viewMode === 'card' ? 'h-52' : 'p-4'}`}>
@@ -499,18 +579,30 @@ export default function ListView() {
                 </div>
               ))}
             </div>
-          ) : notes.length === 0 && subfolders.length === 0 ? (
-            <div className="text-center py-20">
-              <p className="text-5xl mb-4">📝</p>
-              <p className="text-gray-500 dark:text-gray-400 text-lg font-medium mb-1">{folderId ? 'This folder is empty' : 'No notes yet'}</p>
-              <p className="text-gray-400 dark:text-gray-500 text-sm mb-6">Create a note or folder to get started</p>
-              <Link to={newNotePath} className="btn-primary inline-flex">
-                <Plus className="w-4 h-4" /> New Note
-              </Link>
-            </div>
+          ) : displayNotes.length === 0 && (inDeepMode || subfolders.length === 0) ? (
+            inDeepMode ? (
+              <div className="text-center py-20">
+                <p className="text-5xl mb-4">🔍</p>
+                <p className="text-gray-500 dark:text-gray-400 text-lg font-medium mb-1">No matching notes</p>
+                <p className="text-gray-400 dark:text-gray-500 text-sm">Try a different search.</p>
+              </div>
+            ) : (
+              <div className="text-center py-20">
+                <p className="text-5xl mb-4">📝</p>
+                <p className="text-gray-500 dark:text-gray-400 text-lg font-medium mb-1">{folderId ? 'This folder is empty' : 'No notes yet'}</p>
+                <p className="text-gray-400 dark:text-gray-500 text-sm mb-6">Create a note or folder to get started</p>
+                <Link to={newNotePath} className="btn-primary inline-flex">
+                  <Plus className="w-4 h-4" /> New Note
+                </Link>
+              </div>
+            )
           ) : (
             <>
-              {folderId !== null ? (
+              {inDeepMode ? (
+                <div className={gridClass}>
+                  {renderNotes(displayNotes)}
+                </div>
+              ) : folderId !== null ? (
                 <>
                   <FolderIconBar {...folderBarProps} />
                   <div className={gridClass}>
@@ -554,14 +646,18 @@ export default function ListView() {
                   )}
                 </>
               )}
-              <div ref={sentinelRef} className="h-2" />
-              {loading && (
-                <div className="text-center py-4">
-                  <svg className="animate-spin w-5 h-5 text-gray-400 mx-auto" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                  </svg>
-                </div>
+              {!inDeepMode && (
+                <>
+                  <div ref={sentinelRef} className="h-2" />
+                  {loading && (
+                    <div className="text-center py-4">
+                      <svg className="animate-spin w-5 h-5 text-gray-400 mx-auto" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
@@ -678,7 +774,10 @@ export default function ListView() {
         onToggle={() => setPanelOpen((o) => !o)}
         mode="list"
         getSelectedNoteIds={() => Array.from(selectedIds)}
-        onSearchResults={(query) => setSearchQuery(query)}
+        onSearchResults={(label, results) => {
+          setSearchQuery(label)
+          setDeepResults(results)
+        }}
         getNoteContext={() => ''}
         noteId={null}
         onAddToNote={async () => {}}
