@@ -261,39 +261,114 @@ function validateAction(raw: unknown): PlanAction | null {
   }
 }
 
+// A parsed JSON value that could be a plan: either the {actions:[...]} envelope or
+// a bare {type:...} action (the model sometimes emits the latter).
+function looksLikePlan(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== 'object') return false
+  const o = parsed as Record<string, unknown>
+  return Array.isArray(o.actions) || typeof o.type === 'string'
+}
+
+// Index of the '}' matching the '{' at `open`, or -1 if unbalanced. Braces inside
+// JSON string literals (and their backslash escapes) are ignored, so prose like
+// `the set {a, b}` embedded in a string doesn't throw off the depth count.
+function matchBrace(text: string, open: number): number {
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}') { depth--; if (depth === 0) return i }
+  }
+  return -1
+}
+
+// Locate the plan JSON inside a (possibly prose-wrapped) model response, returning
+// the JSON slice plus the prose before and after it. Prefers a fenced ```json block;
+// otherwise scans for the FIRST brace-balanced slice that parses to a plan — so a
+// stray '{' in prose (e.g. an inline example) doesn't hijack the parse the way the
+// old indexOf('{')…lastIndexOf('}') did, and prose surrounding the JSON is preserved.
+interface LocatedPlan { json: string; before: string; after: string }
+function locatePlanJson(text: string): LocatedPlan | null {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence && fence.index !== undefined) {
+    const inner = fence[1].trim()
+    if (inner.startsWith('{')) {
+      try {
+        if (looksLikePlan(JSON.parse(inner))) {
+          return { json: inner, before: text.slice(0, fence.index), after: text.slice(fence.index + fence[0].length) }
+        }
+      } catch { /* not a plan — fall through to the brace scan */ }
+    }
+  }
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue
+    const end = matchBrace(text, i)
+    if (end === -1) continue
+    const slice = text.slice(i, end + 1)
+    try {
+      if (looksLikePlan(JSON.parse(slice))) {
+        return { json: slice, before: text.slice(0, i), after: text.slice(end + 1) }
+      }
+    } catch { /* not valid JSON from here — keep scanning */ }
+  }
+  return null
+}
+
+// Prose the model wrote outside the JSON envelope, cleaned but with Markdown
+// structure (paragraphs/lists) preserved. This is the real answer in the failure
+// mode where the model puts its reply in prose and only a meta-summary in respond.text.
+function extractOutsideProse(located: LocatedPlan): string {
+  return [located.before, located.after]
+    .map((s) => s.replace(/```(?:json)?/gi, '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export function parsePlan(raw: string): Plan {
-  const fallback = (): Plan => ({ actions: [{ type: 'respond', text: (raw ?? '').trim() || '(no response)' }] })
   if (!raw || !raw.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
+  // No parseable plan JSON → the whole message IS the reply. Never drop it.
+  const proseFallback = (): Plan => ({ actions: [{ type: 'respond', text: raw.trim() || '(no response)' }] })
 
   try {
-    // Strip a leading ```json / ``` fence and a trailing fence, then isolate the
-    // JSON object so any preamble or the "response cut off" suffix is ignored.
-    let s = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
-    const first = s.indexOf('{')
-    const last = s.lastIndexOf('}')
-    if (first === -1 || last === -1 || last < first) return fallback()
-    s = s.slice(first, last + 1)
+    const located = locatePlanJson(raw)
+    if (!located) return proseFallback()
 
-    const parsed = JSON.parse(s) as unknown
-    // The model sometimes returns a bare action object (e.g. {"type":"respond",...})
-    // instead of the {"actions":[...]} envelope — wrap it so it's validated and
-    // rendered as a normal reply rather than shown as raw JSON.
+    const parsed = JSON.parse(located.json) as unknown
+    // A bare action object (e.g. {"type":"respond",...}) is wrapped so it's validated
+    // and rendered as a normal reply rather than shown as raw JSON.
     const isBareAction = parsed !== null && typeof parsed === 'object' && 'type' in parsed
     const actionsRaw = isBareAction ? [parsed] : (parsed as { actions?: unknown }).actions
-    if (!Array.isArray(actionsRaw)) return fallback()
+    if (!Array.isArray(actionsRaw)) return proseFallback()
 
     const actions: PlanAction[] = []
     for (const a of actionsRaw.slice(0, MAX_PLAN_ACTIONS)) {
       const valid = validateAction(a)
       if (valid) actions.push(valid)
     }
-    if (actions.length === 0) return fallback()
+    if (actions.length === 0) return proseFallback()
+
+    // Prepend any outside prose as a respond action so it shows first (respond-only
+    // plans) or above the mutation table (mixed plans) and survives a plan cancel.
+    const outside = extractOutsideProse(located)
+    if (outside) actions.unshift({ type: 'respond', text: outside })
+
     if (actionsRaw.length > MAX_PLAN_ACTIONS) {
       actions.push({ type: 'respond', text: `_(Plan truncated to the first ${MAX_PLAN_ACTIONS} actions.)_` })
     }
     return { actions }
   } catch {
-    return fallback()
+    return proseFallback()
   }
 }
 

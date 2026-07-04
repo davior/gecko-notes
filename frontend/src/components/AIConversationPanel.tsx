@@ -66,6 +66,39 @@ function stripCodeFence(text: string): string {
   return t.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '').trim()
 }
 
+// Best-effort human-readable text from a partial streaming buffer. The model streams a
+// JSON plan envelope, so this surfaces the reply — leading prose plus the (possibly still
+// growing) respond.text value — instead of raw braces. Display-only: final correctness
+// always comes from parsePlan on the complete text, never from this. Returns '' when only
+// non-respond JSON has arrived so the caller can show a placeholder rather than braces.
+function liveExtractText(buf: string): string {
+  const s = buf.replace(/^```(?:json)?\s*/i, '')
+  const brace = s.indexOf('{')
+  if (brace === -1) return s.trim()              // pure prose so far
+  const pre = s.slice(0, brace).trim()           // prose before the JSON envelope
+  let answer = ''
+  const m = s.slice(brace).match(/"text"\s*:\s*"/)
+  if (m && m.index !== undefined) {
+    // Decode the JSON string value up to the first unescaped quote (or end-of-buffer
+    // while it's still streaming).
+    let i = brace + m.index + m[0].length
+    for (; i < s.length; i++) {
+      const c = s[i]
+      if (c === '\\') {
+        const n = s[i + 1]
+        answer += n === 'n' ? '\n' : n === 't' ? '\t' : n === 'r' ? '' : n === 'u' ? '' : (n ?? '')
+        if (n === 'u') i += 4
+        i += 1
+      } else if (c === '"') {
+        break
+      } else {
+        answer += c
+      }
+    }
+  }
+  return [pre, answer].filter(Boolean).join('\n\n')
+}
+
 // How many per-document generation calls to run at once (see Phase 2 plan).
 const GEN_CONCURRENCY = 5
 
@@ -349,6 +382,8 @@ export default function AIConversationPanel({
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
+  // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
+  const [streamingText, setStreamingText] = useState<string | null>(null)
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -357,6 +392,12 @@ export default function AIConversationPanel({
   const isMobileRef = useRef(isMobile)
   const panelWidthRef = useRef(panelWidth)
   const panelHeightRef = useRef(panelHeight)
+  const streamBufRef = useRef('')                          // raw accumulated stream text
+  const abortRef = useRef<AbortController | null>(null)     // cancels the in-flight stream
+  const liveRafRef = useRef<number | null>(null)            // rAF handle throttling live updates
+
+  // Abort any in-flight stream on unmount so its reader/state updates don't leak.
+  useEffect(() => () => { abortRef.current?.abort() }, [])
 
   const handleDictationResult = useCallback((text: string) => {
     const newInput = input.trim() ? `${input.trim()} ${text}` : text
@@ -923,7 +964,14 @@ export default function AIConversationPanel({
 
   function cancelPlan() {
     if (!pendingPlan) return
-    const cancelled = [...pendingPlan.baseMessages, assistantMsg('_Plan cancelled._')]
+    // Preserve any conversational answer the plan carried (e.g. prose the model wrote
+    // alongside its mutations) so cancelling the mutations doesn't discard the reply.
+    const respondText = pendingPlan.plan.actions
+      .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
+      .filter(Boolean)
+      .join('\n\n')
+    const msg = [respondText, '_Plan cancelled._'].filter(Boolean).join('\n\n')
+    const cancelled = [...pendingPlan.baseMessages, assistantMsg(msg)]
     setConversation(cancelled)
     void persistCurrentSession(cancelled)
     setPendingPlan(null)
@@ -944,6 +992,7 @@ export default function AIConversationPanel({
     setConversation(withUser)
     setInput('')
     setLoading(true)
+    abortRef.current = new AbortController()
 
     // Auto-create a session on the first message if one doesn't exist yet
     let sessionId = currentSessionId
@@ -970,16 +1019,37 @@ export default function AIConversationPanel({
       // it; OpenAI/Ollama prepend it to a fresh full-JSON reply, yielding "{{"). The
       // instructions ask for JSON-only and parsePlan tolerantly extracts the object, so
       // temperature:0 alone is enough.
-      const planOnce = async (): Promise<Plan> => parsePlan(await svc.completeConversation({
-        instructions: ctx.instructions,
-        referenceBlock: ctx.referenceBlock,
-        currentNoteText: ctx.currentNoteText || undefined,
-        history,
-        userRequest,
-        attachments: ctx.attachments.length ? ctx.attachments : undefined,
-        temperature: 0,
-        enableWebSearch: true,
-      }))
+      // Push live streamed text into the bubble at most once per frame (a fast token
+      // stream would otherwise re-render + re-parse Markdown per token).
+      const scheduleLive = () => {
+        if (liveRafRef.current !== null) return
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null
+          setStreamingText(liveExtractText(streamBufRef.current))
+        })
+      }
+      // Stream when the provider supports it (all three do); fall back to the blocking
+      // call otherwise. Either way the returned string is fed to parsePlan unchanged —
+      // the live bubble is cosmetic. `ctx`/`history` are read fresh each call because the
+      // find_notes loop reassigns them between rounds.
+      const planOnce = async (): Promise<Plan> => {
+        streamBufRef.current = ''
+        setStreamingText('')
+        const req = {
+          instructions: ctx.instructions,
+          referenceBlock: ctx.referenceBlock,
+          currentNoteText: ctx.currentNoteText || undefined,
+          history,
+          userRequest,
+          attachments: ctx.attachments.length ? ctx.attachments : undefined,
+          temperature: 0,
+          enableWebSearch: true,
+        }
+        const raw = svc.streamConversation
+          ? await svc.streamConversation(req, (t) => { streamBufRef.current += t; scheduleLive() }, abortRef.current?.signal)
+          : await svc.completeConversation(req)
+        return parsePlan(raw)
+      }
 
       let plan = await planOnce()
       setPendingFiles([])
@@ -1069,16 +1139,30 @@ export default function AIConversationPanel({
         await runPlan(plan, ctx, withUser, history, userContent.trim())
       }
     } catch (e: unknown) {
-      setError(errorMessage(e))
-      setErrorDetails(formatErrorDetails(e))
-      // Keep the user's question in the chat (and persist it) even though the
-      // request failed — reverting to priorMessages would silently discard what
-      // they typed. They can retry by editing the message.
-      setConversation(withUser)
-      void persistCurrentSession(withUser, sessionId)
+      // A user-initiated Stop aborts the fetch — treat it as a soft cancel: keep the
+      // question in the chat, drop the partial reply, and show no error.
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setConversation(withUser)
+        void persistCurrentSession(withUser, sessionId)
+      } else {
+        setError(errorMessage(e))
+        setErrorDetails(formatErrorDetails(e))
+        // Keep the user's question in the chat (and persist it) even though the
+        // request failed — reverting to priorMessages would silently discard what
+        // they typed. They can retry by editing the message.
+        setConversation(withUser)
+        void persistCurrentSession(withUser, sessionId)
+      }
     } finally {
       setLoading(false)
+      if (liveRafRef.current !== null) { cancelAnimationFrame(liveRafRef.current); liveRafRef.current = null }
+      setStreamingText(null)
+      abortRef.current = null
     }
+  }
+
+  function stopStreaming() {
+    abortRef.current?.abort()
   }
 
   function handleEdit(idx: number) {
@@ -1374,12 +1458,26 @@ export default function AIConversationPanel({
         )}
 
         {loading && (
-          <div className="flex items-start gap-2">
-            <div className="bg-gray-100 dark:bg-gray-800 rounded-2xl rounded-tl-sm px-3 py-2.5 flex items-center gap-2 text-gray-400 text-sm">
-              <Spinner />
-              Thinking…
+          streamingText ? (
+            // Live streamed reply — replaces the "Thinking…" bubble once tokens arrive.
+            // Rendered with a trailing caret; the final, fully-styled message is appended
+            // when the stream completes.
+            <div className="flex flex-col items-start gap-1">
+              <div className="max-w-[85%] bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-2xl rounded-tl-sm px-3 py-2 text-sm leading-relaxed break-words">
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
+                </div>
+                <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-gray-400 animate-pulse" aria-hidden="true" />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex items-start gap-2">
+              <div className="bg-gray-100 dark:bg-gray-800 rounded-2xl rounded-tl-sm px-3 py-2.5 flex items-center gap-2 text-gray-400 text-sm">
+                <Spinner />
+                Thinking…
+              </div>
+            </div>
+          )
         )}
 
         {error && (
@@ -1559,14 +1657,28 @@ export default function AIConversationPanel({
                 className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
                 disabled={loading || executing}
               />
-              <button
-                className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-                disabled={loading || executing || !input.trim()}
-                onClick={() => void handleSend(input, conversation)}
-                type="button"
-              >
-                {loading || executing ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
-              </button>
+              {loading ? (
+                // While a reply is streaming/planning, the send button becomes a Stop
+                // button that aborts the in-flight stream (soft cancel — see handleSend).
+                <button
+                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-gray-600 hover:bg-gray-700 text-white transition-colors"
+                  onClick={stopStreaming}
+                  type="button"
+                  aria-label="Stop generating"
+                  title="Stop generating"
+                >
+                  <span className="w-2.5 h-2.5 bg-white rounded-[2px]" />
+                </button>
+              ) : (
+                <button
+                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+                  disabled={executing || !input.trim()}
+                  onClick={() => void handleSend(input, conversation)}
+                  type="button"
+                >
+                  {executing ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
+                </button>
+              )}
             </div>
             <p className="text-xs text-gray-400 mt-0.5">Shift+Enter for new line</p>
           </div>
@@ -1601,7 +1713,15 @@ export default function AIConversationPanel({
                     })}
                     className="mt-0.5 h-3.5 w-3.5 accent-blue-600 cursor-pointer shrink-0"
                   />
-                  <span className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</span>
+                  {a.type === 'respond' ? (
+                    // Render the reply in full (not a truncated label) so a mixed plan's
+                    // conversational answer is readable in the preview and never hidden.
+                    <div className="prose prose-sm dark:prose-invert max-w-none leading-snug">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{a.text}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</span>
+                  )}
                 </li>
               ))}
             </ul>

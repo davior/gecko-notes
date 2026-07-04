@@ -5,13 +5,14 @@ import urllib.parse
 import uuid
 from datetime import datetime, timedelta
 import httpx
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
-from app.database import get_session
+from app.database import get_session, engine
 from app.models import AIProvider, AppSetting, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -431,15 +432,16 @@ async def _post_upstream(
         )
 
 
-async def _stream_anthropic_message(
+async def _iter_anthropic_events(
     url: str,
     *,
     headers: Dict[str, str],
     json_body: Dict[str, Any],
     read_timeout: float,
-) -> Dict[str, Any]:
-    """Stream a Messages API response from Anthropic and reassemble the final
-    message into the same dict shape the non-streaming endpoint returns.
+) -> AsyncIterator[Tuple[str, Any]]:
+    """Stream a Messages API response from Anthropic, yielding ("delta", text) for
+    each text chunk as it arrives and finally ("final", message) with the fully
+    reassembled message dict — the identical shape the non-streaming endpoint returns.
 
     Why stream instead of a single blocking POST: a non-streaming request returns
     no bytes until the *entire* completion is generated, so the read timeout has
@@ -450,8 +452,8 @@ async def _stream_anthropic_message(
     a steady flow of SSE events (text deltas and periodic pings), so ``read_timeout``
     bounds the gap *between* events — always small — rather than the whole request.
 
-    We accumulate the events back into the message dict so callers (and the
-    frontend) see the identical response they got from the blocking path.
+    The blocking wrapper below consumes only the "final" event; the streaming
+    endpoints forward the "delta" text to the browser live.
     """
     body = {**json_body, "stream": True}
     timeout = httpx.Timeout(read_timeout, connect=10.0, write=30.0, pool=10.0)
@@ -496,7 +498,10 @@ async def _stream_anthropic_message(
                         delta = event.get("delta", {}) or {}
                         dtype = delta.get("type")
                         if dtype == "text_delta":
-                            block["text"] = (block.get("text") or "") + delta.get("text", "")
+                            chunk = delta.get("text", "")
+                            block["text"] = (block.get("text") or "") + chunk
+                            if chunk:
+                                yield ("delta", chunk)
                         elif dtype == "input_json_delta":
                             json_buffers[idx] = json_buffers.get(idx, "") + delta.get("partial_json", "")
                         elif dtype == "thinking_delta":
@@ -555,6 +560,24 @@ async def _stream_anthropic_message(
             },
         )
 
+    yield ("final", message)
+
+
+async def _stream_anthropic_message(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    json_body: Dict[str, Any],
+    read_timeout: float,
+) -> Dict[str, Any]:
+    """Blocking wrapper over :func:`_iter_anthropic_events`: drain the stream and
+    return the reassembled message dict, so the non-streaming proxy is unchanged."""
+    message: Dict[str, Any] = {}
+    async for kind, val in _iter_anthropic_events(
+        url, headers=headers, json_body=json_body, read_timeout=read_timeout
+    ):
+        if kind == "final":
+            message = val
     return message
 
 
@@ -750,6 +773,288 @@ async def proxy_ollama(
     except Exception:
         pass
     return data
+
+
+# ─── AI Provider Proxies — streaming (SSE) ───────────────────────────────────
+#
+# These mirror the blocking proxies above but return a StreamingResponse so the
+# browser can render tokens live. All three speak one normalized protocol to the
+# client (so the frontend needs no provider-specific delta parsing):
+#     event: delta   data: {"text": "<chunk>"}
+#     event: final   data: <the full provider dict, same shape the blocking path returns>
+#     event: error   data: {"code": "...", "message": "..."}
+# A StreamingResponse is already HTTP 200 once the body starts, so ALL failures —
+# including an upstream non-200 or a mid-stream error — are surfaced as an `error`
+# frame rather than an HTTP status. The blocking endpoints are kept for callers
+# that don't stream (deferred body generation, tag/summary helpers). Usage is
+# recorded server-side after the `final` event via a fresh Session (the request
+# session may be closed by the time the generator finishes).
+
+_STREAM_HEADERS = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+
+
+def _sse(event: str, data: Any) -> str:
+    """Format one Server-Sent Events frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _error_frame(exc: Exception) -> str:
+    """An `error` SSE frame carrying the same detail shape the blocking path 4xx/5xxs with."""
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        data = detail if isinstance(detail, dict) else {"message": str(detail)}
+    else:
+        data = {"code": "stream_failed", "message": str(exc)}
+    return _sse("error", data)
+
+
+def _record_anthropic_usage(user_id: str, model: str, data: Dict[str, Any]) -> None:
+    """Mirror the usage accounting in proxy_anthropic, using a fresh Session."""
+    try:
+        usage = data.get("usage") or {}
+        inp = int(usage.get("input_tokens", 0) or 0)
+        out = int(usage.get("output_tokens", 0) or 0)
+        cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        total = inp + out + cache_read + cache_write
+        if total:
+            with Session(engine) as s:
+                _record_usage(s, user_id, "ai", model, total, "tokens")
+        logger.info(
+            "anthropic stream usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
+            model, inp, out, cache_read, cache_write,
+        )
+    except Exception:
+        pass
+
+
+@router.post("/ai-providers/proxy/anthropic/stream")
+async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type != "anthropic":
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})
+
+    # Body construction is identical to proxy_anthropic — keeping it byte-for-byte
+    # matched preserves the prompt-cache breakpoints in the messages/system blocks.
+    messages = list(payload.messages)
+    if payload.prefill:
+        messages.append({"role": "assistant", "content": payload.prefill})
+
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "max_tokens": payload.max_tokens,
+        "messages": messages,
+    }
+    if payload.system:
+        body["system"] = payload.system
+    if payload.temperature is not None:
+        body["temperature"] = payload.temperature
+    if payload.tools:
+        body["tools"] = payload.tools
+
+    uses_web_search = payload.tools and any(
+        t.get("type", "").startswith("web_search") for t in payload.tools
+    )
+    beta_flags = "pdfs-2024-09-25"
+    if uses_web_search:
+        beta_flags += ",web-search-2025-03-05"
+
+    headers = {
+        "x-api-key": decrypt_api_key(provider.api_key),
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": beta_flags,
+        "content-type": "application/json",
+    }
+    model = payload.model
+
+    async def gen():
+        try:
+            async for kind, val in _iter_anthropic_events(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json_body=body,
+                read_timeout=120.0,
+            ):
+                if kind == "delta":
+                    yield _sse("delta", {"text": val})
+                else:
+                    _record_anthropic_usage(user_id, model, val)
+                    yield _sse("final", val)
+        except Exception as e:  # surfaced to the client as an error frame
+            if not isinstance(e, HTTPException):
+                logger.exception("anthropic stream failed")
+            yield _error_frame(e)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
+
+@router.post("/ai-providers/proxy/openai/stream")
+async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type not in ("openai", "custom"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
+
+    base = (provider.base_url or "https://api.openai.com").rstrip("/")
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "max_tokens": payload.max_tokens,
+        "messages": payload.messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if payload.temperature is not None:
+        body["temperature"] = payload.temperature
+    headers = {
+        "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
+        "content-type": "application/json",
+    }
+    url = f"{base}/v1/chat/completions"
+    model = payload.model
+
+    async def gen():
+        full = ""
+        finish_reason = None
+        usage = None
+        timeout = httpx.Timeout(120.0, connect=10.0, write=30.0, pool=10.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", url, headers=headers, json=body) as response:
+                    if not response.is_success:
+                        await response.aread()
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            evt = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = evt.get("choices") or []
+                        if choices:
+                            ch0 = choices[0] or {}
+                            piece = (ch0.get("delta") or {}).get("content")
+                            if piece:
+                                full += piece
+                                yield _sse("delta", {"text": piece})
+                            if ch0.get("finish_reason"):
+                                finish_reason = ch0["finish_reason"]
+                        if evt.get("usage"):
+                            usage = evt["usage"]
+            final = {
+                "choices": [{"message": {"role": "assistant", "content": full}, "finish_reason": finish_reason}],
+                "usage": usage or {},
+            }
+            try:
+                tokens = int((usage or {}).get("total_tokens", 0) or 0)
+                if tokens:
+                    with Session(engine) as s:
+                        _record_usage(s, user_id, "ai", model, tokens, "tokens")
+            except Exception:
+                pass
+            yield _sse("final", final)
+        except httpx.TimeoutException as e:
+            logger.exception("Timed out streaming from the OpenAI-compatible API")
+            yield _error_frame(HTTPException(status_code=504, detail={"code": "upstream_timeout", "message": f"Timed out after 120s ({type(e).__name__})."}))
+        except httpx.RequestError as e:
+            logger.exception("Failed to reach the OpenAI-compatible API")
+            yield _error_frame(HTTPException(status_code=502, detail={"code": "upstream_unreachable", "message": f"Could not reach the OpenAI-compatible API: {type(e).__name__}: {e}"}))
+        except Exception as e:
+            if not isinstance(e, HTTPException):
+                logger.exception("openai stream failed")
+            yield _error_frame(e)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
+
+@router.post("/ai-providers/proxy/ollama/stream")
+async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    provider = session.get(AIProvider, payload.provider_id)
+    if not provider or provider.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
+    if provider.provider_type != "ollama":
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Ollama type"})
+
+    base = (provider.base_url or "http://localhost:11434").rstrip("/")
+    body: Dict[str, Any] = {
+        "model": payload.model,
+        "messages": payload.messages,
+        "stream": True,
+    }
+    options: Dict[str, Any] = {}
+    if payload.temperature is not None:
+        options["temperature"] = payload.temperature
+    if payload.max_tokens is not None:
+        options["num_predict"] = payload.max_tokens
+    if options:
+        body["options"] = options
+    url = f"{base}/api/chat"
+    model = payload.model
+
+    async def gen():
+        full = ""
+        done_reason = None
+        prompt_eval = 0
+        eval_count = 0
+        timeout = httpx.Timeout(120.0, connect=10.0, write=30.0, pool=10.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Ollama streams newline-delimited JSON (not SSE) — one object per line.
+                async with client.stream("POST", url, headers={"content-type": "application/json"}, json=body) as response:
+                    if not response.is_success:
+                        await response.aread()
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        piece = (evt.get("message") or {}).get("content")
+                        if piece:
+                            full += piece
+                            yield _sse("delta", {"text": piece})
+                        if evt.get("done"):
+                            done_reason = evt.get("done_reason")
+                            prompt_eval = int(evt.get("prompt_eval_count", 0) or 0)
+                            eval_count = int(evt.get("eval_count", 0) or 0)
+            final = {
+                "message": {"role": "assistant", "content": full},
+                "done_reason": done_reason,
+                "prompt_eval_count": prompt_eval,
+                "eval_count": eval_count,
+            }
+            try:
+                tokens = prompt_eval + eval_count
+                if tokens:
+                    with Session(engine) as s:
+                        _record_usage(s, user_id, "ai", model, tokens, "tokens")
+            except Exception:
+                pass
+            yield _sse("final", final)
+        except httpx.TimeoutException as e:
+            logger.exception("Timed out streaming from Ollama")
+            yield _error_frame(HTTPException(status_code=504, detail={"code": "upstream_timeout", "message": f"Timed out after 120s ({type(e).__name__})."}))
+        except httpx.RequestError as e:
+            logger.exception("Failed to reach Ollama")
+            yield _error_frame(HTTPException(status_code=502, detail={"code": "upstream_unreachable", "message": f"Could not reach Ollama: {type(e).__name__}: {e}"}))
+        except Exception as e:
+            if not isinstance(e, HTTPException):
+                logger.exception("ollama stream failed")
+            yield _error_frame(e)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
 
 # ─── Speech / Deepgram ────────────────────────────────────────────────────────
