@@ -1,5 +1,6 @@
 import type { AIProvider } from '@/api/settings'
 import client from '@/api/client'
+import { streamChat } from '@/api/stream'
 
 export interface FileAttachment {
   type: 'image' | 'document'
@@ -52,6 +53,11 @@ export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
   // Cache-optimised chat turn used by the AI Conversation panel. See ConversationRequest.
   completeConversation(req: ConversationRequest): Promise<string>
+  // Streaming variant of completeConversation: invokes onDelta with each text chunk as
+  // it arrives and resolves to the SAME final string completeConversation returns, so
+  // the panel's plan parsing is unchanged. Optional — the panel falls back to
+  // completeConversation when a provider doesn't implement it.
+  streamConversation?(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string>
   generateTags(noteContent: string): Promise<string[]>
   generateSummary(noteContent: string, prompt: string): Promise<string>
   generateMetadata(noteContent: string, summaryPrompt: string, includeTitle?: boolean): Promise<NoteMetadata>
@@ -71,6 +77,13 @@ type AnthropicContentBlock =
   | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string }
+
+// The reassembled Anthropic Messages response (the fields we read), shared by the
+// blocking and streaming code paths.
+type AnthropicMessageData = {
+  content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>
+  stop_reason?: string
+} | undefined
 
 function attachmentToBlock(a: FileAttachment): AnthropicContentBlock {
   return a.type === 'image'
@@ -96,6 +109,26 @@ function flattenConversation(req: ConversationRequest): { prompt: string; option
     ? [...req.history.map(line), `Human: ${req.userRequest}`, ...(req.followups ?? []).map(line)].join('\n\n')
     : req.userRequest
   return { prompt, options: { systemPrompt, attachments: req.attachments, temperature: req.temperature } }
+}
+
+// OpenAI- and Ollama-shaped chat messages (identical between the two): an optional
+// system message plus one user message (image blocks + text when attachments exist).
+function buildChatMessages(prompt: string, options: AICompleteOptions): { role: string; content: unknown }[] {
+  const { systemPrompt, attachments } = options
+  const messages: { role: string; content: unknown }[] = []
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
+  if (attachments?.length) {
+    messages.push({
+      role: 'user',
+      content: [
+        ...attachments.map((a) => ({ type: 'image_url' as const, image_url: { url: `data:${a.mimeType};base64,${a.data}` } })),
+        { type: 'text' as const, text: prompt },
+      ],
+    })
+  } else {
+    messages.push({ role: 'user', content: prompt })
+  }
+  return messages
 }
 
 const TAG_GENERATION_PROMPT = `You are a tagging assistant. Analyse the following note content and return between 3 and 8 short, relevant tags as a JSON array of lowercase strings. Return ONLY the JSON array, no other text.
@@ -195,7 +228,9 @@ class AnthropicProvider implements AIService {
   //               { user: live note body + new request + attachments } ]
   // The volatile final message has no breakpoint, so editing the open note or asking a
   // new question never invalidates the cached instructions/reference/history prefix.
-  async completeConversation(req: ConversationRequest): Promise<string> {
+  // Build the request body for a conversation turn. Shared verbatim by the blocking and
+  // streaming paths so the prompt-cache breakpoints are byte-identical and still hit.
+  private buildConversationBody(req: ConversationRequest): Record<string, unknown> {
     const { instructions, referenceBlock, currentNoteText, history, userRequest, followups, attachments, temperature, enableWebSearch } = req
 
     const system: { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[] = [
@@ -241,10 +276,30 @@ class AnthropicProvider implements AIService {
     }
     if (temperature !== undefined) body.temperature = temperature
     if (enableWebSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+    return body
+  }
 
-    const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
-    const text = this.extractPlanText(response.data)
-    return response.data?.stop_reason === 'max_tokens' ? text + TRUNCATION_NOTICE : text
+  // Turn a reassembled Anthropic message dict into the plan text, appending the
+  // truncation notice when the model hit its output cap.
+  private finalizeConversation(data: AnthropicMessageData): string {
+    const text = this.extractPlanText(data)
+    return data?.stop_reason === 'max_tokens' ? text + TRUNCATION_NOTICE : text
+  }
+
+  // Cache-optimised chat turn for the AI Conversation panel. Layout (stable → volatile):
+  //   system:   [ instructions (cache breakpoint), referenceBlock (cache breakpoint) ]
+  //   messages: [ ...history (rolling cache breakpoint on the latest prior turn),
+  //               { user: live note body + new request + attachments } ]
+  // The volatile final message has no breakpoint, so editing the open note or asking a
+  // new question never invalidates the cached instructions/reference/history prefix.
+  async completeConversation(req: ConversationRequest): Promise<string> {
+    const response = await client.post('/settings/ai-providers/proxy/anthropic', this.buildConversationBody(req))
+    return this.finalizeConversation(response.data)
+  }
+
+  async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
+    const data = await streamChat('/settings/ai-providers/proxy/anthropic/stream', this.buildConversationBody(req), onDelta, signal)
+    return this.finalizeConversation(data as AnthropicMessageData)
   }
 
   // Join all text blocks. When web search runs, the content may interleave
@@ -253,9 +308,7 @@ class AnthropicProvider implements AIService {
   // block instead of emitting the JSON envelope, recover the plan from it. This is NOT
   // gated on empty text: with web search, Claude emits running commentary as text even
   // when the real action lives in a tool_use block, so gating on `!text` would drop it.
-  private extractPlanText(
-    data: { content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>; stop_reason?: string } | undefined,
-  ): string {
+  private extractPlanText(data: AnthropicMessageData): string {
     const contentBlocks = data?.content ?? []
     let text = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
     if (data?.stop_reason === 'tool_use') {
@@ -332,23 +385,8 @@ class OpenAIProvider implements AIService {
   constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill, attachments } = options
-    const messages: { role: string; content: unknown }[] = []
-    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
-
-    if (attachments?.length) {
-      const contentBlocks = [
-        ...attachments.map((a) => ({
-          type: 'image_url' as const,
-          image_url: { url: `data:${a.mimeType};base64,${a.data}` },
-        })),
-        { type: 'text' as const, text: prompt },
-      ]
-      messages.push({ role: 'user', content: contentBlocks })
-    } else {
-      messages.push({ role: 'user', content: prompt })
-    }
-
+    const { temperature, prefill } = options
+    const messages = buildChatMessages(prompt, options)
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {
@@ -362,15 +400,27 @@ class OpenAIProvider implements AIService {
     const response = await client.post('/settings/ai-providers/proxy/openai', body)
     const text = response.data?.choices?.[0]?.message?.content ?? ''
     const full = prefill ? prefill + text : text
-    if (response.data?.choices?.[0]?.finish_reason === 'length') {
-      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
-    }
-    return full
+    return response.data?.choices?.[0]?.finish_reason === 'length' ? full + TRUNCATION_NOTICE : full
   }
 
   async completeConversation(req: ConversationRequest): Promise<string> {
     const { prompt, options } = flattenConversation(req)
     return this.complete(prompt, options)
+  }
+
+  async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
+    const { prompt, options } = flattenConversation(req)
+    const body: Record<string, unknown> = {
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: buildChatMessages(prompt, options),
+    }
+    if (options.temperature !== undefined) body.temperature = options.temperature
+    const data = await streamChat('/settings/ai-providers/proxy/openai/stream', body, onDelta, signal) as
+      { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> }
+    const text = data?.choices?.[0]?.message?.content ?? ''
+    return data?.choices?.[0]?.finish_reason === 'length' ? text + TRUNCATION_NOTICE : text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
@@ -434,23 +484,8 @@ class OllamaProvider implements AIService {
   constructor(private config: { id: string; model: string; maxTokens: number }) {}
 
   async complete(prompt: string, options: AICompleteOptions = {}): Promise<string> {
-    const { systemPrompt, temperature, prefill, attachments } = options
-    const messages: { role: string; content: unknown }[] = []
-    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
-
-    if (attachments?.length) {
-      const contentBlocks = [
-        ...attachments.map((a) => ({
-          type: 'image_url' as const,
-          image_url: { url: `data:${a.mimeType};base64,${a.data}` },
-        })),
-        { type: 'text' as const, text: prompt },
-      ]
-      messages.push({ role: 'user', content: contentBlocks })
-    } else {
-      messages.push({ role: 'user', content: prompt })
-    }
-
+    const { temperature, prefill } = options
+    const messages = buildChatMessages(prompt, options)
     if (prefill) messages.push({ role: 'assistant', content: prefill })
 
     const body: Record<string, unknown> = {
@@ -464,15 +499,27 @@ class OllamaProvider implements AIService {
     const response = await client.post('/settings/ai-providers/proxy/ollama', body)
     const text = response.data?.message?.content ?? ''
     const full = prefill ? prefill + text : text
-    if (response.data?.done_reason === 'length') {
-      return full + '\n\n---\n*This response was cut off due to length. You can ask me to continue, or request the information in smaller parts.*'
-    }
-    return full
+    return response.data?.done_reason === 'length' ? full + TRUNCATION_NOTICE : full
   }
 
   async completeConversation(req: ConversationRequest): Promise<string> {
     const { prompt, options } = flattenConversation(req)
     return this.complete(prompt, options)
+  }
+
+  async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
+    const { prompt, options } = flattenConversation(req)
+    const body: Record<string, unknown> = {
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: buildChatMessages(prompt, options),
+    }
+    if (options.temperature !== undefined) body.temperature = options.temperature
+    const data = await streamChat('/settings/ai-providers/proxy/ollama/stream', body, onDelta, signal) as
+      { message?: { content?: string }; done_reason?: string }
+    const text = data?.message?.content ?? ''
+    return data?.done_reason === 'length' ? text + TRUNCATION_NOTICE : text
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
