@@ -2,16 +2,16 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlmodel import Session, select, func, or_, col
+from sqlmodel import Session, select, func, or_, and_, col
 
 from app.database import get_session
 from app.models import Note, NoteVersion, Folder, Annotation
 from app.schemas import (
     NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
-    NoteVersionRead, NoteVersionListItem, RestoreVersionRequest,
+    NoteVersionRead, NoteVersionListItem, RestoreVersionRequest, NoteSearchFilter,
     DataResponse, ListResponse, ErrorResponse
 )
 
@@ -313,6 +313,85 @@ def list_notes(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post("/search", response_model=ListResponse[NoteListItem])
+def smart_search_notes(
+    payload: NoteSearchFilter,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Execute an AI-generated structured filter across ALL of the user's notes
+    (no folder scoping — unlike list_notes' in_folder mode). The frontend turns
+    natural language / advanced search syntax (tags:, date:, category:) into this
+    validated shape via the AI provider; the model itself never emits SQL.
+    """
+    user_id = _get_user_id(request)
+    query = select(Note).where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    count_query = (
+        select(func.count()).select_from(Note)
+        .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
+    )
+
+    def apply(filter_clause):
+        nonlocal query, count_query
+        query = query.where(filter_clause)
+        count_query = count_query.where(filter_clause)
+
+    for term in payload.text_all:
+        apply(or_(col(Note.title).ilike(f"%{term}%"), col(Note.content).ilike(f"%{term}%")))
+
+    if payload.text_any:
+        apply(or_(*[
+            or_(col(Note.title).ilike(f"%{t}%"), col(Note.content).ilike(f"%{t}%"))
+            for t in payload.text_any
+        ]))
+
+    if payload.tags:
+        apply(or_(*[col(Note.tags).ilike(f"%{t}%") for t in payload.tags]))
+
+    if payload.category_ids:
+        apply(col(Note.category_id).in_(payload.category_ids))
+
+    date_col = Note.created_at if payload.date_field == "created_at" else Note.modified_at
+
+    if payload.date_from:
+        d = payload.date_from
+        apply(date_col >= datetime(d.year, d.month, d.day))
+
+    if payload.date_to:
+        d = payload.date_to
+        apply(date_col < datetime(d.year, d.month, d.day) + timedelta(days=1))
+
+    if payload.annual_ranges:
+        # SQLite-specific: strftime('%m-%d', ...) extracts the month-day so a
+        # recurring window (e.g. "first week of January") matches across any year.
+        month_day = func.strftime('%m-%d', date_col)
+        range_filters = []
+        for r in payload.annual_ranges:
+            start = f"{r.start_month:02d}-{r.start_day:02d}"
+            end = f"{r.end_month:02d}-{r.end_day:02d}"
+            if start <= end:
+                range_filters.append(and_(month_day >= start, month_day <= end))
+            else:
+                # Wraps year-end (e.g. Dec 20 -> Jan 5): match either side.
+                range_filters.append(or_(month_day >= start, month_day <= end))
+        apply(or_(*range_filters))
+
+    if payload.is_pinned is not None:
+        apply(Note.is_pinned == payload.is_pinned)
+
+    query = query.order_by(Note.is_pinned.desc(), date_col.desc())
+
+    total = session.exec(count_query).one()
+    notes = session.exec(query.offset(payload.offset).limit(payload.limit)).all()
+
+    return ListResponse(
+        data=[note_to_list_item(n) for n in notes],
+        total=total,
+        limit=payload.limit,
+        offset=payload.offset,
     )
 
 

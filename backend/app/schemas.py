@@ -1,5 +1,5 @@
 from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pydantic import BaseModel, Field, field_validator, PlainSerializer
 
 T = TypeVar("T")
@@ -167,6 +167,40 @@ class NoteListItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Smart search schemas (AI-generated structured filter, see routers/notes.py's
+# POST /search — the model never emits SQL, only this validated shape)
+class AnnualRange(BaseModel):
+    """A recurring month/day window matched in any year, e.g. "first week of
+    January" == start_month=1, start_day=1, end_month=1, end_day=7."""
+    start_month: int = Field(ge=1, le=12)
+    start_day: int = Field(ge=1, le=31)
+    end_month: int = Field(ge=1, le=12)
+    end_day: int = Field(ge=1, le=31)
+
+
+class NoteSearchFilter(BaseModel):
+    text_all: List[str] = []          # every term must appear (title OR content)
+    text_any: List[str] = []          # at least one term must appear
+    tags: List[str] = []              # match ANY of these tags
+    category_ids: List[str] = []
+    date_field: Literal["created_at", "modified_at"] = "created_at"
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    annual_ranges: List[AnnualRange] = []
+    is_pinned: Optional[bool] = None
+    limit: int = Field(default=200, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+
+    # Caps list sizes before per-item validation so a malformed/runaway model
+    # response can't blow up the generated SQL with hundreds of OR clauses.
+    @field_validator("text_all", "text_any", "tags", "category_ids", "annual_ranges", mode="before")
+    @classmethod
+    def _cap_list(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            return v[:50]
+        return v
 
 
 class NoteVersionRead(BaseModel):

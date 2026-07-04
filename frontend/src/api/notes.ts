@@ -92,9 +92,40 @@ export interface ListResponse<T> {
   offset: number
 }
 
+// A recurring month/day window matched in any year (e.g. "first week of January").
+export interface AnnualRange {
+  start_month: number
+  start_day: number
+  end_month: number
+  end_day: number
+}
+
+// The structured filter the AI generates from a natural-language / advanced-syntax
+// search query. Matches `backend/app/schemas.py`'s NoteSearchFilter — the model never
+// emits SQL, only this validated shape, which POST /notes/search executes.
+export interface NoteSearchFilter {
+  text_all?: string[]
+  text_any?: string[]
+  tags?: string[]
+  category_ids?: string[]
+  date_field?: 'created_at' | 'modified_at'
+  date_from?: string   // 'YYYY-MM-DD'
+  date_to?: string     // 'YYYY-MM-DD'
+  annual_ranges?: AnnualRange[]
+  is_pinned?: boolean
+  limit?: number
+  offset?: number
+}
+
 export const notesApi = {
   list(params: ListNotesParams = {}): Promise<ListResponse<NoteListItem>> {
     return client.get('/notes', { params }).then((r) => r.data)
+  },
+
+  // Executes an AI-generated structured filter across all of the user's notes
+  // (no folder scoping) — the "deep search" path triggered by Enter in the list view.
+  smartSearch(filter: NoteSearchFilter): Promise<ListResponse<NoteListItem>> {
+    return client.post('/notes/search', filter).then((r) => r.data)
   },
 
   get(id: string): Promise<{ data: Note }> {
