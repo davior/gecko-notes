@@ -1329,6 +1329,8 @@ export default function EditorView() {
           noteTitle={title}
           noteFolderId={note?.folder_id ?? null}
           noteSummary={note?.summary ?? null}
+          noteCreatedAt={note?.created_at ?? null}
+          noteModifiedAt={note?.modified_at ?? null}
           getNoteDocument={() => editor?.document as unknown[] ?? []}
           onAddToNote={insertAIText}
           editor={editor}

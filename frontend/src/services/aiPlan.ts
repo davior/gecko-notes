@@ -3,7 +3,7 @@
 // here (reusing the fence-stripping approach from parseTagsFromAI in ai.ts) and
 // degrade gracefully to a plain "respond" action when the output isn't valid JSON.
 
-export interface ContextNote { id: string; title: string }
+export interface ContextNote { id: string; title: string; createdAt?: string; modifiedAt?: string }
 export interface ContextFolder { id: string; name: string }
 export interface ContextCategory { id: string; label: string }
 
@@ -45,6 +45,20 @@ interface BuildReferenceOpts {
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
+  // The folder the user is currently viewing (list view) or whose note is open (editor).
+  // null = the root / top level. Lets the model resolve "here"/"this folder".
+  currentFolderId?: string | null
+  currentFolderName?: string | null
+}
+
+// Compact rendering of a note's timestamps for the context lists. Both dates are the
+// ISO-8601 UTC strings the API returns; returns '' when neither is available so notes
+// without dates (e.g. a freshly created, unsaved note) render unchanged.
+export function formatNoteMeta(createdAt?: string | null, modifiedAt?: string | null): string {
+  const parts: string[] = []
+  if (createdAt) parts.push(`created ${createdAt}`)
+  if (modifiedAt) parts.push(`modified ${modifiedAt}`)
+  return parts.length ? ` (${parts.join(', ')})` : ''
 }
 
 // Static, never-changing instruction block. Kept separate (and a module constant) so
@@ -82,6 +96,7 @@ Rules:
 - Deferred body generation (IMPORTANT for long or multiple bodies): For create_note, create_child_note, edit_note, edit_section and append_note you may EITHER write the body inline in "content", OR set "spec" to a precise description of what the body must contain and leave "content" empty (""). When a body would be long, or you are creating/rewriting MULTIPLE notes, PREFER "spec" and leave "content" empty — each spec'd body is written in a separate follow-up step that sees this same plan and context, which avoids truncation. Use inline "content" only for short, simple bodies. Never set both for the same action.
 - "noteId", "parentId", "folderId" and "categoryId" MUST be an id taken from the lists below, OR a "ref" label you assigned to an entity created earlier in THIS plan. NEVER invent an id.
 - For the note the user currently has open ("this note", "this article", …), use its id from the list below, or the literal "current". Its live, up-to-date content is provided in the most recent user message (labelled "Current note — live"); other in-context notes appear in the "Context (note bodies)" section. Ids that appear only earlier in the conversation may be stale — do not reuse an id unless it is listed below.
+- Dates and the current folder: every note in "Notes in context" is annotated with its creation and last-modified timestamps in ISO-8601 UTC (e.g. "(created 2026-07-01T…Z, modified 2026-07-03T…Z)"). The reference block header also states the current date and the folder the user is currently viewing. Use these to satisfy date-based requests — e.g. "created more than 3 days ago", "modified this week", "the oldest notes", "sort by date" — computing any relative dates against the stated current date. When the user says "here", "this folder", or "in here", it means the folder currently being viewed: use its id as "parentFolderId" for create_folder and as "folderId" for move_note (a null current folder means the root). Newly created notes are automatically placed in the current folder, so create_note needs no folder id.
 - Note references: "referenceNoteId" and "referenceTitle" for add_reference actions must come from the notes listed below. If a note to reference is not in context, return a respond action explaining which note to add to the context.
 - Forward references: a create_note / create_child_note / create_folder action may set "ref" to a short label (e.g. "f1"); a later action may use that label anywhere an id is expected (e.g. move a note into "folderId":"f1"). This lets you, for example, create a folder and then move notes into it within one plan.
 - Choosing how to edit (IMPORTANT — preserve formatting and embedded blocks):
@@ -96,9 +111,9 @@ Rules:
 // *other* in-context notes. Stable within a conversation (it changes only when notes
 // are added/renamed or the scope changes), so it sits behind its own cache breakpoint —
 // after PLAN_INSTRUCTIONS, before the volatile current-note body and the new request.
-export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories }: BuildReferenceOpts): string {
+export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories, currentFolderId, currentFolderName }: BuildReferenceOpts): string {
   const noteList = targetNotes.length
-    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+    ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
     : '(none)'
   const folderList = folders.length
     ? folders.map((f) => `- ${f.id} — ${f.name}`).join('\n')
@@ -107,7 +122,18 @@ export function buildPlanReferenceBlock({ referenceContextText, targetNotes, fol
     ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
     : '(none)'
 
-  return `Notes in context (id — title):
+  // Day precision (not a full timestamp) keeps this cacheable reference block byte-stable
+  // within a session, preserving the Anthropic prompt-cache prefix, while still letting the
+  // model resolve relative queries like "created more than 3 days ago".
+  const currentDate = new Date().toISOString().slice(0, 10)
+  const viewing = currentFolderId
+    ? `${currentFolderId} — ${currentFolderName || 'Untitled folder'}`
+    : 'the root (top level)'
+
+  return `Current date (UTC): ${currentDate}
+Currently viewing folder: ${viewing}
+
+Notes in context (id — title):
 ${noteList}
 
 Folders (id — name):
