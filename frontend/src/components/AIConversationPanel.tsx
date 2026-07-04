@@ -20,6 +20,7 @@ import {
   buildPlanSummary,
   buildContentStepInstruction,
   actionNeedsGeneration,
+  formatNoteMeta,
   PLAN_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
@@ -85,6 +86,8 @@ interface PlanContext {
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
+  currentFolderId: string | null   // folder being viewed (kept so find_notes can rebuild referenceBlock)
+  currentFolderName: string | null
   labelMap: Map<string, string>
   annotationIds: Set<string>
 }
@@ -116,6 +119,9 @@ interface AIConversationPanelProps {
   noteTitle?: string
   noteFolderId?: string | null
   noteSummary?: string | null
+  // Timestamps of the open note (editor mode), so the model can reason about its dates.
+  noteCreatedAt?: string | null
+  noteModifiedAt?: string | null
   getNoteDocument?: () => unknown[]
   onAddToNote: (text: string) => Promise<void>
   // Plan execution wiring (provided by EditorView)
@@ -275,6 +281,8 @@ export default function AIConversationPanel({
   noteTitle,
   noteFolderId,
   noteSummary,
+  noteCreatedAt,
+  noteModifiedAt,
   getNoteDocument,
   onAddToNote,
   editor,
@@ -585,13 +593,13 @@ export default function AIConversationPanel({
 
   // Fetch full note bodies by id and render each as Markdown (a NoteListItem only carries
   // a preview). Shared by the list-view selection scope and the find_notes results.
-  type ScopeNote = { id?: string; title: string; content: string; summary?: string | null; blocks: unknown[] }
+  type ScopeNote = { id?: string; title: string; content: string; summary?: string | null; blocks: unknown[]; createdAt?: string; modifiedAt?: string }
   const fetchNotesById = async (ids: string[]): Promise<ScopeNote[]> => {
     const fetched = await Promise.all(ids.map((id) => notesApi.get(id)))
     return fetched.map((r) => {
       let blocks: unknown[] = []
       try { blocks = JSON.parse(r.data.content) } catch { /* ignore */ }
-      return { id: r.data.id, title: r.data.title, content: blocksToMarkdown(blocks), summary: r.data.summary, blocks }
+      return { id: r.data.id, title: r.data.title, content: blocksToMarkdown(blocks), summary: r.data.summary, blocks, createdAt: r.data.created_at, modifiedAt: r.data.modified_at }
     })
   }
 
@@ -615,7 +623,7 @@ export default function AIConversationPanel({
       notes = ids.length ? await fetchNotesById(ids.slice(0, 50)) : []
     } else if (contextScope === 'note') {
       const blocks = getNoteDocument?.() ?? []
-      notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(blocks), summary: noteSummary, blocks }]
+      notes = [{ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(blocks), summary: noteSummary, blocks, createdAt: noteCreatedAt ?? undefined, modifiedAt: noteModifiedAt ?? undefined }]
     } else {
       // Fetch list items, then get full content for each (NoteListItem only has content_preview)
       let listItems: { id: string }[] = []
@@ -647,7 +655,7 @@ export default function AIConversationPanel({
       // Prepend current note for children scope
       if (contextScope === 'children') {
         const curBlocks = getNoteDocument?.() ?? []
-        notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(curBlocks), summary: noteSummary, blocks: curBlocks })
+        notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(curBlocks), summary: noteSummary, blocks: curBlocks, createdAt: noteCreatedAt ?? undefined, modifiedAt: noteModifiedAt ?? undefined })
       }
     }
 
@@ -655,9 +663,10 @@ export default function AIConversationPanel({
     // target it) plus its annotations, recording annotation ids for executor validation.
     const renderNote = async (n: typeof notes[number]): Promise<string> => {
       const body = (useSummaries && n.summary) ? n.summary : n.content
+      const meta = formatNoteMeta(n.createdAt, n.modifiedAt)
       const heading = n.id
-        ? `## ${n.title || 'This note'} [id: ${n.id}]`
-        : (n.title ? `## ${n.title}` : '')
+        ? `## ${n.title || 'This note'} [id: ${n.id}]${meta}`
+        : (n.title ? `## ${n.title}${meta}` : '')
       let annoSection = ''
       if (n.id) {
         let list: { id: string; block_id: string; text: string }[] = []
@@ -680,7 +689,7 @@ export default function AIConversationPanel({
 
     const targetNotes: ContextNote[] = notes
       .filter((n): n is typeof n & { id: string } => Boolean(n.id))
-      .map((n) => ({ id: n.id, title: n.title || 'Untitled' }))
+      .map((n) => ({ id: n.id, title: n.title || 'Untitled', createdAt: n.createdAt, modifiedAt: n.modifiedAt }))
 
     // Collect linked file URLs (images only — others not supported as content blocks)
     if (includeLinkedFiles) {
@@ -748,8 +757,11 @@ export default function AIConversationPanel({
     folders.forEach((f) => labelMap.set(f.id, f.name))
     cats.forEach((c) => labelMap.set(c.id, c.label))
 
-    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats })
-    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, referenceContextText, currentNoteText, attachments, targetNotes, folders, categories: cats, labelMap, annotationIds }
+    const curFolderId = currentFolderId ?? null
+    const currentFolderName = curFolderId ? folders.find((f) => f.id === curFolderId)?.name ?? null : null
+
+    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats, currentFolderId: curFolderId, currentFolderName })
+    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, referenceContextText, currentNoteText, attachments, targetNotes, folders, categories: cats, currentFolderId: curFolderId, currentFolderName, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -1000,9 +1012,9 @@ export default function AIConversationPanel({
         const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
         const foundTargets: ContextNote[] = foundNotes
           .filter((n): n is typeof n & { id: string } => Boolean(n.id))
-          .map((n) => ({ id: n.id, title: n.title || 'Untitled' }))
+          .map((n) => ({ id: n.id, title: n.title || 'Untitled', createdAt: n.createdAt, modifiedAt: n.modifiedAt }))
         const foundRendered = foundNotes.map((n) =>
-          `## ${n.title || 'Untitled'} [id: ${n.id}]\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
+          `## ${n.title || 'Untitled'} [id: ${n.id}]${formatNoteMeta(n.createdAt, n.modifiedAt)}\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
 
         const mergedTargets: ContextNote[] = [...ctx.targetNotes]
         const mergedIds = new Set(mergedTargets.map((n) => n.id))
@@ -1013,13 +1025,13 @@ export default function AIConversationPanel({
         ctx = {
           ...ctx,
           referenceContextText: mergedRefText,
-          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories }),
+          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
           targetNotes: mergedTargets,
           labelMap: mergedLabelMap,
         }
 
         // Record the search as a turn so the model sees its own query and the results.
-        const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}`).join('\n')
+        const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
         const summary = foundListItems.length
           ? `Search results for ${queries.map((q) => `"${q}"`).join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
           : `Search for ${queries.map((q) => `"${q}"`).join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`
