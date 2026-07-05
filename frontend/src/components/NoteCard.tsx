@@ -49,11 +49,9 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
       <div
         className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
           hasImage
-            ? selected
-              ? 'border-2 border-green-500'
-              : 'border border-gray-200 dark:border-gray-700'
+            ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
-        } ${!hasImage && selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
+        } ${selected ? 'outline outline-2 -outline-offset-2 outline-green-500' : ''}`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
@@ -172,7 +170,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
   // List view
   return (
     <div
-      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'border-2 border-green-500 dark:border-green-500' : ''}`}
+      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'outline outline-2 -outline-offset-2 outline-green-500' : ''}`}
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
