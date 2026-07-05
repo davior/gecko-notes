@@ -172,7 +172,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
   // List view
   return (
     <div
-      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
+      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'border-2 border-green-500 dark:border-green-500' : ''}`}
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
