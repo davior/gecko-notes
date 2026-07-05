@@ -7,8 +7,8 @@ import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { extractBlockTexts } from '@/utils/blocks'
-import { autoLayout, newDiagramId, normalizeGraph, type DiagramGraph, type DiagramKind } from '@/utils/diagram'
-import type { AiDiagramGraph, Plan, PlanAction } from './aiPlan'
+import { newDiagramId, validateMermaidSource } from '@/utils/diagram'
+import type { Plan, PlanAction } from './aiPlan'
 
 // Minimal structural view of the BlockNote editor — we use it to convert the model's
 // markdown into BlockNote blocks, and (for AI context) blocks back into markdown. The
@@ -119,26 +119,6 @@ function collectEmbeds(blocks: unknown[]): unknown[] {
   }
   blocks.forEach(walk)
   return out
-}
-
-// Turn the model's compact, coordinate-free diagram into a laid-out DiagramGraph
-// ready to store in a diagram block's `data` prop.
-function aiGraphToDiagram(ai: AiDiagramGraph, kind: DiagramKind): DiagramGraph {
-  const nodes = ai.nodes.map((n) => ({
-    id: n.id,
-    label: n.label ?? '',
-    x: 0,
-    y: 0,
-    ...(n.url ? { url: n.url } : {}),
-    ...(n.noteId ? { noteId: n.noteId } : {}),
-  }))
-  const edges = ai.edges.map((e, i) => ({
-    id: `e-${i}-${e.source}-${e.target}`,
-    source: e.source,
-    target: e.target,
-    ...(e.label ? { label: e.label } : {}),
-  }))
-  return autoLayout(normalizeGraph({ kind, nodes, edges }))
 }
 
 export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<ActionResult[]> {
@@ -500,18 +480,16 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'create_diagram': {
         const r = resolveNote(action.noteId)
         if ('error' in r) return { ok: false, message: r.error }
+        const validated = await validateMermaidSource(action.source)
+        if (!validated.ok) return { ok: false, message: `Diagram not created: ${validated.error}` }
         await notesApi.createVersion(r.id).catch(() => null)
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
-        const graph = aiGraphToDiagram(action.graph, action.kind)
-        blocks.push({
-          type: 'diagram',
-          props: { diagramId: newDiagramId(), kind: action.kind, data: JSON.stringify(graph) },
-        })
+        blocks.push({ type: 'diagram', props: { diagramId: newDiagramId(), source: action.source } })
         await notesApi.update(r.id, { content: JSON.stringify(blocks) })
         return {
           ok: true,
-          message: `Added ${action.kind === 'flowchart' ? 'flow chart' : 'mind map'} to “${cur.data.title}”.`,
+          message: `Added diagram to “${cur.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,
@@ -522,6 +500,8 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'edit_diagram': {
         const r = resolveNote(action.noteId)
         if ('error' in r) return { ok: false, message: r.error }
+        const validated = await validateMermaidSource(action.source)
+        if (!validated.ok) return { ok: false, message: `Diagram not updated: ${validated.error}` }
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
         let found = false
@@ -532,11 +512,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
               const props = (rec.props as Record<string, unknown>) || {}
               if (props.diagramId === action.diagramId) {
                 found = true
-                const kind = (action.kind
-                  ?? (props.kind === 'flowchart' || props.kind === 'mindmap' ? props.kind : undefined)
-                  ?? 'mindmap') as DiagramKind
-                const graph = aiGraphToDiagram(action.graph, kind)
-                return { ...rec, props: { ...props, kind, data: JSON.stringify(graph) } }
+                return { ...rec, props: { ...props, source: action.source } }
               }
             }
             if (Array.isArray(rec?.children)) return { ...rec, children: walk(rec.children as unknown[]) }

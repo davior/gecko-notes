@@ -1,59 +1,89 @@
-// Diagram (mind map / flow chart) data model + helpers shared by the diagram block,
-// its interactive editor, the read-only shared render, and the exporters.
+// Diagram (mind map / flow chart / etc.) helpers built on Mermaid.js. Notes store the
+// raw Mermaid source string inside a `diagram` BlockNote block; this module is the one
+// place that turns that source into a sanitized SVG, used by every render site (the
+// inline editor preview, the editor modal's live preview, the read-only shared/history
+// render, and every file exporter).
 //
-// The graph is stored inside a BlockNote `diagram` block's `data` prop as a JSON
-// string (see blocks/diagramBlock.tsx). Node positions (x, y) are persisted so the
-// static SVG preview and file exports render deterministically without re-running
-// layout. Nodes may link to an external URL or to another note (noteId), the latter
-// reusing the app's note-link + shared-view transform machinery.
+// Security: mermaid.render() returns a raw SVG string that must be inserted into the DOM
+// via dangerouslySetInnerHTML. Diagram source can be authored by any note owner (or the AI
+// on their behalf) and rendered in the PUBLIC, unauthenticated shared view and in
+// standalone exported HTML files, so it's a real stored-XSS surface unless sanitized.
+// renderMermaid() is the single choke point: no caller ever touches mermaid's raw output.
 
-import dagre from '@dagrejs/dagre'
-import { MarkerType, Position } from '@xyflow/react'
-import type { Edge, Node } from '@xyflow/react'
+export type DiagramKind =
+  | 'flowchart' | 'sequence' | 'class' | 'state' | 'er' | 'gantt' | 'pie' | 'timeline' | 'mindmap' | 'other'
 
-export type DiagramKind = 'mindmap' | 'flowchart'
-
-export interface DiagramNode {
-  id: string
-  label: string
-  x: number
-  y: number
-  url?: string
-  noteId?: string
-  noteTitle?: string
-  color?: string
+// Which Mermaid diagram kinds render `click <id> href "..."` as an actual clickable
+// element. Confirmed: flowchart/class/state support it; mindmap does not (open upstream
+// limitation, https://github.com/mermaid-js/mermaid/issues/4099). The rest are believed
+// unsupported — this is the one place to correct if a kind turns out to behave differently.
+export const KIND_SUPPORTS_LINKS: Record<DiagramKind, boolean> = {
+  flowchart: true,
+  class: true,
+  state: true,
+  sequence: false,
+  er: false,
+  gantt: false,
+  pie: false,
+  timeline: false,
+  mindmap: false,
+  other: false,
 }
 
-export interface DiagramEdge {
-  id: string
-  source: string
-  target: string
-  label?: string
+export const DIAGRAM_KIND_LABELS: Record<DiagramKind, string> = {
+  flowchart: 'Flow chart',
+  sequence: 'Sequence diagram',
+  class: 'Class diagram',
+  state: 'State diagram',
+  er: 'ER diagram',
+  gantt: 'Gantt chart',
+  pie: 'Pie chart',
+  timeline: 'Timeline',
+  mindmap: 'Mind map',
+  other: 'Diagram',
 }
 
-export interface DiagramGraph {
-  kind: DiagramKind
-  nodes: DiagramNode[]
-  edges: DiagramEdge[]
+const MERMAID_STARTERS: Record<DiagramKind, string> = {
+  flowchart: 'flowchart TD\n    A[Start] --> B[Next step]',
+  sequence: 'sequenceDiagram\n    Alice->>Bob: Hello Bob\n    Bob-->>Alice: Hi Alice',
+  class: 'classDiagram\n    class Animal {\n        +String name\n        +makeSound()\n    }\n    class Dog\n    Animal <|-- Dog',
+  state: 'stateDiagram-v2\n    [*] --> Idle\n    Idle --> Running\n    Running --> [*]',
+  er: 'erDiagram\n    CUSTOMER ||--o{ ORDER : places\n    ORDER ||--|{ LINE_ITEM : contains',
+  gantt: 'gantt\n    title Project plan\n    dateFormat YYYY-MM-DD\n    section Phase 1\n    Task 1 :a1, 2024-01-01, 5d',
+  pie: 'pie title Distribution\n    "Category A" : 40\n    "Category B" : 30\n    "Category C" : 30',
+  timeline: 'timeline\n    title Timeline\n    2024 : Event one\n    2025 : Event two',
+  mindmap: 'mindmap\n    root((Central idea))\n        Branch 1\n        Branch 2',
+  other: 'flowchart TD\n    A[Start] --> B[Next step]',
 }
 
-export const NODE_WIDTH = 172
-export const NODE_HEIGHT = 48
-
-// Data carried on a React Flow node so the custom node component can render the
-// label + link affordance and (in the read-only view) a disabled state. The raw
-// link fields ride along too so flowToGraph can fold state back losslessly.
-export interface FlowNodeData extends Record<string, unknown> {
-  label: string
-  linkKind: 'url' | 'note' | null
-  disabled: boolean
-  url?: string
-  noteId?: string
-  noteTitle?: string
-  color?: string
+export function starterFor(kind: DiagramKind): string {
+  return MERMAID_STARTERS[kind]
 }
 
-export type FlowNode = Node<FlowNodeData>
+export const DIAGRAM_KINDS: DiagramKind[] = [
+  'flowchart', 'mindmap', 'sequence', 'class', 'state', 'er', 'gantt', 'pie', 'timeline',
+]
+
+// Kind is never stored — always derived from the source's first non-comment line. This
+// avoids drift between a stored `kind` prop and the diagram's actual type (an edit could
+// change the real type while a stale prop still pointed at the old one).
+export function detectMermaidKind(source: string): DiagramKind {
+  const line = source
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith('%%')) ?? ''
+  const head = line.split(/\s+/)[0]?.toLowerCase() ?? ''
+  if (head === 'flowchart' || head === 'graph') return 'flowchart'
+  if (head === 'sequencediagram') return 'sequence'
+  if (head.startsWith('classdiagram')) return 'class'
+  if (head.startsWith('statediagram')) return 'state'
+  if (head === 'erdiagram') return 'er'
+  if (head === 'gantt') return 'gantt'
+  if (head === 'pie') return 'pie'
+  if (head === 'timeline') return 'timeline'
+  if (head === 'mindmap') return 'mindmap'
+  return 'other'
+}
 
 function uid(): string {
   try {
@@ -63,234 +93,147 @@ function uid(): string {
   }
 }
 
-export function newNodeId(): string {
-  return `n-${uid()}`
-}
-
 export function newDiagramId(): string {
   return `d-${uid()}`
 }
 
-// A starter graph with a single root node so a freshly inserted diagram is never a
-// blank canvas. Mind maps grow left-to-right from a central idea; flow charts flow
-// top-to-bottom from a start step.
-export function emptyGraph(kind: DiagramKind): DiagramGraph {
-  return {
-    kind,
-    nodes: [
-      {
-        id: newNodeId(),
-        label: kind === 'mindmap' ? 'Central idea' : 'Start',
-        x: 0,
-        y: 0,
-      },
-    ],
-    edges: [],
-  }
+// ─── Sanitize-before-render ──────────────────────────────────────────────────
+
+export interface RenderResult {
+  svg: string
+  error: string | null
 }
 
-// Parse a stored `data` prop into a graph, tolerating empty/corrupt values.
-export function parseGraph(data: string, kind: DiagramKind): DiagramGraph {
-  if (!data || !data.trim()) return { kind, nodes: [], edges: [] }
+type MermaidModule = typeof import('mermaid')['default']
+type DOMPurifyModule = typeof import('dompurify')['default']
+
+let depsPromise: Promise<{ mermaid: MermaidModule; DOMPurify: DOMPurifyModule }> | null = null
+
+// Mermaid + DOMPurify are dynamically imported together (memoized) rather than statically
+// bundled, consistent with this codebase's existing pattern of lazy-loading heavy/optional
+// export libraries (jspdf, html2canvas, docx, turndown in utils/export.ts).
+function loadDeps() {
+  if (!depsPromise) {
+    depsPromise = Promise.all([import('mermaid'), import('dompurify')]).then(([m, p]) => {
+      m.default.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'default' })
+      return { mermaid: m.default, DOMPurify: p.default }
+    })
+  }
+  return depsPromise
+}
+
+// Mermaid renders the root <svg> as a responsive element — `width="100%"` plus an inline
+// `style="max-width:<natural>px"` — so it shrinks to fit its container rather than
+// overflowing. That defeats the point of the overflow-x:auto wrapper: a wide Gantt/ER
+// diagram would just shrink to illegibility instead of staying legible and scrolling. Force
+// the SVG back to its natural pixel width (from the viewBox) so wide diagrams genuinely
+// overflow their container and the wrapper's horizontal scroll does real work; diagrams
+// narrower than the container are unaffected either way.
+function applyNaturalSize(svg: string): string {
+  const rootMatch = svg.match(/<svg\b[^>]*>/)
+  if (!rootMatch) return svg
+  const rootTag = rootMatch[0]
+  const vb = rootTag.match(/viewBox="[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)"/)
+  if (!vb) return svg
+  const width = vb[1]
+  const stripped = rootTag.replace(/\swidth="[^"]*"/, '').replace(/\sstyle="[^"]*"/, '')
+  const withWidth = stripped.replace(/^<svg/, `<svg width="${width}"`)
+  return svg.replace(rootTag, withWidth)
+}
+
+// Render Mermaid source to a sanitized SVG string. Never throws — invalid syntax or a
+// render failure comes back as { svg: '', error: '<message>' } so every call site can show
+// an inline error state instead of crashing the note.
+//
+// Render calls are serialized through a promise queue as a defensive measure against any
+// concurrency issues in Mermaid's internal render sandbox when multiple diagrams render at
+// once (e.g. a note with several diagram blocks, or rapid edits while typing).
+let queue: Promise<unknown> = Promise.resolve()
+let seq = 0
+
+export function renderMermaid(source: string): Promise<RenderResult> {
+  const run = async (): Promise<RenderResult> => {
+    const text = source.trim()
+    if (!text) return { svg: '', error: null }
+    const { mermaid, DOMPurify } = await loadDeps()
+    let parseOk = false
+    try {
+      parseOk = (await mermaid.parse(text, { suppressErrors: true })) !== false
+    } catch {
+      parseOk = false
+    }
+    if (!parseOk) return { svg: '', error: 'This diagram has invalid Mermaid syntax.' }
+    try {
+      const { svg } = await mermaid.render(`gecko-mmd-${++seq}-${Date.now().toString(36)}`, text)
+      const clean = DOMPurify.sanitize(svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        ADD_TAGS: ['style', 'foreignObject'],
+        ADD_ATTR: ['target'],
+      })
+      return { svg: applyNaturalSize(clean), error: null }
+    } catch (e) {
+      return { svg: '', error: e instanceof Error ? e.message : 'Failed to render this diagram.' }
+    }
+  }
+  const result = queue.then(run, run)
+  queue = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+// Lighter-weight validation-only check (no render, no sanitize) for the AI executor, which
+// only needs to know whether the model's Mermaid source is well-formed before persisting it.
+export async function validateMermaidSource(source: string): Promise<{ ok: boolean; error?: string }> {
+  const text = source.trim()
+  if (!text) return { ok: false, error: 'Diagram source is empty' }
+  const { mermaid } = await loadDeps()
   try {
-    const parsed = JSON.parse(data) as Partial<DiagramGraph>
-    return normalizeGraph({
-      kind: parsed.kind === 'flowchart' || parsed.kind === 'mindmap' ? parsed.kind : kind,
-      nodes: Array.isArray(parsed.nodes) ? (parsed.nodes as DiagramNode[]) : [],
-      edges: Array.isArray(parsed.edges) ? (parsed.edges as DiagramEdge[]) : [],
-    })
+    const ok = (await mermaid.parse(text, { suppressErrors: true })) !== false
+    return ok ? { ok: true } : { ok: false, error: 'Invalid Mermaid syntax' }
   } catch {
-    return { kind, nodes: [], edges: [] }
+    return { ok: false, error: 'Invalid Mermaid syntax' }
   }
 }
 
-// Coerce a possibly-loose graph (e.g. one produced by the AI, which omits
-// coordinates) into a well-formed DiagramGraph: fill missing ids/positions and drop
-// edges that reference unknown nodes.
-export function normalizeGraph(graph: Partial<DiagramGraph> & { kind: DiagramKind }): DiagramGraph {
-  const nodes: DiagramNode[] = (graph.nodes ?? []).map((n, i) => ({
-    id: n.id || newNodeId(),
-    label: typeof n.label === 'string' ? n.label : '',
-    x: Number.isFinite(n.x as number) ? (n.x as number) : (i % 4) * (NODE_WIDTH + 60),
-    y: Number.isFinite(n.y as number) ? (n.y as number) : Math.floor(i / 4) * (NODE_HEIGHT + 60),
-    ...(n.url ? { url: n.url } : {}),
-    ...(n.noteId ? { noteId: n.noteId } : {}),
-    ...(n.noteTitle ? { noteTitle: n.noteTitle } : {}),
-    ...(n.color ? { color: n.color } : {}),
-  }))
-  const ids = new Set(nodes.map((n) => n.id))
-  const edges: DiagramEdge[] = (graph.edges ?? [])
-    .filter((e) => e && ids.has(e.source) && ids.has(e.target))
-    .map((e) => ({
-      id: e.id || `e-${e.source}-${e.target}`,
-      source: e.source,
-      target: e.target,
-      ...(e.label ? { label: e.label } : {}),
-    }))
-  return { kind: graph.kind, nodes, edges }
-}
-
-// Assign positions with dagre. Mind maps lay out left-to-right (a tree radiating
-// from the root); flow charts top-to-bottom. Used both by the "auto-layout" button
-// and by the AI executor, whose emitted graphs carry no coordinates.
-export function autoLayout(graph: DiagramGraph): DiagramGraph {
-  if (graph.nodes.length === 0) return graph
-  const g = new dagre.graphlib.Graph()
-  g.setGraph({
-    rankdir: graph.kind === 'mindmap' ? 'LR' : 'TB',
-    nodesep: 40,
-    ranksep: 70,
-    marginx: 20,
-    marginy: 20,
-  })
-  g.setDefaultEdgeLabel(() => ({}))
-  for (const n of graph.nodes) g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
-  for (const e of graph.edges) g.setEdge(e.source, e.target)
-  dagre.layout(g)
-  const nodes = graph.nodes.map((n) => {
-    const p = g.node(n.id)
-    // dagre positions are node centres; React Flow uses top-left origin.
-    return p ? { ...n, x: Math.round(p.x - NODE_WIDTH / 2), y: Math.round(p.y - NODE_HEIGHT / 2) } : n
-  })
-  return { ...graph, nodes, edges: graph.edges }
-}
-
-function linkKindOf(n: DiagramNode): 'url' | 'note' | null {
-  if (n.noteId) return 'note'
-  if (n.url) return 'url'
-  return null
-}
-
-// ─── React Flow <-> graph conversion ─────────────────────────────────────────
-
-export function graphToFlow(
-  graph: DiagramGraph,
-  opts?: { disabledNoteIds?: Set<string> },
-): { nodes: FlowNode[]; edges: Edge[] } {
-  const horizontal = graph.kind === 'mindmap'
-  const nodes: FlowNode[] = graph.nodes.map((n) => ({
-    id: n.id,
-    position: { x: n.x, y: n.y },
-    type: 'diagramNode',
-    data: {
-      label: n.label,
-      linkKind: linkKindOf(n),
-      disabled: !!(n.noteId && opts?.disabledNoteIds?.has(n.noteId)),
-      ...(n.url ? { url: n.url } : {}),
-      ...(n.noteId ? { noteId: n.noteId } : {}),
-      ...(n.noteTitle ? { noteTitle: n.noteTitle } : {}),
-      ...(n.color ? { color: n.color } : {}),
-    },
-    sourcePosition: horizontal ? Position.Right : Position.Bottom,
-    targetPosition: horizontal ? Position.Left : Position.Top,
-  }))
-  const edges: Edge[] = graph.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.label,
-    markerEnd: { type: MarkerType.ArrowClosed },
-  }))
-  return { nodes, edges }
-}
-
-// Fold React Flow node/edge state back into a storable graph. All link metadata is
-// carried on the flow node's data (see graphToFlow), so this is lossless.
-export function flowToGraph(nodes: FlowNode[], edges: Edge[], kind: DiagramKind): DiagramGraph {
-  const outNodes: DiagramNode[] = nodes.map((n) => ({
-    id: n.id,
-    label: (n.data?.label as string) ?? '',
-    x: Math.round(n.position.x),
-    y: Math.round(n.position.y),
-    ...(n.data?.url ? { url: n.data.url as string } : {}),
-    ...(n.data?.noteId ? { noteId: n.data.noteId as string } : {}),
-    ...(n.data?.noteTitle ? { noteTitle: n.data.noteTitle as string } : {}),
-    ...(n.data?.color ? { color: n.data.color as string } : {}),
-  }))
-  const outEdges: DiagramEdge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    ...(typeof e.label === 'string' && e.label ? { label: e.label } : {}),
-  }))
-  return { kind, nodes: outNodes, edges: outEdges }
-}
-
-// ─── Static SVG (inline preview + file exports) ──────────────────────────────
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function truncateLabel(s: string, max = 22): string {
-  const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > max ? `${one.slice(0, max - 1)}…` : one
-}
-
-// Deterministic SVG string for a graph, drawn from stored node positions. Used for
-// the non-interactive inline preview inside the editable editor and embedded into
-// HTML/PDF/Markdown/DOCX exports. Renders on a light background for consistent
-// output regardless of the viewer's theme.
-export function diagramToSVG(graph: DiagramGraph): string {
-  const nodes = graph.nodes
-  if (nodes.length === 0) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80"><rect width="320" height="80" fill="#f8fafc"/><text x="160" y="44" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#94a3b8">Empty diagram</text></svg>`
-  }
-  const pad = 24
-  const minX = Math.min(...nodes.map((n) => n.x))
-  const minY = Math.min(...nodes.map((n) => n.y))
-  const maxX = Math.max(...nodes.map((n) => n.x + NODE_WIDTH))
-  const maxY = Math.max(...nodes.map((n) => n.y + NODE_HEIGHT))
-  const width = Math.max(120, maxX - minX + pad * 2)
-  const height = Math.max(80, maxY - minY + pad * 2)
-  const ox = pad - minX
-  const oy = pad - minY
-  const byId = new Map(nodes.map((n) => [n.id, n]))
-  const cx = (n: DiagramNode) => n.x + ox + NODE_WIDTH / 2
-  const cy = (n: DiagramNode) => n.y + oy + NODE_HEIGHT / 2
-
-  const edgeSvg = graph.edges
-    .map((e) => {
-      const s = byId.get(e.source)
-      const t = byId.get(e.target)
-      if (!s || !t) return ''
-      return `<line x1="${cx(s)}" y1="${cy(s)}" x2="${cx(t)}" y2="${cy(t)}" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>`
-    })
-    .join('')
-
-  const nodeSvg = nodes
-    .map((n) => {
-      const linked = !!(n.noteId || n.url)
-      const fill = n.color || (linked ? '#eff6ff' : '#ffffff')
-      const stroke = linked ? '#3b82f6' : '#cbd5e1'
-      const textColor = linked ? '#1d4ed8' : '#0f172a'
-      return `<g><rect x="${n.x + ox}" y="${n.y + oy}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/><text x="${n.x + ox + NODE_WIDTH / 2}" y="${n.y + oy + NODE_HEIGHT / 2 + 4}" text-anchor="middle" font-family="sans-serif" font-size="13" fill="${textColor}">${escapeXml(truncateLabel(n.label || 'Untitled'))}</text></g>`
-    })
-    .join('')
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker></defs><rect width="${width}" height="${height}" fill="#f8fafc"/>${edgeSvg}${nodeSvg}</svg>`
-}
-
-// A base64 data URI for the graph's SVG — embeddable in an <img> for HTML/PDF/MD
-// exports.
-export function diagramToDataUri(graph: DiagramGraph): string {
-  const svg = diagramToSVG(graph)
-  // Unicode-safe base64 (btoa alone throws on multi-byte characters).
+// Base64 data URI for a rendered SVG string — used by exporters that embed images (HTML,
+// Markdown). Unicode-safe (btoa alone throws on multi-byte characters).
+export function svgToDataUri(svg: string): string {
   const bytes = new TextEncoder().encode(svg)
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
   return `data:image/svg+xml;base64,${btoa(bin)}`
 }
 
+// ─── Note-link convention ────────────────────────────────────────────────────
+// The app's own link-insertion UI always writes a literal relative href — never a custom
+// scheme — so both the frontend (finding anchors to intercept) and the backend
+// (extract_linked_note_ids, a plain regex over the source) can extract linked note ids
+// without a Mermaid grammar parse:
+//   click <nodeId> href "/notes/<noteId>"
+//   click <nodeId> href "<url>" "_blank"
+
+const NOTE_LINK_HREF_RE = /^\/notes\/([^/?#]+)/
+
+export function noteIdFromHref(href: string): string | null {
+  const m = NOTE_LINK_HREF_RE.exec(href)
+  return m ? m[1] : null
+}
+
+export function buildNoteLinkDirective(nodeId: string, noteId: string): string {
+  return `click ${nodeId} href "/notes/${noteId}"`
+}
+
+export function buildUrlLinkDirective(nodeId: string, url: string): string {
+  return `click ${nodeId} href "${url}" "_blank"`
+}
+
 // ─── AI context ──────────────────────────────────────────────────────────────
 
-// A compact, human-readable listing of the diagrams embedded in a note's blocks, so
-// the AI assistant can see them (they're invisible in the Markdown it's given) and
-// target one with edit_diagram. Returns '' when the note has no diagrams.
+// A compact, human-readable listing of the diagrams embedded in a note's blocks, so the AI
+// assistant can see them (invisible in the Markdown body it's given) and target one with
+// edit_diagram. Returns '' when the note has no diagrams.
 export function describeDiagrams(blocks: unknown[]): string {
   const out: string[] = []
   const walk = (list: unknown[]) => {
@@ -300,28 +243,22 @@ export function describeDiagrams(blocks: unknown[]): string {
       if (rec.type === 'diagram') {
         const props = (rec.props as Record<string, unknown>) || {}
         const id = String(props.diagramId ?? '')
-        const kind = String(props.kind ?? 'mindmap')
-        const graph = parseGraph(String(props.data ?? ''), kind === 'flowchart' ? 'flowchart' : 'mindmap')
-        const nodeLines = graph.nodes.map((n) => {
-          const link = n.noteId ? ` -> note ${n.noteId}` : n.url ? ` -> url ${n.url}` : ''
-          return `${n.id}:"${n.label}"${link}`
-        })
-        const edgeLines = graph.edges.map((e) => `${e.source}->${e.target}${e.label ? ` (${e.label})` : ''}`)
-        out.push(
-          `[diagram ${id}] kind=${kind}\n  nodes: ${nodeLines.join('; ') || '(none)'}\n  edges: ${edgeLines.join('; ') || '(none)'}`,
-        )
+        const source = String(props.source ?? '')
+        const kind = detectMermaidKind(source)
+        const truncated = source.length > 800 ? `${source.slice(0, 800)}…` : source
+        out.push(`[diagram ${id}] kind=${kind}\n${truncated}`)
       }
       if (Array.isArray(rec.children)) walk(rec.children as unknown[])
     }
   }
   walk(blocks)
-  return out.join('\n')
+  return out.join('\n\n')
 }
 
 // ─── Auto-open registry ──────────────────────────────────────────────────────
-// A freshly slash-inserted diagram should open its editor immediately. The block
-// can't be told to open via props (props persist in the note), so the insert helper
-// records the new diagram's id here and the block consumes it once on mount.
+// A freshly slash-inserted diagram should open its editor immediately. The block can't be
+// told to open via props (props persist in the note), so the insert helper records the new
+// diagram's id here and the block consumes it once on mount.
 
 const pendingOpen = new Set<string>()
 

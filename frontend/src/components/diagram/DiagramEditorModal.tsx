@@ -1,44 +1,39 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  addEdge,
-  useEdgesState,
-  useNodesState,
-  MarkerType,
-  type Connection,
-  type Edge,
-} from '@xyflow/react'
-import { Plus, Trash2, Wand2, Maximize2, Minimize2, X, Link2, FileText, Network, Workflow, Check } from 'lucide-react'
+import { Maximize2, Minimize2, X, Check, Link2, FileText } from 'lucide-react'
 import NotePickerModal from '@/components/NotePickerModal'
-import DiagramCanvas from './DiagramCanvas'
+import MermaidView from './MermaidView'
 import {
-  autoLayout,
-  flowToGraph,
-  graphToFlow,
-  newNodeId,
-  type DiagramGraph,
+  DIAGRAM_KINDS,
+  DIAGRAM_KIND_LABELS,
+  KIND_SUPPORTS_LINKS,
+  detectMermaidKind,
+  starterFor,
+  buildNoteLinkDirective,
+  buildUrlLinkDirective,
   type DiagramKind,
-  type FlowNode,
 } from '@/utils/diagram'
 
 interface Props {
-  initialGraph: DiagramGraph
-  onSave: (graph: DiagramGraph) => void
+  initialSource: string
+  onSave: (source: string) => void
   onClose: () => void
 }
 
-export default function DiagramEditorModal({ initialGraph, onSave, onClose }: Props) {
-  const seed = graphToFlow(initialGraph)
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(seed.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState(seed.edges)
-  const [kind, setKind] = useState<DiagramKind>(initialGraph.kind)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+export default function DiagramEditorModal({ initialSource, onSave, onClose }: Props) {
+  const [source, setSource] = useState(initialSource)
   const [fullscreen, setFullscreen] = useState(false)
   const [showNotePicker, setShowNotePicker] = useState(false)
+  const [nodeId, setNodeId] = useState('')
+  const [urlInput, setUrlInput] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Persist edits back to the block (which triggers the note's autosave) shortly
-  // after each change, and flush immediately on close. Skip the initial mount so
-  // merely opening the editor doesn't mark the note dirty.
+  const kind = useMemo(() => detectMermaidKind(source), [source])
+  const linksSupported = KIND_SUPPORTS_LINKS[kind]
+
+  // Persist edits back to the block (which triggers the note's autosave) shortly after
+  // each change, and flush immediately on close. Skip the initial mount so merely opening
+  // the editor doesn't mark the note dirty.
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
   const firstRun = useRef(true)
@@ -47,73 +42,38 @@ export default function DiagramEditorModal({ initialGraph, onSave, onClose }: Pr
       firstRun.current = false
       return
     }
-    const t = setTimeout(() => onSaveRef.current(flowToGraph(nodes, edges, kind)), 400)
+    const t = setTimeout(() => onSaveRef.current(source), 400)
     return () => clearTimeout(t)
-  }, [nodes, edges, kind])
-
-  const onConnect = useCallback(
-    (c: Connection) => setEdges((eds) => addEdge({ ...c, markerEnd: { type: MarkerType.ArrowClosed } }, eds)),
-    [setEdges],
-  )
-
-  const selected = nodes.find((n) => n.id === selectedId) ?? null
-
-  const patchSelected = useCallback(
-    (patch: Partial<FlowNode['data']>) => {
-      if (!selectedId) return
-      setNodes((nds) =>
-        nds.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, ...patch } } : n)),
-      )
-    },
-    [selectedId, setNodes],
-  )
-
-  function addNode() {
-    const id = newNodeId()
-    const anchor = selected
-    const pos = anchor ? { x: anchor.position.x + 220, y: anchor.position.y + 20 } : { x: 40, y: 40 }
-    const node: FlowNode = {
-      id,
-      type: 'diagramNode',
-      position: pos,
-      data: { label: 'New node', linkKind: null, disabled: false },
-      sourcePosition: seed.nodes[0]?.sourcePosition,
-      targetPosition: seed.nodes[0]?.targetPosition,
-    }
-    setNodes((nds) => [...nds, node])
-    if (anchor) {
-      setEdges((eds) =>
-        addEdge({ source: anchor.id, target: id, markerEnd: { type: MarkerType.ArrowClosed } } as Edge, eds),
-      )
-    }
-    setSelectedId(id)
-  }
-
-  function deleteSelected() {
-    if (!selectedId) return
-    setEdges((eds) => eds.filter((e) => e.source !== selectedId && e.target !== selectedId))
-    setNodes((nds) => nds.filter((n) => n.id !== selectedId))
-    setSelectedId(null)
-  }
-
-  function relayout(nextKind: DiagramKind = kind) {
-    const laid = autoLayout(flowToGraph(nodes, edges, nextKind))
-    const flow = graphToFlow(laid)
-    setNodes(flow.nodes)
-    setEdges(flow.edges)
-  }
+  }, [source])
 
   function changeKind(next: DiagramKind) {
     if (next === kind) return
-    setKind(next)
-    const laid = autoLayout(flowToGraph(nodes, edges, next))
-    const flow = graphToFlow(laid)
-    setNodes(flow.nodes)
-    setEdges(flow.edges)
+    const trivial = !source.trim() || source.trim() === starterFor(kind).trim()
+    if (!trivial && !window.confirm('Switching diagram type replaces the current content with a new starter template. Continue?')) {
+      return
+    }
+    setSource(starterFor(next))
+  }
+
+  function appendDirective(line: string) {
+    setSource((s) => (s.trimEnd() ? `${s.trimEnd()}\n${line}\n` : `${line}\n`))
+  }
+
+  function handleLinkToNote(noteId_: string, noteTitle: string) {
+    if (!nodeId.trim()) return
+    appendDirective(buildNoteLinkDirective(nodeId.trim(), noteId_))
+    setShowNotePicker(false)
+    void noteTitle
+  }
+
+  function handleLinkToUrl() {
+    if (!nodeId.trim() || !urlInput.trim()) return
+    appendDirective(buildUrlLinkDirective(nodeId.trim(), urlInput.trim()))
+    setUrlInput('')
   }
 
   function handleClose() {
-    onSaveRef.current(flowToGraph(nodes, edges, kind))
+    onSaveRef.current(source)
     onClose()
   }
 
@@ -130,27 +90,15 @@ export default function DiagramEditorModal({ initialGraph, onSave, onClose }: Pr
       >
         {/* Toolbar */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-gray-700 flex-wrap">
-          <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
-            <button
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium ${kind === 'mindmap' ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-              onClick={() => changeKind('mindmap')}
-            >
-              <Network className="w-3.5 h-3.5" /> Mind map
-            </button>
-            <button
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border-l border-gray-200 dark:border-gray-600 ${kind === 'flowchart' ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-              onClick={() => changeKind('flowchart')}
-            >
-              <Workflow className="w-3.5 h-3.5" /> Flow chart
-            </button>
-          </div>
-
-          <button className="btn-ghost flex items-center gap-1.5 px-2.5 py-1 text-xs" onClick={addNode}>
-            <Plus className="w-3.5 h-3.5" /> Add node
-          </button>
-          <button className="btn-ghost flex items-center gap-1.5 px-2.5 py-1 text-xs" onClick={() => relayout()}>
-            <Wand2 className="w-3.5 h-3.5" /> Auto-layout
-          </button>
+          <select
+            value={kind}
+            onChange={(e) => changeKind(e.target.value as DiagramKind)}
+            className="text-xs font-medium px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 outline-none"
+          >
+            {DIAGRAM_KINDS.map((k) => (
+              <option key={k} value={k}>{DIAGRAM_KIND_LABELS[k]}</option>
+            ))}
+          </select>
 
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -172,104 +120,67 @@ export default function DiagramEditorModal({ initialGraph, onSave, onClose }: Pr
           </div>
         </div>
 
-        {/* Body: canvas + inspector */}
-        <div className="flex flex-1 min-h-0">
-          <div className="flex-1 min-w-0 bg-gray-50 dark:bg-gray-900">
-            <DiagramCanvas
-              nodes={nodes}
-              edges={edges}
-              interactive
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              onNodeClick={setSelectedId}
-              onPaneClick={() => setSelectedId(null)}
-              height="100%"
+        {/* Body: source editor + live preview */}
+        <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col border-b sm:border-b-0 sm:border-r border-gray-100 dark:border-gray-700">
+            <textarea
+              ref={textareaRef}
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              spellCheck={false}
+              className="flex-1 min-h-0 w-full p-3 font-mono text-sm outline-none resize-none bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100"
+              placeholder="Mermaid diagram source…"
             />
           </div>
+          <div className="flex-1 min-w-0 min-h-0 overflow-auto bg-gray-50 dark:bg-gray-900 p-3">
+            <MermaidView source={source} interactive={false} />
+          </div>
+        </div>
 
-          {/* Inspector */}
-          <aside className="w-64 shrink-0 border-l border-gray-100 dark:border-gray-700 p-3 overflow-y-auto text-sm">
-            {selected ? (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Label</label>
-                  <input
-                    value={(selected.data.label as string) ?? ''}
-                    onChange={(e) => patchSelected({ label: e.target.value })}
-                    className="w-full text-sm px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 outline-none focus:border-blue-400"
-                    placeholder="Node label"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Link to note</label>
-                  {selected.data.noteId ? (
-                    <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
-                      <FileText className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate flex-1">{(selected.data.noteTitle as string) || 'Untitled'}</span>
-                      <button
-                        className="text-gray-400 hover:text-gray-600"
-                        title="Remove note link"
-                        onClick={() => patchSelected({ noteId: undefined, noteTitle: undefined, linkKind: (selected.data.url ? 'url' : null) })}
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-400 hover:text-blue-600"
-                      onClick={() => setShowNotePicker(true)}
-                    >
-                      <FileText className="w-3.5 h-3.5" /> Pick a note…
-                    </button>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Link to URL</label>
-                  <div className="flex items-center gap-1.5">
-                    <Link2 className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                    <input
-                      value={(selected.data.url as string) ?? ''}
-                      onChange={(e) => {
-                        const url = e.target.value
-                        patchSelected({ url: url || undefined, linkKind: url ? 'url' : (selected.data.noteId ? 'note' : null) })
-                      }}
-                      className="w-full text-sm px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 outline-none focus:border-blue-400"
-                      placeholder="https://…"
-                    />
-                  </div>
-                  {selected.data.noteId && selected.data.url ? (
-                    <p className="text-[11px] text-gray-400 mt-1">A note link takes priority over the URL.</p>
-                  ) : null}
-                </div>
-
-                <button
-                  className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm"
-                  onClick={deleteSelected}
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Delete node
-                </button>
-              </div>
-            ) : (
-              <div className="text-xs text-gray-400 space-y-2">
-                <p className="font-medium text-gray-500 dark:text-gray-400">No node selected</p>
-                <p>Click a node to edit its label and links.</p>
-                <p>Drag from a node's edge handle to another node to connect them.</p>
-                <p>Select a node or edge and press Delete to remove it.</p>
-              </div>
-            )}
-          </aside>
+        {/* Node-link insertion */}
+        <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center gap-2 text-sm">
+          {linksSupported ? (
+            <>
+              <input
+                value={nodeId}
+                onChange={(e) => setNodeId(e.target.value)}
+                placeholder="Node id (e.g. A)"
+                className="w-32 text-xs px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 outline-none focus:border-blue-400"
+              />
+              <button
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                disabled={!nodeId.trim()}
+                onClick={() => setShowNotePicker(true)}
+              >
+                <FileText className="w-3.5 h-3.5" /> Link to note…
+              </button>
+              <input
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://…"
+                className="w-48 text-xs px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 outline-none focus:border-blue-400"
+              />
+              <button
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                disabled={!nodeId.trim() || !urlInput.trim()}
+                onClick={handleLinkToUrl}
+              >
+                <Link2 className="w-3.5 h-3.5" /> Link to URL
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-gray-400">
+              {kind === 'mindmap'
+                ? <>Mermaid mind maps don't support clickable node links yet (<a className="underline" href="https://github.com/mermaid-js/mermaid/issues/4099" target="_blank" rel="noopener noreferrer">mermaid-js/mermaid#4099</a>).</>
+                : `${DIAGRAM_KIND_LABELS[kind]} diagrams don't support node links.`}
+            </p>
+          )}
         </div>
       </div>
 
       {showNotePicker && (
         <NotePickerModal
-          onSelect={(id, title) => {
-            patchSelected({ noteId: id, noteTitle: title, linkKind: 'note' })
-            setShowNotePicker(false)
-          }}
+          onSelect={(id, title) => handleLinkToNote(id, title)}
           onClose={() => setShowNotePicker(false)}
         />
       )}

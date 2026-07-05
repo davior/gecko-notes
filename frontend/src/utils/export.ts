@@ -1,13 +1,19 @@
 import type { Note } from '@/api/notes'
-import { parseGraph, diagramToSVG, diagramToDataUri, type DiagramKind } from '@/utils/diagram'
+import { renderMermaid, svgToDataUri } from '@/utils/diagram'
 
 // Rasterise a diagram SVG to a PNG (Uint8Array) for embedding in a Word document,
-// which can't display SVG. Sized from the SVG's own width/height, drawn at 2× for
-// crisp output on a white background.
+// which can't display SVG. Sized from the SVG's own width/height attributes (falling
+// back to the viewBox's width/height if Mermaid omits explicit attributes), drawn at 2×
+// for crisp output on a white background.
 async function svgToPngData(svg: string): Promise<{ data: Uint8Array; width: number; height: number }> {
-  const m = svg.match(/^<svg[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"/)
-  const width = m ? Math.round(parseFloat(m[1])) : 640
-  const height = m ? Math.round(parseFloat(m[2])) : 360
+  const m = svg.match(/^<svg[^>]*\swidth="([\d.]+)"[^>]*\sheight="([\d.]+)"/)
+  let width = m ? Math.round(parseFloat(m[1])) : 0
+  let height = m ? Math.round(parseFloat(m[2])) : 0
+  if (!width || !height) {
+    const vb = svg.match(/\sviewBox="[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)"/)
+    width = vb ? Math.round(parseFloat(vb[1])) : 640
+    height = vb ? Math.round(parseFloat(vb[2])) : 360
+  }
   const bytes = new TextEncoder().encode(svg)
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
@@ -140,7 +146,7 @@ function buildInlineContent(content: unknown[]): string {
 
 // ─── Helper: convert blocks array to HTML with correct element types ──────────
 
-function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
+async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<string> {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
   const parts: string[] = []
   let i = 0
@@ -157,7 +163,7 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
         const b = blocks[i]
         const bc = b.content as unknown[] | undefined
         const bch = b.children as Record<string, unknown>[] | undefined
-        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
         items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -171,7 +177,7 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
         const b = blocks[i]
         const bc = b.content as unknown[] | undefined
         const bch = b.children as Record<string, unknown>[] | undefined
-        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
         items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -187,7 +193,7 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
         const bch = b.children as Record<string, unknown>[] | undefined
         const bp = b.props as Record<string, unknown> | undefined
         const checked = bp?.checked === true
-        const nested = Array.isArray(bch) && bch.length > 0 ? buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
         items.push(`<li>${checked ? '&#9745;' : '&#9744;'} ${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -214,8 +220,12 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
     }
 
     if (type === 'diagram') {
-      const graph = parseGraph((props?.data as string) ?? '', (props?.kind as DiagramKind) ?? 'mindmap')
-      parts.push(`<figure style="margin:16px 0"><img src="${diagramToDataUri(graph)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
+      const { svg, error } = await renderMermaid((props?.source as string) ?? '')
+      if (svg) {
+        parts.push(`<figure style="margin:16px 0"><img src="${svgToDataUri(svg)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
+      } else if (error) {
+        parts.push(`<p style="color:#b91c1c;font-style:italic">[Diagram: ${escapeHtml(error)}]</p>`)
+      }
       i++
       continue
     }
@@ -223,7 +233,7 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
     if (type === 'heading') {
       const level = (props?.level as number) ?? 1
       const tag = `h${Math.min(Math.max(level, 1), 6)}`
-      const nested = Array.isArray(children) && children.length > 0 ? buildBlocksHTML(children) : ''
+      const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children) : ''
       parts.push(`<${tag}>${buildInlineContent(content ?? [])}</${tag}>${nested}`)
       i++
       continue
@@ -254,7 +264,7 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
     }
 
     // paragraph and any unknown block types
-    const nested = Array.isArray(children) && children.length > 0 ? buildBlocksHTML(children) : ''
+    const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children) : ''
     parts.push(`<p>${buildInlineContent(content ?? [])}</p>${nested}`)
     i++
   }
@@ -277,11 +287,11 @@ function buildMetadataHTML(note: Note): string {
 
 // ─── Helper: render note to full HTML document ────────────────────────────────
 
-function noteToHTML(note: Note): string {
+async function noteToHTML(note: Note): Promise<string> {
   let bodyContent = ''
   try {
     const blocks = JSON.parse(note.content) as Record<string, unknown>[]
-    bodyContent = buildBlocksHTML(blocks)
+    bodyContent = await buildBlocksHTML(blocks)
   } catch {
     bodyContent = note.content.split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
   }
@@ -364,7 +374,7 @@ export async function exportToPDF(note: Note): Promise<void> {
     'position:fixed;left:-9999px;top:0;width:658px;background:white;padding:0;font-family:Georgia,serif;color:#111;'
 
   const parser = new DOMParser()
-  const parsedDoc = parser.parseFromString(noteToHTML(note), 'text/html')
+  const parsedDoc = parser.parseFromString(await noteToHTML(note), 'text/html')
   const styleContent = parsedDoc.head.querySelector('style')?.textContent ?? ''
   // html2canvas can't render background-color on inline elements that wrap
   // across lines — it paints a full-width rectangle instead of following
@@ -605,8 +615,9 @@ export async function exportToWord(note: Note): Promise<void> {
       // Word can't render SVG, so rasterise the diagram to a PNG and embed it,
       // scaled to fit the page width.
       try {
-        const graph = parseGraph((props?.data as string) ?? '', (props?.kind as DiagramKind) ?? 'mindmap')
-        const { data, width, height } = await svgToPngData(diagramToSVG(graph))
+        const { svg, error } = await renderMermaid((props?.source as string) ?? '')
+        if (!svg) throw new Error(error ?? 'empty diagram')
+        const { data, width, height } = await svgToPngData(svg)
         const maxW = 600
         const w = Math.min(width, maxW)
         const h = Math.round((height * w) / width)
@@ -752,7 +763,7 @@ export async function exportToMarkdown(note: Note): Promise<void> {
   let blocks: Record<string, unknown>[] = []
   try { blocks = JSON.parse(note.content) } catch { blocks = [] }
 
-  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${buildBlocksHTML(blocks)}`
+  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks)}`
   const frontmatter = buildMarkdownFrontmatter(note)
   const md = `${frontmatter}\n\n${td.turndown(bodyHTML)}`
   downloadText(md, `${note.title || 'note'}.md`, 'text/markdown')
@@ -760,8 +771,8 @@ export async function exportToMarkdown(note: Note): Promise<void> {
 
 // ─── Export: HTML ─────────────────────────────────────────────────────────────
 
-export function exportToHTML(note: Note): void {
-  const html = noteToHTML(note)
+export async function exportToHTML(note: Note): Promise<void> {
+  const html = await noteToHTML(note)
   downloadText(html, `${note.title || 'note'}.html`, 'text/html')
 }
 
@@ -775,7 +786,7 @@ export async function copyAsPlainText(note: Note): Promise<void> {
 // ─── Export: Clipboard (rich text) ───────────────────────────────────────────
 
 export async function copyAsRichText(note: Note): Promise<void> {
-  const html = noteToHTML(note)
+  const html = await noteToHTML(note)
   const plain = `${note.title}\n\n${extractPlainText(note.content)}`
   const htmlBlob = new Blob([html], { type: 'text/html' })
   const plainBlob = new Blob([plain], { type: 'text/plain' })
