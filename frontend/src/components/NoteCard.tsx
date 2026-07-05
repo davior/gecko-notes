@@ -49,9 +49,11 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
       <div
         className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
           hasImage
-            ? 'border border-gray-200 dark:border-gray-700'
+            ? selected
+              ? 'ring-2 ring-green-500 ring-offset-2 dark:ring-offset-gray-900'
+              : 'border border-gray-200 dark:border-gray-700'
             : 'card'
-        } ${selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
+        } ${!hasImage && selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
