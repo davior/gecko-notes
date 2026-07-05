@@ -105,14 +105,26 @@ def extract_linked_note_ids(content_str: str) -> List[str]:
             if not isinstance(block, dict):
                 continue
             props = block.get("props", {}) or {}
-            if block.get("type") == "childNote":
+            btype = block.get("type")
+            if btype == "childNote":
                 child_id = props.get("childNoteId")
                 if child_id:
                     ids.append(child_id)
-            elif block.get("type") == "noteReference":
+            elif btype == "noteReference":
                 ref_id = props.get("noteId")
                 if ref_id:
                     ids.append(ref_id)
+            elif btype == "diagram":
+                # A diagram's nodes may link to other notes; collect those note ids
+                # so the shared view can transform them to the linked notes' shared
+                # pages (mirrors the noteReference / childNote handling above).
+                try:
+                    graph = json.loads(props.get("data") or "{}")
+                    for node in graph.get("nodes", []) or []:
+                        if isinstance(node, dict) and node.get("noteId"):
+                            ids.append(node["noteId"])
+                except Exception:
+                    pass
             walk(block.get("children", []) or [])
 
     walk(blocks)

@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -24,6 +24,7 @@ import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
+import { emptyGraph, newDiagramId, markPendingOpen, type DiagramKind } from '@/utils/diagram'
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
 
@@ -955,6 +956,19 @@ export default function EditorView() {
     )
   }
 
+  // Insert an empty diagram (mind map / flow chart) at the cursor and flag it to
+  // open its editor immediately (consumed on mount in diagramBlock).
+  function insertDiagram(kind: DiagramKind) {
+    if (!editor) return
+    const diagramId = newDiagramId()
+    markPendingOpen(diagramId)
+    editor.insertBlocks(
+      [{ type: 'diagram', props: { diagramId, kind, data: JSON.stringify(emptyGraph(kind)) } }] as never,
+      editor.getTextCursorPosition().block,
+      'after',
+    )
+  }
+
   async function handlePin() {
     if (!note) return
     try {
@@ -990,8 +1004,24 @@ export default function EditorView() {
       icon: <MessageSquareText className="w-4 h-4" />,
       onItemClick: () => { void annotateCurrentBlock() },
     }
+    const mindMapItem: DefaultReactSuggestionItem = {
+      title: 'Mind map',
+      subtext: 'Insert an interactive mind map',
+      aliases: ['mindmap', 'mind map', 'diagram', 'graph', 'brainstorm'],
+      group: 'Basic blocks',
+      icon: <Network className="w-4 h-4" />,
+      onItemClick: () => insertDiagram('mindmap'),
+    }
+    const flowChartItem: DefaultReactSuggestionItem = {
+      title: 'Flow chart',
+      subtext: 'Insert an interactive flow chart',
+      aliases: ['flowchart', 'flow chart', 'diagram', 'flow', 'process'],
+      group: 'Basic blocks',
+      icon: <Workflow className="w-4 h-4" />,
+      onItemClick: () => insertDiagram('flowchart'),
+    }
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, mindMapItem, flowChartItem],
       query,
     )
   }

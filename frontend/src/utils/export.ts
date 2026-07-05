@@ -1,4 +1,36 @@
 import type { Note } from '@/api/notes'
+import { parseGraph, diagramToSVG, diagramToDataUri, type DiagramKind } from '@/utils/diagram'
+
+// Rasterise a diagram SVG to a PNG (Uint8Array) for embedding in a Word document,
+// which can't display SVG. Sized from the SVG's own width/height, drawn at 2× for
+// crisp output on a white background.
+async function svgToPngData(svg: string): Promise<{ data: Uint8Array; width: number; height: number }> {
+  const m = svg.match(/^<svg[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"/)
+  const width = m ? Math.round(parseFloat(m[1])) : 640
+  const height = m ? Math.round(parseFloat(m[2])) : 360
+  const bytes = new TextEncoder().encode(svg)
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  const dataUri = `data:image/svg+xml;base64,${btoa(bin)}`
+  const img = new Image()
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve()
+    img.onerror = () => reject(new Error('svg load failed'))
+    img.src = dataUri
+  })
+  const scale = 2
+  const canvas = document.createElement('canvas')
+  canvas.width = width * scale
+  canvas.height = height * scale
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('no 2d context')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'))
+  if (!blob) throw new Error('toBlob failed')
+  return { data: new Uint8Array(await blob.arrayBuffer()), width, height }
+}
 
 type DocxParagraph = InstanceType<(typeof import('docx'))['Paragraph']>
 type DocxTextRun = InstanceType<(typeof import('docx'))['TextRun']>
@@ -17,6 +49,10 @@ function extractPlainText(contentStr: string): string {
       }
       if (block.type === 'audioFile') {
         texts.push('[Audio recording]')
+        return
+      }
+      if (block.type === 'diagram') {
+        texts.push('[Diagram]')
         return
       }
       const content = block.content
@@ -173,6 +209,13 @@ function buildBlocksHTML(blocks: Record<string, unknown>[]): string {
       if (url) {
         parts.push(`<figure style="margin:16px 0"><audio controls src="${escapeHtml(url)}"></audio></figure>`)
       }
+      i++
+      continue
+    }
+
+    if (type === 'diagram') {
+      const graph = parseGraph((props?.data as string) ?? '', (props?.kind as DiagramKind) ?? 'mindmap')
+      parts.push(`<figure style="margin:16px 0"><img src="${diagramToDataUri(graph)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
       i++
       continue
     }
@@ -556,6 +599,21 @@ export async function exportToWord(note: Note): Promise<void> {
       // Audio can't be embedded in a Word document; leave a labeled placeholder.
       const label = (props?.name as string | undefined) || 'Audio recording'
       return [new Paragraph({ children: [new TextRun({ text: `[${label}]`, italics: true })] })]
+    }
+
+    if (type === 'diagram') {
+      // Word can't render SVG, so rasterise the diagram to a PNG and embed it,
+      // scaled to fit the page width.
+      try {
+        const graph = parseGraph((props?.data as string) ?? '', (props?.kind as DiagramKind) ?? 'mindmap')
+        const { data, width, height } = await svgToPngData(diagramToSVG(graph))
+        const maxW = 600
+        const w = Math.min(width, maxW)
+        const h = Math.round((height * w) / width)
+        return [new Paragraph({ children: [new ImageRun({ data, type: 'png', transformation: { width: w, height: h } })] })]
+      } catch {
+        return [new Paragraph({ children: [new TextRun({ text: '[Diagram]', italics: true })] })]
+      }
     }
 
     if (type === 'table') {

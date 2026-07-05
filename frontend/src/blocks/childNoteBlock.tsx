@@ -8,6 +8,7 @@ import { notesApi } from '@/api/notes'
 import { sharedApi } from '@/api/shared'
 import { noteReferenceBlock } from './noteReferenceBlock'
 import { audioBlock } from './audioBlock'
+import { diagramBlock } from './diagramBlock'
 import { SharedLinkContext } from './sharedLinkContext'
 
 // Tracks the chain of child-note ids currently being rendered so an embed that
@@ -190,5 +191,6 @@ export const noteSchema = BlockNoteSchema.create({
     childNote: childNoteBlock,
     noteReference: noteReferenceBlock,
     audioFile: audioBlock,
+    diagram: diagramBlock,
   },
 })

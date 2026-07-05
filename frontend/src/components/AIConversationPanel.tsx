@@ -13,6 +13,7 @@ import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
+import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn } from '@/services/ai'
 import {
   parsePlan,
@@ -759,8 +760,15 @@ export default function AIConversationPanel({
           annoSection = `\n\n**Annotations on this note:**\n${lines.join('\n')}`
         }
       }
+      // Diagrams are custom blocks invisible in the Markdown body — describe them so
+      // the model can reference and edit them via edit_diagram.
+      let diagramSection = ''
+      const diagText = describeDiagrams(n.blocks)
+      if (diagText) {
+        diagramSection = `\n\n**Diagrams on this note (edit with edit_diagram using the diagram id):**\n${diagText}`
+      }
       const base = heading ? `${heading}\n\n${body}` : body
-      return base + annoSection
+      return base + annoSection + diagramSection
     }
 
     const targetNotes: ContextNote[] = notes
