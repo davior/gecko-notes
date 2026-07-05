@@ -50,7 +50,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
         className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
           hasImage
             ? selected
-              ? 'ring-2 ring-green-500 ring-offset-2 dark:ring-offset-gray-900'
+              ? 'border-2 border-green-500'
               : 'border border-gray-200 dark:border-gray-700'
             : 'card'
         } ${!hasImage && selected ? 'ring-2 ring-green-500 ring-offset-1 dark:ring-offset-gray-900' : ''}`}
