@@ -7,6 +7,7 @@ import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { extractBlockTexts } from '@/utils/blocks'
+import { newDiagramId, validateMermaidSource } from '@/utils/diagram'
 import type { Plan, PlanAction } from './aiPlan'
 
 // Minimal structural view of the BlockNote editor — we use it to convert the model's
@@ -105,15 +106,15 @@ function sectionHeading(b: unknown): { level: number; text: string } | null {
   return level ? { level, text } : null
 }
 
-// Embed blocks (childNote / noteReference) can't be expressed in Markdown, so a
-// section rewrite from model Markdown can't reproduce them — collect them so
+// Embed blocks (childNote / noteReference / diagram) can't be expressed in Markdown,
+// so a section rewrite from model Markdown can't reproduce them — collect them so
 // edit_section can re-insert them instead of silently dropping them.
 function collectEmbeds(blocks: unknown[]): unknown[] {
   const out: unknown[] = []
   const walk = (b: unknown) => {
     const rec = b as Record<string, unknown> | null
     if (!rec || typeof rec !== 'object') return
-    if (rec.type === 'childNote' || rec.type === 'noteReference') out.push(b)
+    if (rec.type === 'childNote' || rec.type === 'noteReference' || rec.type === 'diagram') out.push(b)
     if (Array.isArray(rec.children)) rec.children.forEach(walk)
   }
   blocks.forEach(walk)
@@ -473,6 +474,63 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           message: 'Deleted annotation.',
           annotationsChanged: touchesCurrent(r.id),
           noteId: r.id,
+        }
+      }
+
+      case 'create_diagram': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        const validated = await validateMermaidSource(action.source)
+        if (!validated.ok) return { ok: false, message: `Diagram not created: ${validated.error}` }
+        await notesApi.createVersion(r.id).catch(() => null)
+        const cur = await notesApi.get(r.id)
+        const blocks = parseBlocks(cur.data.content)
+        blocks.push({ type: 'diagram', props: { diagramId: newDiagramId(), source: action.source } })
+        await notesApi.update(r.id, { content: JSON.stringify(blocks) })
+        return {
+          ok: true,
+          message: `Added diagram to “${cur.data.title}”.`,
+          notesChanged: true,
+          touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
+          noteTitle: cur.data.title,
+        }
+      }
+
+      case 'edit_diagram': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+        const validated = await validateMermaidSource(action.source)
+        if (!validated.ok) return { ok: false, message: `Diagram not updated: ${validated.error}` }
+        const cur = await notesApi.get(r.id)
+        const blocks = parseBlocks(cur.data.content)
+        let found = false
+        const walk = (list: unknown[]): unknown[] =>
+          list.map((b) => {
+            const rec = b as Record<string, unknown>
+            if (rec && rec.type === 'diagram') {
+              const props = (rec.props as Record<string, unknown>) || {}
+              if (props.diagramId === action.diagramId) {
+                found = true
+                return { ...rec, props: { ...props, source: action.source } }
+              }
+            }
+            if (Array.isArray(rec?.children)) return { ...rec, children: walk(rec.children as unknown[]) }
+            return b
+          })
+        const newBlocks = walk(blocks)
+        if (!found) {
+          return { ok: false, message: `Diagram “${action.diagramId}” not found in “${cur.data.title}” — skipped.` }
+        }
+        await notesApi.createVersion(r.id).catch(() => null)
+        await notesApi.update(r.id, { content: JSON.stringify(newBlocks) })
+        return {
+          ok: true,
+          message: `Updated diagram in “${cur.data.title}”.`,
+          notesChanged: true,
+          touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
+          noteTitle: cur.data.title,
         }
       }
     }

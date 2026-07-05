@@ -3,9 +3,12 @@
 // here (reusing the fence-stripping approach from parseTagsFromAI in ai.ts) and
 // degrade gracefully to a plain "respond" action when the output isn't valid JSON.
 
+import { detectMermaidKind, DIAGRAM_KIND_LABELS } from '@/utils/diagram'
+
 export interface ContextNote { id: string; title: string; createdAt?: string; modifiedAt?: string }
 export interface ContextFolder { id: string; name: string }
 export interface ContextCategory { id: string; label: string }
+
 
 // All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
 // via the live editor's tryParseMarkdownToBlocks(). The model never emits BlockNote JSON.
@@ -36,6 +39,10 @@ export type PlanAction =
   | { type: 'add_annotation'; noteId: string; anchorText: string; text: string; description?: string }
   | { type: 'edit_annotation'; noteId: string; annotationId: string; text: string; description?: string }
   | { type: 'delete_annotation'; noteId: string; annotationId: string; description?: string }
+  // Diagrams are custom blocks that can't be expressed in Markdown, so they use their own
+  // actions carrying raw Mermaid diagram source text (not `content`).
+  | { type: 'create_diagram'; noteId: string; source: string; description?: string }
+  | { type: 'edit_diagram'; noteId: string; diagramId: string; source: string; description?: string }
 
 export interface Plan { actions: PlanAction[] }
 
@@ -93,6 +100,8 @@ Action types (every action MAY also include an optional "description": one short
 - add_annotation:    { "type":"add_annotation", "noteId":"<id>", "anchorText":"<verbatim snippet of the block to attach to>", "text":"<markdown annotation>" }
 - edit_annotation:   { "type":"edit_annotation", "noteId":"<id>", "annotationId":"<id>", "text":"<new markdown annotation>" }
 - delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
+- create_diagram:    { "type":"create_diagram", "noteId":"<id>", "source":"<complete Mermaid diagram source>" }
+- edit_diagram:      { "type":"edit_diagram", "noteId":"<id>", "diagramId":"<id>", "source":"<complete replacement Mermaid diagram source>" }
 
 Rules:
 - Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request. Scope a find_notes action by free text, by folder, or both:
@@ -112,6 +121,7 @@ Rules:
   - To CHANGE an existing section, use edit_section: set "section" to that section's heading text and "content" to the new Markdown for the whole section (include the heading). Only that section is rewritten; every other section is preserved untouched.
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
+- Diagrams: use create_diagram to ADD a new diagram to a note, and edit_diagram to change an existing one. A note's existing diagrams are listed under it as "Diagrams on this note" with a "[diagram <id>]" tag and their current Mermaid source — use that "<id>" as "diagramId" for edit_diagram (which REPLACES the whole diagram, so "source" must be the complete new diagram, not a fragment). "source" must be complete, valid Mermaid syntax starting with the right header keyword for the kind: "flowchart TD" (or LR/BT/RL) for flow charts, "mindmap" for mind maps, "sequenceDiagram" for sequence diagrams, "classDiagram" for class diagrams, "stateDiagram-v2" for state diagrams, "erDiagram" for entity-relationship diagrams, "gantt" for Gantt charts, "pie" for pie charts, "timeline" for timelines. Node linking: in flowchart, classDiagram and stateDiagram-v2 ONLY, a node can link to another note or a URL by adding a line "click <nodeId> href \"/notes/<id>\"" (linking to a note id from the lists below) or "click <nodeId> href \"<url>\" \"_blank\"" (linking to the web) — do NOT add click/href lines for mindmap, sequenceDiagram, erDiagram, gantt, pie or timeline diagrams, since Mermaid does not support node links on those kinds (mindmap link support is a currently open Mermaid limitation). Only create or edit a diagram when the user explicitly asks for one (e.g. "make a mind map of this note", "add a step to the flow chart").
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
 
@@ -274,6 +284,19 @@ function validateAction(raw: unknown): PlanAction | null {
       if (!noteId || !annotationId) return null
       return { type: 'delete_annotation', noteId, annotationId, ...d }
     }
+    case 'create_diagram': {
+      const noteId = asString(a.noteId)
+      const source = asString(a.source)
+      if (!noteId || !source?.trim()) return null
+      return { type: 'create_diagram', noteId, source, ...d }
+    }
+    case 'edit_diagram': {
+      const noteId = asString(a.noteId)
+      const diagramId = asString(a.diagramId)
+      const source = asString(a.source)
+      if (!noteId || !diagramId || !source?.trim()) return null
+      return { type: 'edit_diagram', noteId, diagramId, source, ...d }
+    }
     default:
       return null
   }
@@ -435,6 +458,8 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'add_annotation': return `Annotate “${truncate(action.anchorText, 40)}” in “${name(action.noteId)}”`
     case 'edit_annotation': return `Edit annotation in “${name(action.noteId)}”`
     case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
+    case 'create_diagram': return `Create ${DIAGRAM_KIND_LABELS[detectMermaidKind(action.source)].toLowerCase()} in “${name(action.noteId)}”`
+    case 'edit_diagram': return `Update diagram in “${name(action.noteId)}”`
   }
 }
 

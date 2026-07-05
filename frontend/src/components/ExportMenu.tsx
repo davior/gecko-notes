@@ -22,7 +22,7 @@ export default function ExportMenu({ note, onToast, onExportAudio }: Props) {
     { key: 'pdf', label: 'Export as PDF', icon: FileDown, action: () => exportToPDF(note) },
     { key: 'word', label: 'Export as Word', icon: FileText, action: () => exportToWord(note) },
     { key: 'md', label: 'Export as Markdown', icon: FileText, action: () => exportToMarkdown(note) },
-    { key: 'html', label: 'Export as HTML', icon: Code, action: () => { exportToHTML(note); return Promise.resolve() } },
+    { key: 'html', label: 'Export as HTML', icon: Code, action: () => exportToHTML(note) },
     ...(onExportAudio ? [{ key: 'audio' as const, label: 'Export as Audio (MP3)', icon: FileAudio, action: onExportAudio }] : []),
     { key: 'plain', label: 'Copy plain text', icon: Clipboard, action: async () => { await copyAsPlainText(note); onToast('Copied to clipboard') } },
     { key: 'rich', label: 'Copy rich text', icon: Clipboard, action: async () => { await copyAsRichText(note); onToast('Copied to clipboard') } },

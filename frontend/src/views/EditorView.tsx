@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -24,6 +24,7 @@ import ShareMenu from '@/components/ShareMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
+import { starterFor, newDiagramId, markPendingOpen, type DiagramKind } from '@/utils/diagram'
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
 
@@ -955,6 +956,19 @@ export default function EditorView() {
     )
   }
 
+  // Insert a diagram (seeded with that kind's Mermaid starter template) at the cursor and
+  // flag it to open its editor immediately (consumed on mount in diagramBlock).
+  function insertDiagram(kind: DiagramKind) {
+    if (!editor) return
+    const diagramId = newDiagramId()
+    markPendingOpen(diagramId)
+    editor.insertBlocks(
+      [{ type: 'diagram', props: { diagramId, source: starterFor(kind) } }] as never,
+      editor.getTextCursorPosition().block,
+      'after',
+    )
+  }
+
   async function handlePin() {
     if (!note) return
     try {
@@ -990,8 +1004,22 @@ export default function EditorView() {
       icon: <MessageSquareText className="w-4 h-4" />,
       onItemClick: () => { void annotateCurrentBlock() },
     }
+    const diagramItems: DefaultReactSuggestionItem[] = [
+      { kind: 'flowchart' as const, title: 'Flow chart', subtext: 'Insert a flow chart diagram', aliases: ['flowchart', 'flow chart', 'flow', 'process'], icon: <Workflow className="w-4 h-4" /> },
+      { kind: 'mindmap' as const, title: 'Mind map', subtext: 'Insert a mind map diagram', aliases: ['mindmap', 'mind map', 'brainstorm'], icon: <Network className="w-4 h-4" /> },
+      { kind: 'sequence' as const, title: 'Sequence diagram', subtext: 'Insert a sequence diagram', aliases: ['sequence', 'sequencediagram'], icon: <MessagesSquare className="w-4 h-4" /> },
+      { kind: 'class' as const, title: 'Class diagram', subtext: 'Insert a class diagram', aliases: ['class', 'classdiagram', 'uml'], icon: <Box className="w-4 h-4" /> },
+      { kind: 'state' as const, title: 'State diagram', subtext: 'Insert a state diagram', aliases: ['state', 'statediagram', 'fsm'], icon: <Waypoints className="w-4 h-4" /> },
+      { kind: 'er' as const, title: 'ER diagram', subtext: 'Insert an entity-relationship diagram', aliases: ['er', 'erdiagram', 'entity', 'database'], icon: <Database className="w-4 h-4" /> },
+      { kind: 'gantt' as const, title: 'Gantt chart', subtext: 'Insert a Gantt chart', aliases: ['gantt', 'timeline', 'schedule'], icon: <CalendarRange className="w-4 h-4" /> },
+      { kind: 'pie' as const, title: 'Pie chart', subtext: 'Insert a pie chart', aliases: ['pie', 'piechart'], icon: <PieChart className="w-4 h-4" /> },
+      { kind: 'timeline' as const, title: 'Timeline', subtext: 'Insert a timeline diagram', aliases: ['timeline', 'history'], icon: <Milestone className="w-4 h-4" /> },
+    ].map(({ kind, title, subtext, aliases, icon }) => ({
+      title, subtext, aliases, icon, group: 'Diagrams',
+      onItemClick: () => insertDiagram(kind),
+    }))
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, ...diagramItems],
       query,
     )
   }

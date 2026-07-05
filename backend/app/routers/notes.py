@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -91,8 +92,15 @@ def extract_plain_text(content_str: str, max_chars: int = 200) -> str:
         return content_str[:max_chars] if content_str else ""
 
 
+# Matches the note-link convention written by the diagram editor's "Link to note" control
+# (see frontend/src/utils/diagram.ts buildNoteLinkDirective): a Mermaid `click <id> href
+# "/notes/<noteId>"` directive. A plain regex over the raw source is enough here — no
+# Mermaid grammar parse needed, since the app only ever writes this one literal form.
+_DIAGRAM_NOTE_LINK_RE = re.compile(r'href\s*"(/notes/([^"?#]+))"')
+
+
 def extract_linked_note_ids(content_str: str) -> List[str]:
-    """Return the ids of all notes referenced via childNote or noteReference blocks."""
+    """Return the ids of all notes referenced via childNote, noteReference, or diagram blocks."""
     try:
         blocks = json.loads(content_str)
     except Exception:
@@ -105,14 +113,23 @@ def extract_linked_note_ids(content_str: str) -> List[str]:
             if not isinstance(block, dict):
                 continue
             props = block.get("props", {}) or {}
-            if block.get("type") == "childNote":
+            btype = block.get("type")
+            if btype == "childNote":
                 child_id = props.get("childNoteId")
                 if child_id:
                     ids.append(child_id)
-            elif block.get("type") == "noteReference":
+            elif btype == "noteReference":
                 ref_id = props.get("noteId")
                 if ref_id:
                     ids.append(ref_id)
+            elif btype == "diagram":
+                # A diagram's Mermaid source may link a node to another note via a
+                # `click <id> href "/notes/<id>"` directive; collect those note ids so the
+                # shared view can transform them to the linked notes' shared pages (mirrors
+                # the noteReference / childNote handling above).
+                source = props.get("source") or ""
+                for match in _DIAGRAM_NOTE_LINK_RE.finditer(source):
+                    ids.append(match.group(2))
             walk(block.get("children", []) or [])
 
     walk(blocks)
