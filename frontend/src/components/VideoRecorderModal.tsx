@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, Circle, Square, Video as VideoIcon } from 'lucide-react'
-import { useVideoRecorder } from '@/hooks/useVideoRecorder'
+import { useVideoRecorder, VIDEO_QUALITY_PRESETS, AUDIO_QUALITY_PRESETS } from '@/hooks/useVideoRecorder'
 
 interface Props {
   onClose: () => void
@@ -124,6 +124,31 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
               {recorder.mics.length === 0 && <option value="">No microphone found</option>}
               {recorder.mics.map((m) => (
                 <option key={m.deviceId} value={m.deviceId}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <select
+              className="input text-xs flex-1 min-w-[140px]"
+              value={recorder.videoQualityId}
+              onChange={(e) => recorder.setVideoQuality(e.target.value)}
+              disabled={recorder.status === 'recording'}
+              aria-label="Video quality"
+            >
+              {VIDEO_QUALITY_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+            <select
+              className="input text-xs flex-1 min-w-[140px]"
+              value={recorder.audioQualityId}
+              onChange={(e) => recorder.setAudioQuality(e.target.value)}
+              disabled={recorder.status === 'recording'}
+              aria-label="Audio quality"
+            >
+              {AUDIO_QUALITY_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </select>
           </div>
