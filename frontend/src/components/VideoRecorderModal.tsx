@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, Circle, Square, Video as VideoIcon } from 'lucide-react'
+import { X, Circle, Square, Video as VideoIcon, MonitorPlay } from 'lucide-react'
 import { useVideoRecorder, VIDEO_QUALITY_PRESETS, AUDIO_QUALITY_PRESETS } from '@/hooks/useVideoRecorder'
 
 interface Props {
@@ -32,8 +32,8 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
   }, [open, close])
 
   useEffect(() => {
-    if (videoRef.current) videoRef.current.srcObject = recorder.stream
-  }, [recorder.stream])
+    if (videoRef.current) videoRef.current.srcObject = recorder.previewStream
+  }, [recorder.previewStream])
 
   useEffect(() => {
     if (recorder.status !== 'recording') return
@@ -89,9 +89,19 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
                 {formatTime(seconds)}
               </div>
             )}
+            {recorder.presentationMode && (
+              <div className="absolute top-2 right-2 flex items-center gap-1 bg-blue-600/80 text-white text-xs px-2 py-1 rounded-full">
+                <MonitorPlay className="w-3 h-3" /> Presentation mode
+              </div>
+            )}
             {recorder.status === 'requesting' && (
               <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
                 Requesting camera access…
+              </div>
+            )}
+            {recorder.desktopRequesting && (
+              <div className="absolute inset-0 flex items-center justify-center text-white text-sm bg-black/40">
+                Choose a screen, window, or tab to share…
               </div>
             )}
             {recorder.status === 'error' && (
@@ -100,6 +110,33 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
               </div>
             )}
           </div>
+
+          {recorder.notice && (
+            <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-1.5">
+              {recorder.notice}
+            </div>
+          )}
+
+          <button
+            type="button"
+            className={`w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg border transition-colors ${
+              recorder.presentationMode
+                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+            disabled={!recorder.canPresentationMode || recorder.desktopRequesting}
+            onClick={recorder.togglePresentationMode}
+            title={
+              !recorder.canPresentationMode
+                ? "This browser doesn't support screen sharing"
+                : recorder.presentationMode
+                  ? 'Switch back to camera only'
+                  : 'Share your screen with a camera inset — can be toggled any time, including while recording'
+            }
+          >
+            <MonitorPlay className="w-3.5 h-3.5" />
+            {recorder.presentationMode ? 'Presentation mode on — screen + camera inset' : 'Turn on presentation mode (screen + camera inset)'}
+          </button>
 
           <div className="flex flex-wrap gap-2">
             <select

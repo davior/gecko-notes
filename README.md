@@ -36,6 +36,8 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 
 ### Video
 - **Record video** from a camera/microphone of your choice, directly from the slash menu (works in Chrome, Firefox, Safari, and Edge)
+- Selectable **video/audio quality** (resolution + bitrate presets), remembered per device
+- **Presentation mode** — share your screen, a window, or a browser tab with your camera composited as a picture-in-picture inset, toggleable on/off at any time, including mid-recording
 - Recorded video is saved into the note as a playable video block
 - Optional **async transcript generation** — the audio track is extracted and sent to Deepgram in the background, and the resulting transcript is attached to the note as a file once ready, without blocking the editor
 
