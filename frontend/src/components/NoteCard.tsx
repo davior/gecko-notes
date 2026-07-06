@@ -51,7 +51,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
           hasImage
             ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
-        }`}
+        } ${selected ? 'outline outline-3 outline-green-500' : ''}`}
         onClick={() => onClick(note.id)}
       >
         {/* Background image — fixed blur independent of any active theme */}
@@ -163,13 +163,6 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
             </div>
           )}
         </div>
-
-        {/* Selection outline — an overlay so it paints above the image + wash
-            overlay (which would cover an inset outline/ring on image cards) and
-            isn't overridden by the glass theme's !important box-shadow/border. */}
-        {selected && (
-          <div className="pointer-events-none absolute inset-0 z-20 rounded-xl border-[3px] border-green-500" />
-        )}
       </div>
     )
   }
@@ -177,12 +170,9 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
   // List view
   return (
     <div
-      className="card relative cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700"
+      className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'outline outline-3 outline-green-500' : ''}`}
       onClick={() => onClick(note.id)}
     >
-      {selected && (
-        <div className="pointer-events-none absolute inset-0 z-20 rounded-xl border-[3px] border-green-500" />
-      )}
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
       <div className="flex-1 p-4 min-w-0">
         <div className="flex items-center justify-between mb-2 gap-2">
