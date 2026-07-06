@@ -133,6 +133,17 @@ class AISession(SQLModel, table=True):
     updated_at: datetime
 
 
+class TranscriptionJob(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    source_filename: str  # video filename in the user's media dir
+    status: str = Field(default="queued")  # "queued" | "processing" | "done" | "error"
+    result_filename: Optional[str] = None  # transcript .txt filename, once done
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class Theme(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

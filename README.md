@@ -34,6 +34,13 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - MP3 export of read-aloud audio
 - Usage monitoring for Deepgram TTS/STT and AI provider tokens
 
+### Video
+- **Record video** from a camera/microphone of your choice, directly from the slash menu (works in Chrome, Firefox, Safari, and Edge)
+- Selectable **video/audio quality** (resolution + bitrate presets), remembered per device
+- **Presentation mode** — share your screen, a window, or a browser tab with your camera composited as a picture-in-picture inset, toggleable on/off at any time, including mid-recording
+- Recorded video is saved into the note as a playable video block
+- Optional **async transcript generation** — the audio track is extracted and sent to Deepgram in the background, and the resulting transcript is attached to the note as a file once ready, without blocking the editor
+
 ### Sharing & export
 - Export to PDF, Word (.docx), Markdown, HTML, MP3, or clipboard
 - Public note sharing with social-media preview metadata (Open Graph / Twitter cards)
@@ -135,7 +142,7 @@ Go to **Settings → Speech** to add a [Deepgram](https://console.deepgram.com/)
 - **With a Deepgram key:** read-aloud and dictation work in all browsers via Deepgram's API.
 - **Without a key:** dictation falls back to the browser's built-in speech recognition where available; read-aloud is disabled.
 
-Deepgram TTS/STT usage is tracked under **Settings → Usage**.
+Deepgram TTS/STT usage is tracked under **Settings → Usage**. The same key also powers optional video transcript generation (see **Video** above).
 
 ## Backup
 
@@ -164,6 +171,8 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 Use Python 3.12 for local backend development. The current backend dependency stack may not start cleanly on newer Python releases such as 3.14.
+
+`ffmpeg` must be on `PATH` for video transcript generation (extracts the audio track before sending it to Deepgram). Install it with your OS package manager, e.g. `apt install ffmpeg` or `brew install ffmpeg`. The Docker image installs it automatically.
 
 Local backend runs and Docker Compose both use the same persistent paths by default:
 `./data/db/notes.db` and `./data/media/`.
@@ -204,7 +213,7 @@ gecko-notes/
     │   ├── limiter.py
     │   ├── seed.py
     │   └── routers/    # notes, annotations, ai_sessions, categories, folders,
-    │   │               #   media, settings, data, shared, auth, users
+    │   │               #   media, settings, transcription, data, shared, auth, users
     └── Dockerfile
 ```
 

@@ -1,0 +1,29 @@
+import { createReactBlockSpec } from '@blocknote/react'
+
+// Custom BlockNote block that embeds a stored video file (e.g. a saved camera
+// recording) as an inline HTML5 player. Named `videoFile` rather than `video` so
+// it sits alongside BlockNote's built-in file blocks instead of overriding them,
+// mirroring audioBlock.tsx. Stores only the media URL and a label; the file
+// itself lives under /media and is uploaded separately.
+export const videoBlock = createReactBlockSpec(
+  {
+    type: 'videoFile',
+    propSchema: {
+      url: { default: '' },
+      name: { default: '' },
+    },
+    content: 'none',
+  },
+  {
+    render: (props) => (
+      <div contentEditable={false} className="my-2">
+        {props.block.props.name && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 truncate">
+            {props.block.props.name}
+          </div>
+        )}
+        <video controls src={props.block.props.url} className="w-full max-w-2xl rounded-lg" />
+      </div>
+    ),
+  },
+)()

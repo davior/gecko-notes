@@ -464,6 +464,15 @@ class MediaUploadResponse(BaseModel):
     size: int
 
 
+# Transcription job schemas (async video/audio -> transcript pipeline)
+class TranscriptionJobRead(BaseModel):
+    id: str
+    status: str
+    filename: Optional[str] = None
+    result_url: Optional[str] = None
+    error_message: Optional[str] = None
+
+
 # Auth schemas
 class UserCreate(BaseModel):
     username: str

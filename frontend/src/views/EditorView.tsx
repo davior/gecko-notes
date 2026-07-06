@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -27,12 +27,14 @@ import NotePickerModal from '@/components/NotePickerModal'
 import { starterFor, newDiagramId, markPendingOpen, type DiagramKind } from '@/utils/diagram'
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
+import VideoRecorderModal from '@/components/VideoRecorderModal'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
+import { transcriptionApi } from '@/api/transcription'
 import { notesApi, configApi, type Note } from '@/api/notes'
 import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation } from '@/hooks/useDictation'
@@ -143,6 +145,7 @@ export default function EditorView() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
   const [showNotePicker, setShowNotePicker] = useState(false)
+  const [showVideoRecorder, setShowVideoRecorder] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
@@ -267,6 +270,85 @@ export default function EditorView() {
     transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
     onRecordingComplete: handleRecordingComplete,
   })
+
+  // Upload a recorded video blob to /media and return its URL + stored filename
+  // (the filename is what the async transcription job references).
+  const uploadVideoBlob = useCallback(async (blob: Blob, mimeType: string, baseName: string): Promise<{ url: string; filename: string }> => {
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm'
+    const safeBase = (baseName || 'video').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'video'
+    const file = new File([blob], `${safeBase}.${ext}`, { type: mimeType || 'application/octet-stream' })
+    const res = await mediaApi.upload(file)
+    return { url: res.data.url, filename: res.data.filename }
+  }, [])
+
+  // Poll a background transcription job until it finishes, then insert the
+  // resulting transcript as a file block right after the video it belongs to.
+  // Runs independently of the recorder modal so closing it doesn't lose the job.
+  // Guards against inserting into the wrong note: if the user has since
+  // navigated to a different note, the transcript is left unattached (rather
+  // than risk corrupting whatever note is now open) and the toast says so.
+  const pollTranscriptionJob = useCallback((jobId: string, afterBlockId: string, ownerNoteId: string | undefined, ownerNoteTitle: string) => {
+    const POLL_MS = 4000
+    const poll = async () => {
+      try {
+        const res = await transcriptionApi.getJob(jobId)
+        const job = res.data
+        if (job.status === 'done' && job.result_url) {
+          const stillOpen = (createdNoteId.current || latestNoteId.current) === ownerNoteId
+          if (!stillOpen) {
+            showToast(`Transcript ready for "${ownerNoteTitle}" — reopen that note to attach it`)
+            return
+          }
+          const fileBlock = {
+            type: 'file',
+            props: { url: job.result_url, name: `Transcript — ${new Date().toLocaleString()}` },
+          } as unknown as PartialBlock
+          const target = editor?.getBlock(afterBlockId)
+          if (target) editor?.insertBlocks([fileBlock], target as never, 'after')
+          else insertBlocksAtCursor([fileBlock])
+          showToast('Transcript ready')
+          return
+        }
+        if (job.status === 'error') {
+          showToast(`Transcription failed${job.error_message ? `: ${job.error_message}` : ''}`)
+          return
+        }
+      } catch {
+        showToast('Lost connection while checking transcript status')
+        return
+      }
+      setTimeout(() => { void poll() }, POLL_MS)
+    }
+    setTimeout(() => { void poll() }, POLL_MS)
+  }, [editor, insertBlocksAtCursor])
+
+  // Record button in the video recorder modal: save the recorded video as a
+  // video block, then (optionally) kick off async transcription in the background.
+  const handleVideoRecorded = useCallback(async (blob: Blob, mimeType: string, wantTranscript: boolean) => {
+    try {
+      const { url, filename } = await uploadVideoBlob(blob, mimeType, title || 'video')
+      const videoBlockId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const videoBlock = {
+        id: videoBlockId,
+        type: 'videoFile',
+        props: { url, name: `Recording — ${new Date().toLocaleString()}` },
+      } as unknown as PartialBlock
+      insertBlocksAtCursor([videoBlock])
+
+      if (wantTranscript && deepgramApiKey) {
+        try {
+          const ownerNoteId = createdNoteId.current || latestNoteId.current
+          const res = await transcriptionApi.createJob(filename)
+          showToast('Transcribing in the background…')
+          pollTranscriptionJob(res.data.id, videoBlockId, ownerNoteId, latestTitle.current || 'Untitled')
+        } catch {
+          showToast('Could not start transcription')
+        }
+      }
+    } catch {
+      showToast('Failed to save recorded video')
+    }
+  }, [uploadVideoBlob, insertBlocksAtCursor, deepgramApiKey, pollTranscriptionJob, title])
   const tts = useTextToSpeech({ model: settingsStore.ttsModel })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
@@ -1004,6 +1086,14 @@ export default function EditorView() {
       icon: <MessageSquareText className="w-4 h-4" />,
       onItemClick: () => { void annotateCurrentBlock() },
     }
+    const videoItem: DefaultReactSuggestionItem = {
+      title: 'Record video',
+      subtext: 'Record from a camera and optionally transcribe it',
+      aliases: ['video', 'record', 'camera', 'webcam'],
+      group: 'Basic blocks',
+      icon: <VideoIcon className="w-4 h-4" />,
+      onItemClick: () => setShowVideoRecorder(true),
+    }
     const diagramItems: DefaultReactSuggestionItem[] = [
       { kind: 'flowchart' as const, title: 'Flow chart', subtext: 'Insert a flow chart diagram', aliases: ['flowchart', 'flow chart', 'flow', 'process'], icon: <Workflow className="w-4 h-4" /> },
       { kind: 'mindmap' as const, title: 'Mind map', subtext: 'Insert a mind map diagram', aliases: ['mindmap', 'mind map', 'brainstorm'], icon: <Network className="w-4 h-4" /> },
@@ -1019,7 +1109,7 @@ export default function EditorView() {
       onItemClick: () => insertDiagram(kind),
     }))
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, ...diagramItems],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, ...diagramItems],
       query,
     )
   }
@@ -1418,6 +1508,14 @@ export default function EditorView() {
         <NotePickerModal
           onSelect={(id, title) => { insertNoteReference(id, title); setShowNotePicker(false) }}
           onClose={() => setShowNotePicker(false)}
+        />
+      )}
+
+      {showVideoRecorder && (
+        <VideoRecorderModal
+          canTranscribe={!!deepgramApiKey}
+          onRecorded={(blob, mimeType, wantTranscript) => { void handleVideoRecorded(blob, mimeType, wantTranscript) }}
+          onClose={() => setShowVideoRecorder(false)}
         />
       )}
     </div>

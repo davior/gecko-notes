@@ -8,6 +8,7 @@ import { notesApi } from '@/api/notes'
 import { sharedApi } from '@/api/shared'
 import { noteReferenceBlock } from './noteReferenceBlock'
 import { audioBlock } from './audioBlock'
+import { videoBlock } from './videoBlock'
 import { diagramBlock } from './diagramBlock'
 import { SharedLinkContext } from './sharedLinkContext'
 
@@ -191,6 +192,7 @@ export const noteSchema = BlockNoteSchema.create({
     childNote: childNoteBlock,
     noteReference: noteReferenceBlock,
     audioFile: audioBlock,
+    videoFile: videoBlock,
     diagram: diagramBlock,
   },
 })
