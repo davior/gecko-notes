@@ -1256,6 +1256,18 @@ export default function AIConversationPanel({
 
   const containerStyle = isMobile ? { height: panelHeight } : { width: panelWidth }
 
+  // Respond ("Response") steps are auto-accepted: they carry the conversational reply
+  // and are always executed, so the plan review never lists or counts them — it shows
+  // only the mutation steps the user actually decides between. selectedSteps stays
+  // indexed by the full action list (respond entries kept `true`), so those steps pass
+  // straight through the Approve filter without a checkbox.
+  const reviewSteps = pendingPlan
+    ? pendingPlan.plan.actions
+        .map((action, index) => ({ action, index }))
+        .filter(({ action }) => action.type !== 'respond')
+    : []
+  const selectedReviewCount = reviewSteps.filter(({ index }) => selectedSteps[index] ?? true).length
+
   return (
     <div
       className="relative flex flex-col shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 no-print"
@@ -1750,29 +1762,21 @@ export default function AIConversationPanel({
               <ListChecks className="w-4 h-4 text-blue-500" />
               <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Review plan</h3>
               <span className="text-xs text-gray-400 ml-auto">
-                {selectedSteps.filter(Boolean).length} / {pendingPlan.plan.actions.length} step{pendingPlan.plan.actions.length === 1 ? '' : 's'}
+                {selectedReviewCount} / {reviewSteps.length} step{reviewSteps.length === 1 ? '' : 's'}
               </span>
             </div>
             <ul className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm text-gray-700 dark:text-gray-200">
-              {pendingPlan.plan.actions.map((a, i) => (
-                <li key={i} className="flex items-start gap-2">
+              {reviewSteps.map(({ action, index }) => (
+                <li key={index} className="flex items-start gap-2">
                   <input
                     type="checkbox"
-                    checked={selectedSteps[i] ?? true}
+                    checked={selectedSteps[index] ?? true}
                     onChange={(e) => setSelectedSteps((prev) => {
-                      const next = [...prev]; next[i] = e.target.checked; return next
+                      const next = [...prev]; next[index] = e.target.checked; return next
                     })}
                     className="mt-0.5 h-3.5 w-3.5 accent-blue-600 cursor-pointer shrink-0"
                   />
-                  {a.type === 'respond' ? (
-                    // Render the reply in full (not a truncated label) so a mixed plan's
-                    // conversational answer is readable in the preview and never hidden.
-                    <div className="prose prose-sm dark:prose-invert max-w-none leading-snug">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{a.text}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <span className="leading-snug">{defaultActionLabel(a, pendingPlan.ctx.labelMap)}</span>
-                  )}
+                  <span className="leading-snug">{defaultActionLabel(action, pendingPlan.ctx.labelMap)}</span>
                 </li>
               ))}
             </ul>
@@ -1784,9 +1788,10 @@ export default function AIConversationPanel({
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
-                disabled={executing || generating || selectedSteps.filter(Boolean).length === 0}
+                disabled={executing || generating || selectedReviewCount === 0}
                 onClick={() => {
-                  const filtered = { actions: pendingPlan.plan.actions.filter((_, i) => selectedSteps[i]) }
+                  // Respond steps are always kept (auto-accepted); mutation steps follow their checkbox.
+                  const filtered = { actions: pendingPlan.plan.actions.filter((a, i) => a.type === 'respond' || selectedSteps[i]) }
                   void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest)
                 }}
               >
