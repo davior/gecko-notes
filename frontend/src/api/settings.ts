@@ -111,6 +111,34 @@ export interface AIProviderTest {
   model: string
 }
 
+export interface FalModel {
+  id: string
+  label: string
+}
+
+export interface ImageSettings {
+  has_api_key: boolean
+  curated_models: FalModel[]
+  image_sizes: string[]
+  custom_models: string[]
+  default_model: string
+  image_size: string
+}
+
+export interface ImageSettingsUpdate {
+  api_key?: string
+  default_model?: string
+  custom_models?: string[]
+  image_size?: string
+}
+
+export interface ImageUsage {
+  available: boolean
+  balance?: number
+  currency?: string
+  note?: string
+}
+
 export interface Theme {
   id: string
   name: string
@@ -270,5 +298,17 @@ export const settingsApi = {
 
   getUsage(days = 30): Promise<UsageSummary> {
     return client.get('/settings/usage', { params: { days } }).then((r) => r.data)
+  },
+
+  getImageSettings(): Promise<ImageSettings> {
+    return client.get('/settings/images').then((r) => r.data)
+  },
+
+  updateImageSettings(payload: ImageSettingsUpdate): Promise<ImageSettings> {
+    return client.put('/settings/images', payload).then((r) => r.data)
+  },
+
+  getImageUsage(): Promise<ImageUsage> {
+    return client.get('/settings/images/usage').then((r) => r.data)
   },
 }

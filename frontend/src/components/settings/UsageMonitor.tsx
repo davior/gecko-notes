@@ -1,17 +1,19 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Loader2, Mic, Volume2, Cpu } from 'lucide-react'
+import { Loader2, Mic, Volume2, Cpu, Image as ImageIcon } from 'lucide-react'
 import { settingsApi, type UsageSummary } from '@/api/settings'
 
 const KIND_META: Record<string, { label: string; icon: typeof Mic; color: string }> = {
   tts: { label: 'Text-to-Speech', icon: Volume2, color: 'text-blue-600 dark:text-blue-400' },
   stt: { label: 'Speech-to-Text', icon: Mic, color: 'text-green-600 dark:text-green-400' },
   ai: { label: 'AI Providers', icon: Cpu, color: 'text-purple-600 dark:text-purple-400' },
+  image: { label: 'Image Generation', icon: ImageIcon, color: 'text-pink-600 dark:text-pink-400' },
 }
 
 const UNIT_LABEL: Record<string, string> = {
   chars: 'characters',
   seconds: 'seconds',
   tokens: 'tokens',
+  images: 'images',
 }
 
 const RANGES = [
@@ -60,7 +62,7 @@ export default function UsageMonitor() {
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Usage</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Monitor your Deepgram TTS, Deepgram STT, and AI provider API usage.
+            Monitor your Deepgram TTS, Deepgram STT, AI provider, and image generation API usage.
           </p>
         </div>
         <select
@@ -82,14 +84,14 @@ export default function UsageMonitor() {
         <div className="text-sm text-red-500">{error}</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {['tts', 'stt', 'ai'].map((kind) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {['tts', 'stt', 'ai', 'image'].map((kind) => {
               const meta = KIND_META[kind]
               const Icon = meta.icon
               const total = totalsByKind.find((t) => t.kind === kind)
               const units = total?.units ?? 0
               const count = total?.count ?? 0
-              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : 'chars')
+              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : kind === 'image' ? 'images' : 'chars')
               return (
                 <div key={kind} className="card p-4">
                   <div className={`flex items-center gap-2 mb-2 ${meta.color}`}>

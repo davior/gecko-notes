@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -28,6 +28,7 @@ import { starterFor, newDiagramId, markPendingOpen, type DiagramKind } from '@/u
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
+import ImageGenModal from '@/components/ImageGenModal'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -146,6 +147,7 @@ export default function EditorView() {
   const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
   const [showNotePicker, setShowNotePicker] = useState(false)
   const [showVideoRecorder, setShowVideoRecorder] = useState(false)
+  const [showImageGen, setShowImageGen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
@@ -1094,6 +1096,14 @@ export default function EditorView() {
       icon: <VideoIcon className="w-4 h-4" />,
       onItemClick: () => setShowVideoRecorder(true),
     }
+    const imageGenItem: DefaultReactSuggestionItem = {
+      title: 'Generate image',
+      subtext: 'Create an image with fal.ai and insert it here',
+      aliases: ['image', 'generate', 'ai image', 'picture', 'fal', 'illustration'],
+      group: 'Basic blocks',
+      icon: <ImageIcon className="w-4 h-4" />,
+      onItemClick: () => setShowImageGen(true),
+    }
     const diagramItems: DefaultReactSuggestionItem[] = [
       { kind: 'flowchart' as const, title: 'Flow chart', subtext: 'Insert a flow chart diagram', aliases: ['flowchart', 'flow chart', 'flow', 'process'], icon: <Workflow className="w-4 h-4" /> },
       { kind: 'mindmap' as const, title: 'Mind map', subtext: 'Insert a mind map diagram', aliases: ['mindmap', 'mind map', 'brainstorm'], icon: <Network className="w-4 h-4" /> },
@@ -1109,7 +1119,7 @@ export default function EditorView() {
       onItemClick: () => insertDiagram(kind),
     }))
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, ...diagramItems],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, imageGenItem, ...diagramItems],
       query,
     )
   }
@@ -1516,6 +1526,13 @@ export default function EditorView() {
           canTranscribe={!!deepgramApiKey}
           onRecorded={(blob, mimeType, wantTranscript) => { void handleVideoRecorded(blob, mimeType, wantTranscript) }}
           onClose={() => setShowVideoRecorder(false)}
+        />
+      )}
+
+      {showImageGen && (
+        <ImageGenModal
+          onInsert={(url, caption) => insertBlocksAtCursor([{ type: 'image', props: { url, caption } } as unknown as PartialBlock])}
+          onClose={() => setShowImageGen(false)}
         />
       )}
     </div>

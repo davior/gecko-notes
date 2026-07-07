@@ -1261,6 +1261,197 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
     }
 
 
+# ─── Image Generation / fal.ai ────────────────────────────────────────────────
+
+_FAL_KEY = "fal_api_key"          # encrypted, stored like the Deepgram key
+_FAL_CONFIG = "image_gen_config"  # plain JSON: default_model / custom_models / image_size
+
+DEFAULT_FAL_MODEL = "fal-ai/flux/dev"
+DEFAULT_IMAGE_SIZE = "landscape_4_3"
+
+# Curated fal.ai text-to-image endpoints surfaced in the UI. Users may add their own
+# model ids on top of these (stored in the per-user config). The frontend uses the
+# labels; the backend uses the ids as the allow-list for the generate endpoint.
+FAL_CURATED_MODELS = [
+    {"id": "fal-ai/flux/schnell", "label": "FLUX.1 [schnell] — fastest, low cost"},
+    {"id": "fal-ai/flux/dev", "label": "FLUX.1 [dev] — high quality"},
+    {"id": "fal-ai/flux-pro/v1.1", "label": "FLUX1.1 [pro] — top quality"},
+    {"id": "fal-ai/recraft-v3", "label": "Recraft V3 — styles, text, vectors"},
+    {"id": "fal-ai/stable-diffusion-v35-large", "label": "Stable Diffusion 3.5 Large"},
+]
+FAL_CURATED_MODEL_IDS = frozenset(m["id"] for m in FAL_CURATED_MODELS)
+
+# fal image_size presets (the models also accept a {width,height} object, but the app
+# only exposes the named presets to keep the UI simple).
+FAL_IMAGE_SIZES = [
+    "square_hd", "square",
+    "portrait_4_3", "portrait_16_9",
+    "landscape_4_3", "landscape_16_9",
+]
+
+
+def _upsert_user_setting(session: Session, user_id: str, key: str, serialised_value: str) -> None:
+    """Insert or update a single per-user setting row. Caller commits."""
+    existing = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == key)
+    ).first()
+    if existing:
+        existing.value = serialised_value
+        session.add(existing)
+    else:
+        session.add(UserSetting(user_id=user_id, key=key, value=serialised_value))
+
+
+def load_fal_api_key(session: Session, user_id: str) -> Optional[str]:
+    """Decrypted fal.ai API key for a user, or None when unset. Reused by the images router."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _FAL_KEY)
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        stored = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    if not stored:
+        return None
+    try:
+        return decrypt_api_key(stored)
+    except Exception:
+        return None
+
+
+def load_fal_config(session: Session, user_id: str) -> Dict[str, Any]:
+    """Per-user image-generation config, with defaults filled in. Reused by the images router."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _FAL_CONFIG)
+    ).first()
+    cfg: Dict[str, Any] = {}
+    if row and row.value:
+        try:
+            cfg = json.loads(row.value) or {}
+        except (ValueError, TypeError):
+            cfg = {}
+    custom = [str(m).strip() for m in (cfg.get("custom_models") or []) if str(m).strip()]
+    return {
+        "default_model": cfg.get("default_model") or DEFAULT_FAL_MODEL,
+        "custom_models": custom,
+        "image_size": cfg.get("image_size") or DEFAULT_IMAGE_SIZE,
+    }
+
+
+def allowed_fal_models(config: Dict[str, Any]) -> set:
+    """The set of model ids a user is allowed to generate with (curated + their custom ids)."""
+    return set(FAL_CURATED_MODEL_IDS) | set(config.get("custom_models") or [])
+
+
+@router.get("/images")
+def get_image_settings(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    api_key = load_fal_api_key(session, user_id)
+    cfg = load_fal_config(session, user_id)
+    return {
+        "has_api_key": bool(api_key),
+        "curated_models": FAL_CURATED_MODELS,
+        "image_sizes": FAL_IMAGE_SIZES,
+        "custom_models": cfg["custom_models"],
+        "default_model": cfg["default_model"],
+        "image_size": cfg["image_size"],
+    }
+
+
+class ImageSettingsUpdate(BaseModel):
+    # `api_key` is a tri-state: omitted / None leaves the stored key untouched (so saving
+    # config never wipes the key); "" removes it; a non-empty value replaces it.
+    api_key: Optional[str] = None
+    default_model: Optional[str] = None
+    custom_models: Optional[List[str]] = None
+    image_size: Optional[str] = None
+
+
+@router.put("/images")
+def update_image_settings(
+    payload: ImageSettingsUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+
+    if payload.api_key is not None:
+        encrypted = encrypt_api_key(payload.api_key) if payload.api_key else ""
+        _upsert_user_setting(session, user_id, _FAL_KEY, json.dumps(encrypted))
+
+    cfg = load_fal_config(session, user_id)
+    if payload.default_model is not None:
+        cfg["default_model"] = payload.default_model or DEFAULT_FAL_MODEL
+    if payload.custom_models is not None:
+        cfg["custom_models"] = [m.strip() for m in payload.custom_models if m and m.strip()]
+    if payload.image_size is not None and payload.image_size in FAL_IMAGE_SIZES:
+        cfg["image_size"] = payload.image_size
+    _upsert_user_setting(session, user_id, _FAL_CONFIG, json.dumps({
+        "default_model": cfg["default_model"],
+        "custom_models": cfg["custom_models"],
+        "image_size": cfg["image_size"],
+    }))
+
+    session.commit()
+    return get_image_settings(request, session)
+
+
+def _extract_fal_balance(body: Any) -> Dict[str, Any]:
+    """Best-effort pull of a balance/credit figure from fal's billing response. fal's
+    account API schema isn't publicly documented for automated fetch, so we scan a set
+    of likely keys and degrade gracefully when none are present."""
+    out: Dict[str, Any] = {}
+    if isinstance(body, dict):
+        for key in ("balance", "credits", "available_credits", "credit_balance", "remaining_credits", "amount"):
+            val = body.get(key)
+            if isinstance(val, (int, float)):
+                out["balance"] = val
+                break
+        currency = body.get("currency") or body.get("unit")
+        if isinstance(currency, str):
+            out["currency"] = currency
+    return out
+
+
+@router.get("/images/usage")
+async def get_image_usage(request: Request, session: Session = Depends(get_session)):
+    """Best-effort account balance/usage pulled from fal.ai. Requires a fal key that has
+    account/billing scope; returns {available: false, note} when unavailable so the UI
+    can fall back to the local per-image usage totals from /api/settings/usage."""
+    user_id = _get_user_id(request)
+    api_key = load_fal_api_key(session, user_id)
+    if not api_key:
+        return {"available": False, "note": "No fal.ai API key configured."}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(
+                "https://api.fal.ai/v1/account/billing",
+                headers={"Authorization": f"Key {api_key}"},
+                params={"credits": "true"},
+            )
+    except httpx.RequestError as e:
+        return {"available": False, "note": f"Could not reach fal.ai: {type(e).__name__}."}
+
+    if not resp.is_success:
+        return {
+            "available": False,
+            "note": (
+                f"fal.ai account API returned HTTP {resp.status_code}. "
+                "Account usage needs a key with billing/admin scope."
+            ),
+        }
+
+    try:
+        body = resp.json()
+    except ValueError:
+        return {"available": False, "note": "fal.ai account API returned a non-JSON response."}
+
+    return {"available": True, **_extract_fal_balance(body)}
+
+
 # ─── Themes ───────────────────────────────────────────────────────────────────
 
 def _is_admin(request: Request, session: Session) -> bool:
