@@ -1221,7 +1221,11 @@ async def synthesize_speech(
         raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
     if len(text) > _TTS_MAX_CHARS:
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
-    voice = (payload.model or DEFAULT_TTS_VOICE).strip() or DEFAULT_TTS_VOICE
+    # Coerce unknown/legacy voices (e.g. a stale Deepgram value persisted before the
+    # fal migration) to the default so fal never rejects an invalid voice id.
+    voice = (payload.model or "").strip()
+    if voice not in FAL_TTS_VOICES:
+        voice = DEFAULT_TTS_VOICE
 
     # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
     resp = await _post_upstream(

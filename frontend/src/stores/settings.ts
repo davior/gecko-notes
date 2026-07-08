@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -49,6 +49,13 @@ interface SettingsState {
 
 function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
   return providers.find((p) => p.is_active && p.enabled) ?? null
+}
+
+// Fall back to the default when the stored voice isn't a known fal voice — e.g. a
+// legacy Deepgram Aura id persisted before the fal.ai speech migration.
+function normalizeVoice(value: unknown): string {
+  const v = typeof value === 'string' ? value : ''
+  return TTS_VOICES.some((x) => x.id === v) ? v : DEFAULT_TTS_VOICE
 }
 
 function deriveActiveSystemPrompt(prompts: SystemPrompt[]): SystemPrompt | null {
@@ -145,7 +152,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
-        ttsModel: (settings['tts_model'] as string) || DEFAULT_TTS_VOICE,
+        ttsModel: normalizeVoice(settings['tts_model']),
         themes: themesResp.data,
         activeThemeId,
         sharedThemeId,
@@ -169,7 +176,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
       aiPrefill: (updated['ai_prefill'] as string) ?? '',
       summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
-      ttsModel: (updated['tts_model'] as string) || DEFAULT_TTS_VOICE,
+      ttsModel: normalizeVoice(updated['tts_model']),
     })
   },
 
