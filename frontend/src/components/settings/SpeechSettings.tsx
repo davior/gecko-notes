@@ -4,11 +4,11 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 
 export default function SpeechSettings() {
-  const { falKeyConfigured, ttsModel, ttsModels, availableVoices, customTtsModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
+  const { falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
   const [newModelId, setNewModelId] = useState('')
   const [newModelVoices, setNewModelVoices] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const tts = useTextToSpeech({ model: ttsModel })
+  const tts = useTextToSpeech({ model: voice })
 
   const allModels = [...ttsModels, ...customTtsModels.map((m) => ({ ...m, label: m.id }))]
 
@@ -155,7 +155,7 @@ export default function SpeechSettings() {
             <label className="label">Voice</label>
             <select
               className="input"
-              value={ttsModel}
+              value={voice}
               onChange={(e) => void updateAppSettings({ tts_model: e.target.value })}
             >
               {availableVoices.map((v) => (

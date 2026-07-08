@@ -7,6 +7,8 @@ export interface TTSVoice {
 
 // Curated fal.ai (ElevenLabs) TTS voices (mirrors backend `FAL_TTS_VOICES`).
 export const DEFAULT_TTS_VOICE = 'Aria'
+// Mirrors backend `DEFAULT_TTS_MODEL` — used before speech settings finish loading.
+export const DEFAULT_TTS_MODEL = 'fal-ai/elevenlabs/tts/eleven-v3'
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',

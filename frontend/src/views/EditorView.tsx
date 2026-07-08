@@ -353,7 +353,7 @@ export default function EditorView() {
       showToast('Failed to save recorded video')
     }
   }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, pollTranscriptionJob, title])
-  const tts = useTextToSpeech({ model: settingsStore.ttsModel })
+  const tts = useTextToSpeech({ model: settingsStore.voice })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
   useEffect(() => {

@@ -1150,6 +1150,8 @@ FAL_TTS_MODELS = [
             "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
             "am_puck", "am_santa",
         ],
+        # Kokoro's fal endpoint takes the text under `prompt`, not `text`.
+        "text_field": "prompt",
     },
     {
         "id": "fal-ai/gemini-tts",
@@ -1161,11 +1163,16 @@ FAL_TTS_MODELS = [
             "Puck", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat",
             "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
         ],
+        # Gemini's fal endpoint takes the text under `prompt`, not `text`.
+        "text_field": "prompt",
     },
     {
         "id": "xai/tts/v1",
         "label": "xAI TTS",
         "voices": ["eve", "ara", "rex", "sal", "leo"],
+        # xAI's fal endpoint uses `voice_id` (not `voice`) and requires a `language`.
+        "voice_field": "voice_id",
+        "extra_params": {"language": "auto"},
     },
 ]
 
@@ -1206,6 +1213,21 @@ def get_voices_for_model(model_id: str, custom_models: List[Dict[str, Any]]) -> 
             return model.get("voices", [])
     # Fallback to default voices if model not found
     return FAL_TTS_VOICES
+
+
+def build_tts_request_body(model_id: str, text: str, voice: str) -> Dict[str, Any]:
+    """Build the fal.run request body for a TTS model. Different fal.ai TTS
+    endpoints use different input schemas (e.g. `text` vs `prompt`, `voice` vs
+    `voice_id`, extra required fields) even though they're all curated here as
+    one unified interface. Curated models declare `text_field`/`voice_field`/
+    `extra_params` overrides; anything unlisted — including custom models,
+    whose schema we don't know — uses the common `text`/`voice` shape."""
+    model = next((m for m in FAL_TTS_MODELS if m["id"] == model_id), {})
+    text_field = model.get("text_field", "text")
+    voice_field = model.get("voice_field", "voice")
+    body = {text_field: text, voice_field: voice}
+    body.update(model.get("extra_params") or {})
+    return body
 
 
 @router.get("/speech")
@@ -1342,17 +1364,17 @@ async def synthesize_speech(
     tts_model = speech_cfg["tts_model"]
     available_voices = get_voices_for_model(tts_model, speech_cfg["custom_tts_models"])
 
-    # Coerce unknown/legacy voices (e.g. a stale Deepgram value persisted before the
-    # fal migration) to the default so fal never rejects an invalid voice id.
+    # Coerce unknown/legacy voices (e.g. a stale value persisted for a different
+    # model) to one this model actually supports, so fal never rejects the voice.
     voice = (payload.model or "").strip()
     if voice not in available_voices:
-        voice = DEFAULT_TTS_VOICE
+        voice = available_voices[0] if available_voices else DEFAULT_TTS_VOICE
 
     # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
     resp = await _post_upstream(
         f"https://fal.run/{tts_model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body={"text": text, "voice": voice},
+        json_body=build_tts_request_body(tts_model, text, voice),
         timeout=120.0,
         provider_label="fal.ai",
     )
