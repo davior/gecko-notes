@@ -9,11 +9,11 @@ import {
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import { useCreateBlockNote } from '@blocknote/react'
-import { Folder as FolderIcon } from 'lucide-react'
 import NoteCard from '@/components/NoteCard'
 import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
+import FolderCustomizeModal from '@/components/FolderCustomizeModal'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import { noteSchema } from '@/blocks/childNoteBlock'
 import UserAvatar from '@/components/UserAvatar'
@@ -22,6 +22,7 @@ import { useFoldersStore } from '@/stores/folders'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { parseMarkdownFrontmatter } from '@/utils/markdown'
+import { resolveFolderIcon } from '@/utils/folderIcons'
 import { notesApi } from '@/api/notes'
 import type { NoteListItem } from '@/api/notes'
 import type { Folder } from '@/api/folders'
@@ -81,8 +82,11 @@ export default function ListView() {
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [panelOpen, setPanelOpen] = useState(false)
   const [fabMenuOpen, setFabMenuOpen] = useState(false)
-  const [activeDrag, setActiveDrag] = useState<{ type: 'note' | 'folder'; label: string } | null>(null)
+  const [activeDrag, setActiveDrag] = useState<
+    { type: 'note'; label: string } | { type: 'folder'; folder: Folder } | null
+  >(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
+  const [folderModal, setFolderModal] = useState<{ folder: Folder | null } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [noteMoveOpen, setNoteMoveOpen] = useState(false)
   const [noteDeleteOpen, setNoteDeleteOpen] = useState(false)
@@ -248,10 +252,8 @@ export default function ListView() {
     else setSearchParams({})
   }
 
-  async function handleNewFolder() {
-    const name = window.prompt('New folder name')?.trim()
-    if (!name) return
-    await foldersStore.createFolder({ name, parent_folder_id: folderId })
+  function handleNewFolder() {
+    setFolderModal({ folder: null })
   }
 
   function titleFromFilename(filename: string): string {
@@ -294,10 +296,8 @@ export default function ListView() {
     }
   }
 
-  async function handleRenameFolder(folder: Folder) {
-    const name = window.prompt('Rename folder', folder.name)?.trim()
-    if (!name || name === folder.name) return
-    await foldersStore.renameFolder(folder.id, name)
+  function handleCustomizeFolder(folder: Folder) {
+    setFolderModal({ folder })
   }
 
   async function handleDeleteFolder(folder: Folder) {
@@ -350,7 +350,7 @@ export default function ListView() {
     if (!data) return
     if (data.type === 'folder' && data.folderId) {
       const folder = subfolders.find((f) => f.id === data.folderId)
-      setActiveDrag({ type: 'folder', label: folder?.name ?? '' })
+      if (folder) setActiveDrag({ type: 'folder', folder })
     } else if (data.type === 'note' && data.noteId) {
       const note = notes.find((n) => n.id === data.noteId)
       setActiveDrag({ type: 'note', label: note?.title || 'Untitled' })
@@ -429,7 +429,7 @@ export default function ListView() {
     folders: subfolders,
     onOpen: openFolder,
     onMove: (f: Folder) => setMoveTarget({ id: f.id }),
-    onRename: handleRenameFolder,
+    onCustomize: handleCustomizeFolder,
     onDelete: handleDeleteFolder,
   }
 
@@ -663,12 +663,22 @@ export default function ListView() {
           )}
         </main>
         <DragOverlay dropAnimation={null}>
-          {activeDrag?.type === 'folder' && (
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white dark:bg-gray-800 border-blue-400 shadow-xl cursor-grabbing">
-              <FolderIcon className="w-4 h-4 text-blue-500 shrink-0" fill="currentColor" fillOpacity={0.15} />
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{activeDrag.label}</span>
-            </div>
-          )}
+          {activeDrag?.type === 'folder' && (() => {
+            const resolved = resolveFolderIcon(activeDrag.folder)
+            return (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white dark:bg-gray-800 border-blue-400 shadow-xl cursor-grabbing">
+                {resolved.kind === 'emoji' ? (
+                  <span className="text-sm leading-none shrink-0">{resolved.emoji}</span>
+                ) : (
+                  <resolved.Icon
+                    className={`w-4 h-4 shrink-0 ${activeDrag.folder.color ? '' : 'text-blue-500'}`}
+                    style={{ color: activeDrag.folder.color ?? undefined }}
+                  />
+                )}
+                <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{activeDrag.folder.name}</span>
+              </div>
+            )
+          })()}
           {activeDrag?.type === 'note' && (
             <div className="card dark:bg-gray-800 dark:border-gray-700 px-4 py-3 shadow-xl cursor-grabbing max-w-xs opacity-90">
               <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{activeDrag.label}</p>
@@ -689,6 +699,14 @@ export default function ListView() {
           disabledIds={new Set([moveTarget.id])}
           onSelect={handleMoveSelect}
           onClose={() => setMoveTarget(null)}
+        />
+      )}
+
+      {folderModal && (
+        <FolderCustomizeModal
+          folder={folderModal.folder}
+          parentFolderId={folderId}
+          onClose={() => setFolderModal(null)}
         />
       )}
 

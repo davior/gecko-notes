@@ -382,6 +382,13 @@ def _run_migrations():
                 conn.commit()
         except Exception:
             pass
+        # Folder customization: emoji/icon + color
+        for col, coltype in [("icon_type", "TEXT"), ("icon_value", "TEXT"), ("color", "TEXT")]:
+            try:
+                conn.execute(text(f"ALTER TABLE folder ADD COLUMN {col} {coltype}"))
+                conn.commit()
+            except Exception:
+                pass
 
 
 def _seed_after_migrations():
