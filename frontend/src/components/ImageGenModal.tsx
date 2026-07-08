@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { X, Sparkles, Loader2 } from 'lucide-react'
-import { settingsApi, type ImageSettings } from '@/api/settings'
-import { imageGenApi } from '@/api/imageGen'
+import { settingsApi, type ImageSettings, type FalPrice } from '@/api/settings'
+import { imageGenApi, estimateImageCost, formatCost } from '@/api/imageGen'
 
 const IMAGE_SIZE_LABELS: Record<string, string> = {
   square_hd: 'Square (HD)',
@@ -25,6 +25,8 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
   const [size, setSize] = useState('')
   const [generating, setGenerating] = useState(false)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
+  const [resultCost, setResultCost] = useState<{ cost?: number | null; currency?: string | null } | null>(null)
+  const [prices, setPrices] = useState<Record<string, FalPrice>>({})
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -38,6 +40,7 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
         setError('Failed to load image generation settings')
       }
     })()
+    settingsApi.getImagePricing().then((p) => setPrices(p.prices)).catch(() => {})
   }, [])
 
   async function generate() {
@@ -45,9 +48,11 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
     setGenerating(true)
     setError(null)
     setResultUrl(null)
+    setResultCost(null)
     try {
       const res = await imageGenApi.generate({ prompt: prompt.trim(), model, image_size: size })
       setResultUrl(res.url)
+      setResultCost({ cost: res.cost, currency: res.currency })
     } catch (e) {
       const ax = e as { response?: { data?: { detail?: { message?: string } | string } } }
       const detail = ax.response?.data?.detail
@@ -65,6 +70,7 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
     ? [...settings.curated_models, ...settings.custom_models.map((id) => ({ id, label: id }))]
     : []
   const noKey = settings !== null && !settings.has_api_key
+  const est = estimateImageCost(prices[model], size)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
@@ -125,6 +131,16 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
                 <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
                   <img src={resultUrl} alt="Generated preview" className="w-full max-h-72 object-contain bg-gray-50 dark:bg-gray-900" />
                 </div>
+              )}
+
+              {(resultCost?.cost != null || est !== null) && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {resultCost?.cost != null ? (
+                    <>Cost: <span className="font-medium text-gray-700 dark:text-gray-200">{formatCost(resultCost.cost, resultCost.currency)}</span></>
+                  ) : (
+                    <>Estimated ~<span className="font-medium text-gray-700 dark:text-gray-200">{formatCost(est as number, prices[model]?.currency)}</span> per image</>
+                  )}
+                </p>
               )}
 
               <div className="flex items-center gap-2 justify-end">

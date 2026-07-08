@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, Trash2, Loader2 } from 'lucide-react'
-import { settingsApi, type ImageSettings, type ImageUsage } from '@/api/settings'
+import { settingsApi, type ImageSettings, type ImageUsage, type FalPrice } from '@/api/settings'
+import { estimateImageCost, formatCost } from '@/api/imageGen'
 
 const IMAGE_SIZE_LABELS: Record<string, string> = {
   square_hd: 'Square (HD)',
@@ -14,25 +15,30 @@ const IMAGE_SIZE_LABELS: Record<string, string> = {
 export default function ImageGenSettings() {
   const [settings, setSettings] = useState<ImageSettings | null>(null)
   const [usage, setUsage] = useState<ImageUsage | null>(null)
+  const [prices, setPrices] = useState<Record<string, FalPrice>>({})
   const [apiKey, setApiKey] = useState('')
+  const [adminKey, setAdminKey] = useState('')
   const [showKey, setShowKey] = useState(false)
+  const [showAdminKey, setShowAdminKey] = useState(false)
   const [newModel, setNewModel] = useState('')
   const [savingKey, setSavingKey] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [savingAdmin, setSavingAdmin] = useState(false)
+  const [saved, setSaved] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   async function load() {
     try {
-      const s = await settingsApi.getImageSettings()
-      setSettings(s)
+      setSettings(await settingsApi.getImageSettings())
     } catch {
       setError('Failed to load image generation settings')
     }
   }
 
-  async function loadUsage() {
+  async function loadBilling() {
     try {
-      setUsage(await settingsApi.getImageUsage())
+      const [u, p] = await Promise.all([settingsApi.getImageUsage(30), settingsApi.getImagePricing()])
+      setUsage(u)
+      setPrices(u.prices && Object.keys(u.prices).length ? u.prices : p.prices)
     } catch {
       setUsage({ available: false, note: 'Usage is unavailable.' })
     }
@@ -40,23 +46,24 @@ export default function ImageGenSettings() {
 
   useEffect(() => {
     void load()
-    void loadUsage()
+    void loadBilling()
   }, [])
 
-  async function saveKey(value: string) {
-    setSavingKey(true)
+  async function saveKey(kind: 'api_key' | 'admin_api_key', value: string) {
+    const setSaving = kind === 'api_key' ? setSavingKey : setSavingAdmin
+    setSaving(true)
     setError(null)
     try {
-      const s = await settingsApi.updateImageSettings({ api_key: value })
-      setSettings(s)
-      setApiKey('')
-      setSaved(true)
-      setTimeout(() => setSaved(false), 3000)
-      void loadUsage()
+      setSettings(await settingsApi.updateImageSettings({ [kind]: value }))
+      if (kind === 'api_key') setApiKey('')
+      else setAdminKey('')
+      setSaved(kind)
+      setTimeout(() => setSaved(''), 3000)
+      void loadBilling()
     } catch {
       setError('Failed to save API key')
     } finally {
-      setSavingKey(false)
+      setSaving(false)
     }
   }
 
@@ -84,7 +91,6 @@ export default function ImageGenSettings() {
   function removeCustomModel(id: string) {
     if (!settings) return
     const custom = settings.custom_models.filter((m) => m !== id)
-    // If the removed model was the default, fall back to the first curated model.
     const default_model = settings.default_model === id
       ? settings.curated_models[0]?.id ?? ''
       : settings.default_model
@@ -94,6 +100,10 @@ export default function ImageGenSettings() {
   const allModels = settings
     ? [...settings.curated_models, ...settings.custom_models.map((id) => ({ id, label: id }))]
     : []
+
+  // Per-image estimate for the current default model + size.
+  const estPrice = settings ? prices[settings.default_model] : undefined
+  const estCost = settings ? estimateImageCost(estPrice, settings.image_size) : null
 
   return (
     <div className="space-y-8">
@@ -107,25 +117,19 @@ export default function ImageGenSettings() {
 
         {error && <p className="text-sm text-red-500 mb-4">{error}</p>}
 
-        <div>
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai API key</h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            Stored encrypted on the server and never returned to the browser.{' '}
-            <a
-              href="https://fal.ai/dashboard/keys"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:underline"
-            >
-              Get a fal.ai API key
-            </a>
-          </p>
-          <div className="card p-4 space-y-4">
-            {settings?.has_api_key && (
-              <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ fal.ai key is configured</p>
-            )}
-            <div>
-              <label className="label">API Key</label>
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai API key</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Used to generate images. Stored encrypted; never returned to the browser.{' '}
+              <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                Get a fal.ai API key
+              </a>
+            </p>
+            <div className="card p-4 space-y-3">
+              {settings?.has_api_key && (
+                <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Generation key configured</p>
+              )}
               <div className="relative">
                 <input
                   type={showKey ? 'text' : 'password'}
@@ -134,33 +138,57 @@ export default function ImageGenSettings() {
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                 />
-                <button
-                  type="button"
-                  className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  onClick={() => setShowKey((v) => !v)}
-                >
+                <button type="button" className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" onClick={() => setShowKey((v) => !v)}>
                   {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                className="btn-primary text-sm"
-                disabled={savingKey || !apiKey}
-                onClick={() => void saveKey(apiKey)}
-              >
-                {savingKey ? 'Saving…' : 'Save Key'}
-              </button>
-              {settings?.has_api_key && (
-                <button
-                  className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400"
-                  disabled={savingKey}
-                  onClick={() => void saveKey('')}
-                >
-                  Remove key
+              <div className="flex items-center gap-3">
+                <button className="btn-primary text-sm" disabled={savingKey || !apiKey} onClick={() => void saveKey('api_key', apiKey)}>
+                  {savingKey ? 'Saving…' : 'Save Key'}
                 </button>
+                {settings?.has_api_key && (
+                  <button className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400" disabled={savingKey} onClick={() => void saveKey('api_key', '')}>
+                    Remove key
+                  </button>
+                )}
+                {saved === 'api_key' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai admin key <span className="font-normal text-gray-400">(optional)</span></h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              A billing-scoped admin/platform key enables account spend, remaining credit, and price
+              estimates below. Separate from the generation key.
+            </p>
+            <div className="card p-4 space-y-3">
+              {settings?.has_admin_key && (
+                <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Admin key configured</p>
               )}
-              {saved && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
+              <div className="relative">
+                <input
+                  type={showAdminKey ? 'text' : 'password'}
+                  className="input pr-10"
+                  placeholder={settings?.has_admin_key ? 'Enter new admin key to replace…' : 'fal admin key…'}
+                  value={adminKey}
+                  onChange={(e) => setAdminKey(e.target.value)}
+                />
+                <button type="button" className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" onClick={() => setShowAdminKey((v) => !v)}>
+                  {showAdminKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <div className="flex items-center gap-3">
+                <button className="btn-primary text-sm" disabled={savingAdmin || !adminKey} onClick={() => void saveKey('admin_api_key', adminKey)}>
+                  {savingAdmin ? 'Saving…' : 'Save Admin Key'}
+                </button>
+                {settings?.has_admin_key && (
+                  <button className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400" disabled={savingAdmin} onClick={() => void saveKey('admin_api_key', '')}>
+                    Remove key
+                  </button>
+                )}
+                {saved === 'admin_api_key' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
+              </div>
             </div>
           </div>
         </div>
@@ -171,15 +199,14 @@ export default function ImageGenSettings() {
           <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Models &amp; defaults</h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
             Choose the model and image size used when a model isn’t specified.
+            {estCost !== null && (
+              <> Estimated cost for the default model at this size: <span className="font-medium text-gray-700 dark:text-gray-200">~{formatCost(estCost, estPrice?.currency)}</span> per image.</>
+            )}
           </p>
           <div className="card p-4 space-y-4">
             <div>
               <label className="label">Default model</label>
-              <select
-                className="input"
-                value={settings.default_model}
-                onChange={(e) => void patch({ default_model: e.target.value })}
-              >
+              <select className="input" value={settings.default_model} onChange={(e) => void patch({ default_model: e.target.value })}>
                 {allModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
@@ -188,11 +215,7 @@ export default function ImageGenSettings() {
 
             <div>
               <label className="label">Default image size</label>
-              <select
-                className="input"
-                value={settings.image_size}
-                onChange={(e) => void patch({ image_size: e.target.value })}
-              >
+              <select className="input" value={settings.image_size} onChange={(e) => void patch({ image_size: e.target.value })}>
                 {settings.image_sizes.map((s) => (
                   <option key={s} value={s}>{IMAGE_SIZE_LABELS[s] ?? s}</option>
                 ))}
@@ -209,11 +232,7 @@ export default function ImageGenSettings() {
                   {settings.custom_models.map((id) => (
                     <li key={id} className="flex items-center justify-between text-sm bg-gray-50 dark:bg-gray-700/40 rounded px-2 py-1">
                       <code className="text-gray-700 dark:text-gray-200">{id}</code>
-                      <button
-                        className="text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                        onClick={() => removeCustomModel(id)}
-                        title="Remove"
-                      >
+                      <button className="text-gray-400 hover:text-red-600 dark:hover:text-red-400" onClick={() => removeCustomModel(id)} title="Remove">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </li>
@@ -238,9 +257,10 @@ export default function ImageGenSettings() {
       )}
 
       <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai account usage</h3>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai account billing</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Pulled from your fal.ai account. Per-image counts are also tracked locally under the Usage tab.
+          Pulled from your fal.ai account (needs the admin key). Per-image counts and cost are also
+          tracked locally under the Usage tab.
         </p>
         <div className="card p-4">
           {usage === null ? (
@@ -248,15 +268,56 @@ export default function ImageGenSettings() {
               <Loader2 className="w-4 h-4 animate-spin" /> Loading…
             </div>
           ) : usage.available ? (
-            <div className="text-sm text-gray-800 dark:text-gray-200">
-              {usage.balance !== undefined ? (
-                <>Balance: <span className="font-semibold">{usage.balance.toLocaleString()}{usage.currency ? ` ${usage.currency}` : ''}</span></>
-              ) : (
-                'Connected to fal.ai account.'
+            <div className="space-y-3 text-sm">
+              <div className="flex flex-wrap gap-6">
+                <div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Total spend (30 days)</div>
+                  <div className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+                    {formatCost(usage.total_spend ?? 0, usage.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Remaining credit</div>
+                  <div className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+                    {usage.balance !== undefined ? formatCost(usage.balance, usage.balance_currency) : '—'}
+                  </div>
+                </div>
+              </div>
+              {usage.by_endpoint && usage.by_endpoint.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                        <th className="py-1 pr-4 font-medium">Model</th>
+                        <th className="py-1 pr-4 font-medium text-right">Qty</th>
+                        <th className="py-1 pr-4 font-medium text-right">Unit price</th>
+                        <th className="py-1 font-medium text-right">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usage.by_endpoint.map((e) => (
+                        <tr key={e.endpoint_id} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
+                          <td className="py-1 pr-4 text-gray-700 dark:text-gray-300">{e.endpoint_id}</td>
+                          <td className="py-1 pr-4 text-right text-gray-500 dark:text-gray-400">{e.quantity ?? '—'} {e.unit ?? ''}</td>
+                          <td className="py-1 pr-4 text-right text-gray-500 dark:text-gray-400">{e.unit_price != null ? formatCost(e.unit_price, e.currency) : '—'}</td>
+                          <td className="py-1 text-right text-gray-700 dark:text-gray-300">{e.cost != null ? formatCost(e.cost, e.currency) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {usage.balance === undefined && (
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  No prepaid balance reported (pay-as-you-go accounts are billed to a card).
+                </p>
               )}
             </div>
           ) : (
-            <p className="text-sm text-gray-500 dark:text-gray-400">{usage.note ?? 'Account usage is unavailable.'}</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {usage.note ?? 'Account billing is unavailable.'}
+              {!settings?.has_admin_key && ' Add an admin key above to see account spend and credit.'}
+            </p>
           )}
         </div>
       </div>

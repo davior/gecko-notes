@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Loader2, Mic, Volume2, Cpu, Image as ImageIcon } from 'lucide-react'
 import { settingsApi, type UsageSummary } from '@/api/settings'
+import { formatCost } from '@/api/imageGen'
 
 const KIND_META: Record<string, { label: string; icon: typeof Mic; color: string }> = {
   tts: { label: 'Text-to-Speech', icon: Volume2, color: 'text-blue-600 dark:text-blue-400' },
@@ -104,6 +105,11 @@ export default function UsageMonitor() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">
                     {UNIT_LABEL[unitType] ?? unitType} · {formatNumber(count)} request{count === 1 ? '' : 's'}
                   </div>
+                  {total?.cost ? (
+                    <div className="text-xs font-medium text-gray-600 dark:text-gray-300 mt-0.5">
+                      {formatCost(total.cost, total.currency)}
+                    </div>
+                  ) : null}
                 </div>
               )
             })}
@@ -124,6 +130,7 @@ export default function UsageMonitor() {
                       <th className="px-4 py-2 font-medium">Type</th>
                       <th className="px-4 py-2 font-medium">Model</th>
                       <th className="px-4 py-2 font-medium text-right">Usage</th>
+                      <th className="px-4 py-2 font-medium text-right">Cost</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -136,6 +143,9 @@ export default function UsageMonitor() {
                           <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.model || '—'}</td>
                           <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
                             {formatNumber(e.units)} {UNIT_LABEL[e.unit_type] ?? e.unit_type}
+                          </td>
+                          <td className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                            {e.cost != null ? formatCost(e.cost, e.currency) : '—'}
                           </td>
                         </tr>
                       )

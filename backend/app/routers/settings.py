@@ -40,8 +40,14 @@ def _record_usage(
     model: str,
     units: int,
     unit_type: str,
+    external_ref: Optional[str] = None,
+    cost: Optional[float] = None,
+    currency: Optional[str] = None,
 ) -> None:
-    """Record an external-API usage event. Best-effort: never breaks the request."""
+    """Record an external-API usage event. Best-effort: never breaks the request.
+
+    `external_ref`/`cost`/`currency` are optional cost attribution (populated for image
+    generation); older callers omit them and get null columns."""
     try:
         session.add(UsageEvent(
             id=str(uuid.uuid4()),
@@ -51,6 +57,9 @@ def _record_usage(
             units=int(units or 0),
             unit_type=unit_type or "",
             created_at=datetime.utcnow(),
+            external_ref=external_ref,
+            cost=cost,
+            currency=currency,
         ))
         session.commit()
     except Exception:
@@ -1231,13 +1240,21 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
     totals: Dict[str, Dict[str, Any]] = {}
     by_day: Dict[tuple, int] = {}
     for ev in events:
-        t = totals.setdefault(ev.kind, {"kind": ev.kind, "count": 0, "units": 0, "unit_type": ev.unit_type})
+        t = totals.setdefault(ev.kind, {"kind": ev.kind, "count": 0, "units": 0, "unit_type": ev.unit_type, "cost": 0.0})
         t["count"] += 1
         t["units"] += ev.units
+        if ev.cost is not None:
+            t["cost"] += ev.cost
+            if ev.currency and not t.get("currency"):
+                t["currency"] = ev.currency
         if not t["unit_type"]:
             t["unit_type"] = ev.unit_type
         day = ev.created_at.date().isoformat()
         by_day[(day, ev.kind)] = by_day.get((day, ev.kind), 0) + ev.units
+
+    # Round the accumulated cost so floating-point noise doesn't leak into the UI.
+    for t in totals.values():
+        t["cost"] = round(t["cost"], 4)
 
     recent = sorted(events, key=lambda e: e.created_at, reverse=True)[:50]
 
@@ -1254,6 +1271,8 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
                 "model": e.model,
                 "units": e.units,
                 "unit_type": e.unit_type,
+                "cost": e.cost,
+                "currency": e.currency,
                 "created_at": e.created_at.replace(tzinfo=None).isoformat() + "Z",
             }
             for e in recent
@@ -1263,8 +1282,14 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
 
 # ─── Image Generation / fal.ai ────────────────────────────────────────────────
 
-_FAL_KEY = "fal_api_key"          # encrypted, stored like the Deepgram key
-_FAL_CONFIG = "image_gen_config"  # plain JSON: default_model / custom_models / image_size
+_FAL_KEY = "fal_api_key"              # encrypted; image generation key (fal.run)
+_FAL_ADMIN_KEY = "fal_admin_api_key"  # encrypted; billing/usage/pricing (api.fal.ai/v1) scope
+_FAL_CONFIG = "image_gen_config"      # plain JSON: default_model / custom_models / image_size
+_FAL_PRICE_CACHE = "fal_price_cache"  # plain JSON: {fetched_at, prices: {endpoint_id: {...}}}
+
+_FAL_USAGE_URL = "https://api.fal.ai/v1/models/usage"
+_FAL_BILLING_URL = "https://api.fal.ai/v1/account/billing"
+_FAL_PRICE_TTL_SECONDS = 6 * 3600
 
 DEFAULT_FAL_MODEL = "fal-ai/flux/dev"
 DEFAULT_IMAGE_SIZE = "landscape_4_3"
@@ -1321,6 +1346,101 @@ def load_fal_api_key(session: Session, user_id: str) -> Optional[str]:
         return None
 
 
+def load_fal_admin_key(session: Session, user_id: str) -> Optional[str]:
+    """Decrypted fal.ai admin/platform key (billing scope), or None when unset."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _FAL_ADMIN_KEY)
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        stored = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    if not stored:
+        return None
+    try:
+        return decrypt_api_key(stored)
+    except Exception:
+        return None
+
+
+def load_fal_billing_key(session: Session, user_id: str) -> Optional[str]:
+    """Key used for fal's platform (billing/usage) APIs: the admin key if set, else the
+    generation key as a fallback (which may lack billing scope and get rejected)."""
+    return load_fal_admin_key(session, user_id) or load_fal_api_key(session, user_id)
+
+
+def _read_fal_price_cache(session: Session, user_id: str) -> Dict[str, Any]:
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _FAL_PRICE_CACHE)
+    ).first()
+    if row and row.value:
+        try:
+            return json.loads(row.value) or {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _prices_from_summary(summary_items: Any) -> Dict[str, Dict[str, Any]]:
+    """Build {endpoint_id: {unit, unit_price, currency}} from a fal usage `summary` array."""
+    prices: Dict[str, Dict[str, Any]] = {}
+    for it in summary_items or []:
+        if not isinstance(it, dict):
+            continue
+        eid = it.get("endpoint_id")
+        unit_price = it.get("unit_price")
+        if eid and isinstance(unit_price, (int, float)):
+            prices[eid] = {
+                "unit": it.get("unit"),
+                "unit_price": unit_price,
+                "currency": it.get("currency") or "USD",
+            }
+    return prices
+
+
+def get_cached_fal_price(session: Session, user_id: str, model: str) -> Optional[Dict[str, Any]]:
+    """Cached {unit, unit_price, currency} for a model endpoint, or None if not cached yet."""
+    prices = _read_fal_price_cache(session, user_id).get("prices") or {}
+    return prices.get(model)
+
+
+async def _fetch_fal_usage_summary(billing_key: str, days: int) -> Optional[Dict[str, Any]]:
+    """Call fal's usage API (expand=summary) and return the parsed body, or None on any
+    failure. fal caps the window at ~90 days."""
+    days = max(1, min(days, 90))
+    end = datetime.utcnow().date()
+    start = end - timedelta(days=days)
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.get(
+                _FAL_USAGE_URL,
+                headers={"Authorization": f"Key {billing_key}"},
+                params={"start_time": start.isoformat(), "end_time": end.isoformat(), "expand": "summary"},
+            )
+    except httpx.RequestError:
+        return None
+    if not resp.is_success:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
+def _refresh_fal_prices(session: Session, user_id: str, summary_items: Any) -> Dict[str, Dict[str, Any]]:
+    """Persist a fresh price map derived from a usage summary. Returns the price map."""
+    prices = _prices_from_summary(summary_items)
+    if prices:
+        _upsert_user_setting(session, user_id, _FAL_PRICE_CACHE, json.dumps({
+            "fetched_at": datetime.utcnow().isoformat(),
+            "prices": prices,
+        }))
+        session.commit()
+    return prices
+
+
 def load_fal_config(session: Session, user_id: str) -> Dict[str, Any]:
     """Per-user image-generation config, with defaults filled in. Reused by the images router."""
     row = session.exec(
@@ -1349,9 +1469,11 @@ def allowed_fal_models(config: Dict[str, Any]) -> set:
 def get_image_settings(request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
     api_key = load_fal_api_key(session, user_id)
+    admin_key = load_fal_admin_key(session, user_id)
     cfg = load_fal_config(session, user_id)
     return {
         "has_api_key": bool(api_key),
+        "has_admin_key": bool(admin_key),
         "curated_models": FAL_CURATED_MODELS,
         "image_sizes": FAL_IMAGE_SIZES,
         "custom_models": cfg["custom_models"],
@@ -1361,9 +1483,11 @@ def get_image_settings(request: Request, session: Session = Depends(get_session)
 
 
 class ImageSettingsUpdate(BaseModel):
-    # `api_key` is a tri-state: omitted / None leaves the stored key untouched (so saving
-    # config never wipes the key); "" removes it; a non-empty value replaces it.
+    # `api_key` / `admin_api_key` are tri-state: omitted / None leaves the stored key
+    # untouched (so saving config never wipes a key); "" removes it; a non-empty value
+    # replaces it.
     api_key: Optional[str] = None
+    admin_api_key: Optional[str] = None
     default_model: Optional[str] = None
     custom_models: Optional[List[str]] = None
     image_size: Optional[str] = None
@@ -1380,6 +1504,10 @@ def update_image_settings(
     if payload.api_key is not None:
         encrypted = encrypt_api_key(payload.api_key) if payload.api_key else ""
         _upsert_user_setting(session, user_id, _FAL_KEY, json.dumps(encrypted))
+
+    if payload.admin_api_key is not None:
+        encrypted = encrypt_api_key(payload.admin_api_key) if payload.admin_api_key else ""
+        _upsert_user_setting(session, user_id, _FAL_ADMIN_KEY, json.dumps(encrypted))
 
     cfg = load_fal_config(session, user_id)
     if payload.default_model is not None:
@@ -1416,40 +1544,94 @@ def _extract_fal_balance(body: Any) -> Dict[str, Any]:
 
 
 @router.get("/images/usage")
-async def get_image_usage(request: Request, session: Session = Depends(get_session)):
-    """Best-effort account balance/usage pulled from fal.ai. Requires a fal key that has
-    account/billing scope; returns {available: false, note} when unavailable so the UI
-    can fall back to the local per-image usage totals from /api/settings/usage."""
+async def get_image_usage(request: Request, days: int = 30, session: Session = Depends(get_session)):
+    """fal.ai account spend + (best-effort) remaining balance. Uses the admin/billing key
+    (falling back to the generation key). Also refreshes the per-model price cache from the
+    usage summary. Returns {available: false, note} when unavailable so the UI can fall back
+    to the local per-image totals from /api/settings/usage."""
     user_id = _get_user_id(request)
-    api_key = load_fal_api_key(session, user_id)
-    if not api_key:
-        return {"available": False, "note": "No fal.ai API key configured."}
+    billing_key = load_fal_billing_key(session, user_id)
+    has_admin = bool(load_fal_admin_key(session, user_id))
+    if not billing_key:
+        return {"available": False, "has_admin_key": has_admin, "note": "No fal.ai API key configured."}
 
+    body = await _fetch_fal_usage_summary(billing_key, days)
+    if body is None:
+        note = (
+            "Could not read fal.ai usage. The account/usage API needs an admin-scoped key."
+            if not has_admin else "Could not reach fal.ai usage API."
+        )
+        return {"available": False, "has_admin_key": has_admin, "note": note}
+
+    summary = body.get("summary") or []
+    prices = _refresh_fal_prices(session, user_id, summary)
+    total = sum((it.get("cost") or 0) for it in summary if isinstance(it, dict))
+    currency = next((it.get("currency") for it in summary if isinstance(it, dict) and it.get("currency")), "USD")
+
+    result: Dict[str, Any] = {
+        "available": True,
+        "has_admin_key": has_admin,
+        "days": max(1, min(days, 90)),
+        "currency": currency,
+        "total_spend": round(total, 4),
+        "by_endpoint": [
+            {
+                "endpoint_id": it.get("endpoint_id"),
+                "cost": it.get("cost"),
+                "unit": it.get("unit"),
+                "unit_price": it.get("unit_price"),
+                "quantity": it.get("quantity"),
+                "currency": it.get("currency"),
+            }
+            for it in summary if isinstance(it, dict)
+        ],
+        "prices": prices,
+    }
+
+    # Remaining balance is best-effort: many fal accounts are pay-as-you-go (no prepaid
+    # credit), in which case the billing endpoint exposes no balance figure.
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.get(
-                "https://api.fal.ai/v1/account/billing",
-                headers={"Authorization": f"Key {api_key}"},
+            bresp = await http.get(
+                _FAL_BILLING_URL,
+                headers={"Authorization": f"Key {billing_key}"},
                 params={"credits": "true"},
             )
-    except httpx.RequestError as e:
-        return {"available": False, "note": f"Could not reach fal.ai: {type(e).__name__}."}
+        if bresp.is_success:
+            bal = _extract_fal_balance(bresp.json())
+            if "balance" in bal:
+                result["balance"] = bal["balance"]
+                result["balance_currency"] = bal.get("currency") or currency
+    except Exception:
+        pass
 
-    if not resp.is_success:
-        return {
-            "available": False,
-            "note": (
-                f"fal.ai account API returned HTTP {resp.status_code}. "
-                "Account usage needs a key with billing/admin scope."
-            ),
-        }
+    return result
 
-    try:
-        body = resp.json()
-    except ValueError:
-        return {"available": False, "note": "fal.ai account API returned a non-JSON response."}
 
-    return {"available": True, **_extract_fal_balance(body)}
+@router.get("/images/pricing")
+async def get_image_pricing(request: Request, session: Session = Depends(get_session)):
+    """Per-model unit prices (from fal's usage summary), used to show cost estimates. Served
+    from cache, refreshed when stale and a billing key is available."""
+    user_id = _get_user_id(request)
+    cache = _read_fal_price_cache(session, user_id)
+    fetched_at = cache.get("fetched_at")
+    stale = True
+    if fetched_at:
+        try:
+            stale = (datetime.utcnow() - datetime.fromisoformat(fetched_at)).total_seconds() > _FAL_PRICE_TTL_SECONDS
+        except (ValueError, TypeError):
+            stale = True
+
+    if stale:
+        billing_key = load_fal_billing_key(session, user_id)
+        if billing_key:
+            body = await _fetch_fal_usage_summary(billing_key, days=90)
+            if body is not None:
+                prices = _refresh_fal_prices(session, user_id, body.get("summary") or [])
+                if prices:
+                    return {"prices": prices, "fetched_at": datetime.utcnow().isoformat()}
+
+    return {"prices": cache.get("prices") or {}, "fetched_at": cache.get("fetched_at")}
 
 
 # ─── Themes ───────────────────────────────────────────────────────────────────
