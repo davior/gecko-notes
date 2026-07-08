@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Eye, EyeOff, Plus, Trash2, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Loader2 } from 'lucide-react'
 import { settingsApi, type ImageSettings, type ImageUsage, type FalPrice } from '@/api/settings'
 import { estimateImageCost, formatCost } from '@/api/imageGen'
 
@@ -16,14 +16,7 @@ export default function ImageGenSettings() {
   const [settings, setSettings] = useState<ImageSettings | null>(null)
   const [usage, setUsage] = useState<ImageUsage | null>(null)
   const [prices, setPrices] = useState<Record<string, FalPrice>>({})
-  const [apiKey, setApiKey] = useState('')
-  const [adminKey, setAdminKey] = useState('')
-  const [showKey, setShowKey] = useState(false)
-  const [showAdminKey, setShowAdminKey] = useState(false)
   const [newModel, setNewModel] = useState('')
-  const [savingKey, setSavingKey] = useState(false)
-  const [savingAdmin, setSavingAdmin] = useState(false)
-  const [saved, setSaved] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   async function load() {
@@ -48,24 +41,6 @@ export default function ImageGenSettings() {
     void load()
     void loadBilling()
   }, [])
-
-  async function saveKey(kind: 'api_key' | 'admin_api_key', value: string) {
-    const setSaving = kind === 'api_key' ? setSavingKey : setSavingAdmin
-    setSaving(true)
-    setError(null)
-    try {
-      setSettings(await settingsApi.updateImageSettings({ [kind]: value }))
-      if (kind === 'api_key') setApiKey('')
-      else setAdminKey('')
-      setSaved(kind)
-      setTimeout(() => setSaved(''), 3000)
-      void loadBilling()
-    } catch {
-      setError('Failed to save API key')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   // Persist a config change (model / size / custom list) and reflect the server's echo.
   async function patch(payload: Parameters<typeof settingsApi.updateImageSettings>[0]) {
@@ -109,89 +84,21 @@ export default function ImageGenSettings() {
     <div className="space-y-8">
       <div>
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Image Generation</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
+          Generate images with fal.ai. Pick a default model below, then ask the AI assistant to
+          “create an image for this article” (or use the “Generate image” block in the editor).
+          Generated images are saved to your notes’ media.
+        </p>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-          Generate images with fal.ai. Set your API key and pick a default model, then ask the AI
-          assistant to “create an image for this article” (or use the “Generate image” block in the
-          editor). Generated images are saved to your notes’ media.
+          Your fal.ai API key is managed on the{' '}
+          <span className="font-medium">Providers</span> tab, under{' '}
+          <span className="font-medium">Media Provider</span> — the same key also powers Speech.
+          {settings && !settings.has_api_key && (
+            <span className="text-amber-600 dark:text-amber-400"> No key is configured yet.</span>
+          )}
         </p>
 
         {error && <p className="text-sm text-red-500 mb-4">{error}</p>}
-
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai API key</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Used to generate images. Stored encrypted; never returned to the browser.{' '}
-              <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                Get a fal.ai API key
-              </a>
-            </p>
-            <div className="card p-4 space-y-3">
-              {settings?.has_api_key && (
-                <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Generation key configured</p>
-              )}
-              <div className="relative">
-                <input
-                  type={showKey ? 'text' : 'password'}
-                  className="input pr-10"
-                  placeholder={settings?.has_api_key ? 'Enter new key to replace existing…' : 'fal key…'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                <button type="button" className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" onClick={() => setShowKey((v) => !v)}>
-                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-                <button className="btn-primary text-sm" disabled={savingKey || !apiKey} onClick={() => void saveKey('api_key', apiKey)}>
-                  {savingKey ? 'Saving…' : 'Save Key'}
-                </button>
-                {settings?.has_api_key && (
-                  <button className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400" disabled={savingKey} onClick={() => void saveKey('api_key', '')}>
-                    Remove key
-                  </button>
-                )}
-                {saved === 'api_key' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">fal.ai admin key <span className="font-normal text-gray-400">(optional)</span></h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              A billing-scoped admin/platform key enables account spend, remaining credit, and price
-              estimates below. Separate from the generation key.
-            </p>
-            <div className="card p-4 space-y-3">
-              {settings?.has_admin_key && (
-                <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Admin key configured</p>
-              )}
-              <div className="relative">
-                <input
-                  type={showAdminKey ? 'text' : 'password'}
-                  className="input pr-10"
-                  placeholder={settings?.has_admin_key ? 'Enter new admin key to replace…' : 'fal admin key…'}
-                  value={adminKey}
-                  onChange={(e) => setAdminKey(e.target.value)}
-                />
-                <button type="button" className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" onClick={() => setShowAdminKey((v) => !v)}>
-                  {showAdminKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-                <button className="btn-primary text-sm" disabled={savingAdmin || !adminKey} onClick={() => void saveKey('admin_api_key', adminKey)}>
-                  {savingAdmin ? 'Saving…' : 'Save Admin Key'}
-                </button>
-                {settings?.has_admin_key && (
-                  <button className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400" disabled={savingAdmin} onClick={() => void saveKey('admin_api_key', '')}>
-                    Remove key
-                  </button>
-                )}
-                {saved === 'admin_api_key' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
       {settings && (
@@ -316,7 +223,7 @@ export default function ImageGenSettings() {
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400">
               {usage.note ?? 'Account billing is unavailable.'}
-              {!settings?.has_admin_key && ' Add an admin key above to see account spend and credit.'}
+              {!settings?.has_admin_key && ' Add an admin key on the Providers tab (Media Provider) to see account spend and credit.'}
             </p>
           )}
         </div>

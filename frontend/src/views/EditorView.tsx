@@ -247,7 +247,7 @@ export default function EditorView() {
     return res.data.url
   }, [])
 
-  const { deepgramApiKey } = settingsStore
+  const { falKeyConfigured } = settingsStore
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
     [],
@@ -271,7 +271,7 @@ export default function EditorView() {
   }, [uploadAudioBlob, insertBlocksAtCursor, insertDictatedText])
 
   const dictation = useDictation(insertDictatedText, {
-    transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
+    transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
     onRecordingComplete: handleRecordingComplete,
   })
 
@@ -339,7 +339,7 @@ export default function EditorView() {
       } as unknown as PartialBlock
       insertBlocksAtCursor([videoBlock])
 
-      if (wantTranscript && deepgramApiKey) {
+      if (wantTranscript && falKeyConfigured) {
         try {
           const ownerNoteId = createdNoteId.current || latestNoteId.current
           const res = await transcriptionApi.createJob(filename)
@@ -352,7 +352,7 @@ export default function EditorView() {
     } catch {
       showToast('Failed to save recorded video')
     }
-  }, [uploadVideoBlob, insertBlocksAtCursor, deepgramApiKey, pollTranscriptionJob, title])
+  }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, pollTranscriptionJob, title])
   const tts = useTextToSpeech({ model: settingsStore.ttsModel })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
@@ -744,7 +744,7 @@ export default function EditorView() {
   }
 
   // Insert Mode: synthesize once, save + insert the clip at the top of the note,
-  // then play the same blob (no second synthesis, so Deepgram isn't billed twice).
+  // then play the same blob (no second synthesis, so fal.ai isn't billed twice).
   async function handlePlayWithInsert(text: string) {
     let blob: Blob
     try {
@@ -1183,7 +1183,7 @@ export default function EditorView() {
           </button>
           {note && (
             <span ref={exportAnchorRef}>
-              <ExportMenu note={note} onToast={showToast} onExportAudio={deepgramApiKey ? handleExportAudio : undefined} />
+              <ExportMenu note={note} onToast={showToast} onExportAudio={falKeyConfigured ? handleExportAudio : undefined} />
             </span>
           )}
           {note && <ShareMenu note={note} onToast={showToast} onUpdate={setNote} />}
@@ -1354,7 +1354,7 @@ export default function EditorView() {
                 )}
               </div>
 
-              {deepgramApiKey && !ttsDocked && (
+              {falKeyConfigured && !ttsDocked && (
                 <TTSPlaybackControls
                   tts={tts}
                   anchorRef={exportAnchorRef}
@@ -1442,7 +1442,7 @@ export default function EditorView() {
                 </button>
               )}
             </div>
-            {deepgramApiKey && ttsDocked && (
+            {falKeyConfigured && ttsDocked && (
               <TTSPlaybackControls
                 tts={tts}
                 anchorRef={exportAnchorRef}
@@ -1540,7 +1540,7 @@ export default function EditorView() {
 
       {showVideoRecorder && (
         <VideoRecorderModal
-          canTranscribe={!!deepgramApiKey}
+          canTranscribe={!!falKeyConfigured}
           onRecorded={(blob, mimeType, wantTranscript) => { void handleVideoRecorded(blob, mimeType, wantTranscript) }}
           onClose={() => setShowVideoRecorder(false)}
         />

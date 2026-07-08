@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Plus, Pencil, Trash2, Eye, EyeOff } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { settingsApi, type AIProvider } from '@/api/settings'
+import MediaProviderSettings from '@/components/settings/MediaProviderSettings'
 
 type ProviderType = 'anthropic' | 'openai' | 'ollama' | 'custom'
 interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; enabled: boolean }
@@ -94,10 +95,18 @@ export default function AIProviderManager() {
   const setF = (patch: Partial<ProviderForm>) => setForm((prev) => ({ ...prev, ...patch }))
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">AI Providers</h2>
-        <button className="btn-primary text-sm" onClick={startAddNew}><Plus className="w-4 h-4" /> Add Provider</button>
+    <div className="space-y-10">
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">AI Providers</h2>
+          <button className="btn-primary text-sm" onClick={startAddNew}><Plus className="w-4 h-4" /> Add Provider</button>
+        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          These providers power text-based AI features — chat with the assistant, note summaries,
+          tag suggestions, and other language-model tasks. Add one or more, then mark one{' '}
+          <span className="font-medium">Active</span> to use it across the app. Anthropic and OpenAI
+          need an API key; Ollama runs models locally and needs a reachable server URL instead.
+        </p>
       </div>
 
       {showForm && (
@@ -191,6 +200,10 @@ export default function AIProviderManager() {
         {aiProviders.length === 0 && !showForm && (
           <div className="text-center text-gray-400 dark:text-gray-500 py-8 text-sm">No AI providers configured. Add one to enable AI features.</div>
         )}
+      </div>
+
+      <div className="pt-6 border-t border-gray-200 dark:border-gray-700">
+        <MediaProviderSettings />
       </div>
 
       {toastMsg && (

@@ -28,19 +28,19 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Configurable system prompts, temperature, and prefill
 
 ### Voice
-- **Read-aloud (TTS)** powered by Deepgram Aura voices, with floating draggable playback controls (play/pause/stop, volume, speed)
-- **Voice dictation (STT)** powered by Deepgram, with a browser speech-recognition fallback when no key is set
+- **Read-aloud (TTS)** powered by fal.ai voices, with floating draggable playback controls (play/pause/stop, volume, speed)
+- **Voice dictation (STT)** powered by fal.ai, with a browser speech-recognition fallback when no key is set
 - Record button and TTS Insert Mode in a dockable speech control bar
 - Dictation directly into the AI assistant chat
 - MP3 export of read-aloud audio
-- Usage monitoring for Deepgram TTS/STT and AI provider tokens
+- Usage monitoring for TTS/STT and AI provider tokens, with per-provider cost breakdown and usage-over-time charts
 
 ### Video
 - **Record video** from a camera/microphone of your choice, directly from the slash menu (works in Chrome, Firefox, Safari, and Edge)
 - Selectable **video/audio quality** (resolution + bitrate presets), remembered per device
 - **Presentation mode** — share your screen, a window, or a browser tab with your camera composited as a picture-in-picture inset, toggleable on/off at any time, including mid-recording
 - Recorded video is saved into the note as a playable video block
-- Optional **async transcript generation** — the audio track is extracted and sent to Deepgram in the background, and the resulting transcript is attached to the note as a file once ready, without blocking the editor
+- Optional **async transcript generation** — the audio track is extracted and sent to fal.ai in the background, and the resulting transcript is attached to the note as a file once ready, without blocking the editor
 
 ### Sharing & export
 - Export to PDF, Word (.docx), Markdown, HTML, MP3, or clipboard
@@ -64,7 +64,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 | Editor | BlockNote (`@blocknote/react`) |
 | Backend | FastAPI + SQLModel (SQLite) |
 | AI | Anthropic / OpenAI / Ollama / OpenAI-compatible; web search via Anthropic |
-| Voice | Deepgram (TTS + STT) |
+| Voice & Images | fal.ai (TTS + STT + image generation) |
 | Container | Docker Compose + Nginx |
 
 ## Quick Start
@@ -110,7 +110,7 @@ JWT_SECRET_KEY=      # REQUIRED — generate with: openssl rand -hex 32
 CORS_ORIGIN=         # Optional — your public domain, e.g. https://notes.example.com
 ```
 
-`JWT_SECRET_KEY` is required; the app will refuse to start without it. It is used to sign authentication tokens and to encrypt stored AI provider and Deepgram API keys. `CORS_ORIGIN` accepts a comma-separated list and is only needed if the API is accessed from a different origin than the frontend.
+`JWT_SECRET_KEY` is required; the app will refuse to start without it. It is used to sign authentication tokens and to encrypt stored AI provider and fal.ai API keys. `CORS_ORIGIN` accepts a comma-separated list and is only needed if the API is accessed from a different origin than the frontend.
 
 Additional optional settings (see `.env.example` for the full list):
 
@@ -138,12 +138,12 @@ API keys are stored encrypted in the local SQLite database — never transmitted
 
 ## Speech (Read-Aloud & Dictation)
 
-Go to **Settings → Speech** to add a [Deepgram](https://console.deepgram.com/) API key, which powers both text-to-speech read-aloud (choose from curated Deepgram Aura voices) and voice dictation.
+Speech shares the same [fal.ai](https://fal.ai/dashboard/keys) API key as image generation — add it under **Settings → AI Services → Images**. It powers both text-to-speech read-aloud (choose from curated voices under **Settings → AI Services → Speech**) and voice dictation.
 
-- **With a Deepgram key:** read-aloud and dictation work in all browsers via Deepgram's API.
+- **With a fal.ai key:** read-aloud and dictation work in all browsers via fal.ai.
 - **Without a key:** dictation falls back to the browser's built-in speech recognition where available; read-aloud is disabled.
 
-Deepgram TTS/STT usage is tracked under **Settings → Usage**. The same key also powers optional video transcript generation (see **Video** above).
+TTS/STT usage is tracked under **Settings → AI Services → Usage**. The same key also powers optional video transcript generation (see **Video** above).
 
 ## Backup
 
@@ -173,7 +173,7 @@ uvicorn app.main:app --reload --port 8000
 
 Use Python 3.12 for local backend development. The current backend dependency stack may not start cleanly on newer Python releases such as 3.14.
 
-`ffmpeg` must be on `PATH` for video transcript generation (extracts the audio track before sending it to Deepgram). Install it with your OS package manager, e.g. `apt install ffmpeg` or `brew install ffmpeg`. The Docker image installs it automatically.
+`ffmpeg` must be on `PATH` for video transcript generation (extracts the audio track before sending it to fal.ai). Install it with your OS package manager, e.g. `apt install ffmpeg` or `brew install ffmpeg`. The Docker image installs it automatically.
 
 Local backend runs and Docker Compose both use the same persistent paths by default:
 `./data/db/notes.db` and `./data/media/`.

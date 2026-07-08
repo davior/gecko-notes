@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import subprocess
@@ -7,15 +6,14 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-import httpx
+import fal_client
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from app.auth import decrypt_api_key
 from app.database import engine
-from app.models import TranscriptionJob, UserSetting
-from app.routers.settings import _record_usage
+from app.models import TranscriptionJob
+from app.routers.settings import DEFAULT_STT_MODEL, _record_usage, load_fal_api_key
 from app.schemas import DataResponse, TranscriptionJobRead
 
 router = APIRouter()
@@ -23,8 +21,6 @@ router = APIRouter()
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
 MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
-
-_DEEPGRAM_KEY = "deepgram_api_key"
 
 
 def _get_user_id(request: Request) -> str:
@@ -46,7 +42,7 @@ def _safe_source_path(user_id: str, filename: str) -> str:
 
 class TranscribeRequest(BaseModel):
     filename: str
-    model: str = "nova-2"
+    model: str = DEFAULT_STT_MODEL
 
 
 def _job_to_read(job: TranscriptionJob) -> TranscriptionJobRead:
@@ -62,9 +58,9 @@ def _job_to_read(job: TranscriptionJob) -> TranscriptionJobRead:
 
 def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
     """Extract the audio track from a recorded video via ffmpeg, transcribe it with
-    Deepgram, and save the transcript as a .txt file in the user's media dir. Runs
-    in a background thread (FastAPI dispatches sync BackgroundTasks to a threadpool),
-    so it never blocks the upload response.
+    fal.ai (Wizper), and save the transcript as a .txt file in the user's media dir.
+    Runs in a background thread (FastAPI dispatches sync BackgroundTasks to a
+    threadpool), so it never blocks the upload response.
     """
     with Session(engine) as session:
         job = session.get(TranscriptionJob, job_id)
@@ -79,12 +75,9 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             if not shutil.which("ffmpeg"):
                 raise RuntimeError("ffmpeg is not installed on the server")
 
-            row = session.exec(
-                select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
-            ).first()
-            if not row or not row.value:
-                raise RuntimeError("Deepgram API key is not configured")
-            api_key = decrypt_api_key(json.loads(row.value))
+            api_key = load_fal_api_key(session, user_id)
+            if not api_key:
+                raise RuntimeError("fal.ai API key is not configured")
 
             fd, audio_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
@@ -106,23 +99,18 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
                 except OSError:
                     pass
 
-            response = httpx.post(
-                f"https://api.deepgram.com/v1/listen?model={model}&smart_format=true",
-                headers={
-                    "Authorization": f"Token {api_key}",
-                    "Content-Type": "audio/wav",
-                },
-                content=audio_bytes,
-                timeout=180.0,
-            )
-            if not response.is_success:
-                raise RuntimeError(f"Deepgram error: {response.text[:500]}")
-
-            body = response.json()
+            # fal's model endpoints need a real, fetchable URL for file inputs (not a
+            # data: URI), so upload via the official SDK first and run on the result.
             try:
-                transcript = body["results"]["channels"][0]["alternatives"][0]["transcript"]
-            except (KeyError, IndexError):
-                raise RuntimeError("Unexpected Deepgram response")
+                fal = fal_client.SyncClient(key=api_key)
+                audio_url = fal.upload(audio_bytes, "audio/wav", "recording.wav")
+                body = fal.run(DEFAULT_STT_MODEL, arguments={"audio_url": audio_url, "task": "transcribe"})
+            except fal_client.FalClientHTTPError as e:
+                raise RuntimeError(f"fal.ai error: {str(e)[:500]}")
+            except Exception as e:
+                raise RuntimeError(f"fal.ai request failed: {type(e).__name__}: {e}")
+
+            transcript = (body.get("text") or "").strip()
 
             user_dir = os.path.join(MEDIA_DIR, user_id)
             os.makedirs(user_dir, exist_ok=True)
@@ -137,11 +125,16 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             session.commit()
 
             try:
-                duration = body.get("metadata", {}).get("duration")
-                if duration is not None:
-                    _record_usage(session, user_id, "stt", model, round(float(duration)), "seconds")
+                seconds = None
+                chunks = body.get("chunks") or []
+                if chunks and isinstance(chunks[-1], dict):
+                    ts = chunks[-1].get("timestamp")
+                    if isinstance(ts, (list, tuple)) and len(ts) == 2 and ts[1] is not None:
+                        seconds = round(float(ts[1]))
+                if seconds:
+                    _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, seconds, "seconds", provider="fal.ai")
                 else:
-                    _record_usage(session, user_id, "stt", model, len(transcript), "chars")
+                    _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, len(transcript), "chars", provider="fal.ai")
             except Exception:
                 pass
 

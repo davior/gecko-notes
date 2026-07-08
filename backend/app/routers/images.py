@@ -159,8 +159,13 @@ async def generate_image(
         except (ValueError, TypeError, KeyError):
             cost = None
 
-    # 4) Record usage (surfaced in Settings → Usage as kind "image").
-    _record_usage(session, user_id, "image", model, 1, "images", external_ref=request_id, cost=cost, currency=currency)
+    # 4) Record usage (surfaced in Settings → Usage as kind "image"). cost is the
+    #    exact fal-billed amount (not an estimate), so cost_estimated stays False.
+    _record_usage(
+        session, user_id, "image", model, 1, "images",
+        provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
+        cost_estimated=False if cost is not None else None,
+    )
 
     return ImageGenerateResponse(
         url=f"/media/{user_id}/{filename}",

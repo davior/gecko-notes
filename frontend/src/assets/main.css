@@ -3,6 +3,87 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-100-BQDzDElq.woff2') format('woff2'),
+       url('./fonts/inter-v12-latin-100-46Mq0mOp.woff') format('woff');
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-200-DXfqWPZg.woff') format('woff'),
+       url('./fonts/inter-v12-latin-200-BxfrU12A.woff2') format('woff2');
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-300-f7r92Nkj.woff') format('woff'),
+       url('./fonts/inter-v12-latin-300-DEbyFmpd.woff2') format('woff2');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-regular-CahmJf_6.woff') format('woff'),
+       url('./fonts/inter-v12-latin-regular-YtgfLPRn.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-500-BQ2gQN_M.woff') format('woff'),
+       url('./fonts/inter-v12-latin-500-DfX5FI9E.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-600-D01NXWOK.woff') format('woff'),
+       url('./fonts/inter-v12-latin-600-BvOeHRLc.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-700-B5TOIllR.woff') format('woff'),
+       url('./fonts/inter-v12-latin-700-Bj1B9WKG.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-800-DFVvDWwT.woff') format('woff'),
+       url('./fonts/inter-v12-latin-800-Bdy4lAMa.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/inter-v12-latin-900-ORHAl5ZU.woff') format('woff'),
+       url('./fonts/inter-v12-latin-900-CMga-52B.woff2') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   body {
     @apply bg-gray-50 text-gray-900 font-sans;

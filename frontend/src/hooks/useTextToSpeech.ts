@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { settingsApi } from '@/api/settings'
+import { apiErrorMessage } from '@/utils/format'
 
 export type TTSStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
@@ -21,7 +22,7 @@ export interface UseTextToSpeechReturn {
   exportToFile: (text: string, filename?: string) => Promise<void>
 }
 
-// Deepgram /v1/speak caps text per request (~2000 chars). Stay comfortably below
+// The TTS endpoint caps text per request (~2000 chars). Stay comfortably below
 // and split on sentence/line boundaries so each chunk sounds natural.
 const MAX_CHUNK_CHARS = 1500
 
@@ -167,9 +168,9 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     let blob: Blob
     try {
       blob = await blobPromise
-    } catch {
+    } catch (err) {
       if (cancelledRef.current) return
-      setErrorMessage('Failed to synthesize speech — check your Deepgram key in Settings → Speech')
+      setErrorMessage(apiErrorMessage(err, 'Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers'))
       setStatus('error')
       return
     }
@@ -288,7 +289,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   }, [status])
 
   // Synthesize the whole text into a single MP3 blob. Chunks are fetched
-  // sequentially (to stay friendly to Deepgram's rate limits) and the resulting
+  // sequentially (to stay friendly to the provider's rate limits) and the resulting
   // MP3 segments are concatenated — MP3 is frame-based, so simple byte
   // concatenation plays back correctly. Sets 'loading' while running; on success
   // it leaves the status as 'loading' so the caller decides the next transition
@@ -305,7 +306,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       }
       return new Blob(blobs, { type: 'audio/mpeg' })
     } catch (e) {
-      setErrorMessage('Failed to synthesize speech — check your Deepgram key in Settings → Speech')
+      setErrorMessage(apiErrorMessage(e, 'Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers'))
       setStatus('error')
       throw e
     }

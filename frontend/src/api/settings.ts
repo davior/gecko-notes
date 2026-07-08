@@ -5,19 +5,13 @@ export interface TTSVoice {
   label: string
 }
 
-// Curated Deepgram Aura / Aura-2 English voices (mirrors backend `_TTS_VOICES`).
+// Curated fal.ai (ElevenLabs) TTS voices (mirrors backend `FAL_TTS_VOICES`).
+export const DEFAULT_TTS_VOICE = 'Aria'
 export const TTS_VOICES: TTSVoice[] = [
-  { id: 'aura-2-thalia-en', label: 'Thalia (Aura-2, female)' },
-  { id: 'aura-2-andromeda-en', label: 'Andromeda (Aura-2, female)' },
-  { id: 'aura-2-apollo-en', label: 'Apollo (Aura-2, male)' },
-  { id: 'aura-2-arcas-en', label: 'Arcas (Aura-2, male)' },
-  { id: 'aura-2-aries-en', label: 'Aries (Aura-2, male)' },
-  { id: 'aura-asteria-en', label: 'Asteria (Aura, female)' },
-  { id: 'aura-luna-en', label: 'Luna (Aura, female)' },
-  { id: 'aura-stella-en', label: 'Stella (Aura, female)' },
-  { id: 'aura-orion-en', label: 'Orion (Aura, male)' },
-  { id: 'aura-zeus-en', label: 'Zeus (Aura, male)' },
-]
+  'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
+  'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
+  'Brian', 'Daniel', 'Lily', 'Bill',
+].map((name) => ({ id: name, label: name }))
 
 export interface UsageTotal {
   kind: string
@@ -31,22 +25,36 @@ export interface UsageTotal {
 export interface UsageByDay {
   date: string
   kind: string
+  count: number
   units: number
+  cost: number
+}
+
+export interface UsageProvider {
+  provider: string
+  count: number
+  units: number
+  cost: number
+  currency?: string
+  estimated: boolean
 }
 
 export interface UsageEvent {
   kind: string
+  provider?: string | null
   model: string
   units: number
   unit_type: string
   cost?: number | null
   currency?: string | null
+  cost_estimated?: boolean | null
   created_at: string
 }
 
 export interface UsageSummary {
   days: number
   totals_by_kind: UsageTotal[]
+  by_provider: UsageProvider[]
   by_day: UsageByDay[]
   recent: UsageEvent[]
 }
@@ -306,25 +314,23 @@ export const settingsApi = {
     return client.delete('/settings/themes/activate').then(() => undefined)
   },
 
-  getSpeechSettings(): Promise<{ deepgram_api_key: string }> {
+  // Speech uses the shared fal.ai key (configured on the Providers tab, under
+  // Media Provider); this reports whether that key is present so the UI can gate
+  // read-aloud / dictation.
+  getSpeechSettings(): Promise<{ has_fal_key: boolean; voices: string[]; default_voice: string }> {
     return client.get('/settings/speech').then((r) => r.data)
   },
 
-  updateSpeechSettings(payload: { deepgram_api_key: string }): Promise<void> {
-    return client.put('/settings/speech', payload).then(() => undefined)
-  },
-
-  transcribeAudio(blob: Blob, model = 'nova-2'): Promise<string> {
+  transcribeAudio(blob: Blob): Promise<string> {
     const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
     const form = new FormData()
     form.append('file', blob, `recording.${ext}`)
-    form.append('model', model)
     return client.post('/settings/speech/transcribe', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then((r) => r.data.text as string)
   },
 
-  synthesizeSpeech(text: string, model = 'aura-2-thalia-en', speed = 1): Promise<Blob> {
+  synthesizeSpeech(text: string, model = DEFAULT_TTS_VOICE, speed = 1): Promise<Blob> {
     return client.post('/settings/speech/tts', { text, model, speed }, {
       responseType: 'arraybuffer',
     }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
