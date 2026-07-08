@@ -30,6 +30,9 @@ class Folder(SQLModel, table=True):
     parent_folder_id: Optional[str] = Field(default=None, foreign_key="folder.id", index=True)  # null = top level
     user_id: Optional[str] = Field(default=None, index=True)
     sort_order: int = Field(default=0)
+    icon_type: Optional[str] = None   # 'emoji' | 'lucide'
+    icon_value: Optional[str] = None  # the emoji character, or a Lucide icon name
+    color: Optional[str] = None       # hex e.g. "#3B82F6"
     created_at: datetime
     modified_at: datetime
 

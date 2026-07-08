@@ -1,5 +1,5 @@
 import { useNavigate, useParams, Link, Navigate } from 'react-router-dom'
-import { ArrowLeft, Tag, Sparkles, SlidersHorizontal, Users, UserCircle, HardDriveDownload, Palette, Settings, Activity } from 'lucide-react'
+import { ArrowLeft, Tag, Sparkles, SlidersHorizontal, Users, UserCircle, HardDriveDownload, Palette, Activity } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import CategoryManager from '@/components/settings/CategoryManager'
@@ -56,9 +56,6 @@ export default function SettingsView() {
         </button>
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
         <div className="flex-1" />
-        <Link to="/settings" className="btn-ghost p-2" title="Settings">
-          <Settings className="w-5 h-5" />
-        </Link>
         <UserAvatar />
       </header>
 

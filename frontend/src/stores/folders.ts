@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { foldersApi, type Folder, type FolderCreate } from '@/api/folders'
+import { foldersApi, type Folder, type FolderCreate, type FolderUpdate } from '@/api/folders'
 import { notesApi } from '@/api/notes'
 
 interface FoldersState {
@@ -12,7 +12,7 @@ interface FoldersState {
 
   loadContents: (folderId: string | null) => Promise<void>
   createFolder: (payload: FolderCreate) => Promise<Folder>
-  renameFolder: (id: string, name: string) => Promise<Folder>
+  updateFolder: (id: string, payload: FolderUpdate) => Promise<Folder>
   deleteFolder: (id: string) => Promise<void>
   moveFolder: (id: string, parentId: string | null) => Promise<Folder>
   moveNoteToFolder: (noteId: string, folderId: string | null) => Promise<void>
@@ -48,8 +48,8 @@ export const useFoldersStore = create<FoldersState>((set, get) => ({
     return response.data
   },
 
-  async renameFolder(id, name) {
-    const response = await foldersApi.update(id, { name })
+  async updateFolder(id, payload) {
+    const response = await foldersApi.update(id, payload)
     set((s) => ({
       subfolders: s.subfolders.map((f) => (f.id === id ? response.data : f)),
       folder: s.folder?.id === id ? response.data : s.folder,
