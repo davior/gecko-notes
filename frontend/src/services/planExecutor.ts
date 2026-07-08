@@ -6,6 +6,7 @@
 import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
+import { imageGenApi } from '@/api/imageGen'
 import { extractBlockTexts } from '@/utils/blocks'
 import { newDiagramId, validateMermaidSource } from '@/utils/diagram'
 import type { Plan, PlanAction } from './aiPlan'
@@ -527,6 +528,62 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         return {
           ok: true,
           message: `Updated diagram in “${cur.data.title}”.`,
+          notesChanged: true,
+          touchedCurrentNote: touchesCurrent(r.id),
+          noteId: r.id,
+          noteTitle: cur.data.title,
+        }
+      }
+
+      case 'generate_image': {
+        const r = resolveNote(action.noteId)
+        if ('error' in r) return { ok: false, message: r.error }
+
+        // Generate + persist the image first (a paid, fallible call). Report a clean
+        // message on failure without mutating the note; the outer loop keeps going.
+        let generated
+        try {
+          generated = await imageGenApi.generate({ prompt: action.prompt })
+        } catch (e) {
+          const ax = e as { response?: { data?: { detail?: { message?: string } | string } } }
+          const detail = ax.response?.data?.detail
+          const msg =
+            detail && typeof detail === 'object' ? detail.message ?? errMsg(e)
+            : typeof detail === 'string' ? detail
+            : errMsg(e)
+          return { ok: false, message: `Image not generated: ${msg}` }
+        }
+
+        await notesApi.createVersion(r.id).catch(() => null)
+        const cur = await notesApi.get(r.id)
+        const blocks = parseBlocks(cur.data.content)
+        const imageBlock = { type: 'image', props: { url: generated.url, caption: action.alt ?? '' } } as unknown
+
+        // Place the image directly under the target heading (prefer exact, else substring
+        // match — mirrors edit_section), or append at the end when no section is given /
+        // the heading isn't found.
+        let insertIndex = blocks.length
+        let placed = false
+        const target = action.section ? normalizeHeading(action.section) : ''
+        if (target) {
+          const findHeading = (pred: (h: string) => boolean) =>
+            blocks.findIndex((b) => {
+              const info = sectionHeading(b)
+              return info ? pred(normalizeHeading(info.text)) : false
+            })
+          let idx = findHeading((h) => h === target)
+          if (idx === -1) idx = findHeading((h) => h.includes(target))
+          if (idx !== -1) { insertIndex = idx + 1; placed = true }
+        }
+
+        blocks.splice(insertIndex, 0, imageBlock)
+        await notesApi.update(r.id, { content: JSON.stringify(blocks) })
+        const where = action.section
+          ? placed ? ` under “${action.section}”` : ` (section “${action.section}” not found — added at the end)`
+          : ''
+        return {
+          ok: true,
+          message: `Generated image${where} in “${cur.data.title}”.`,
           notesChanged: true,
           touchedCurrentNote: touchesCurrent(r.id),
           noteId: r.id,

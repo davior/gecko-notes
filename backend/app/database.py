@@ -261,6 +261,13 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Cost-attribution columns on usageevent (added for image-generation billing).
+        for _col, _type in (("external_ref", "TEXT"), ("cost", "REAL"), ("currency", "TEXT")):
+            try:
+                conn.execute(text(f"ALTER TABLE usageevent ADD COLUMN {_col} {_type}"))
+                conn.commit()
+            except Exception:
+                pass
         # Re-surface "dangling" child notes. A note is a child only while its parent
         # embeds it as a childNote block. Earlier versions failed to clear
         # parent_note_id when a child block was removed (the update endpoint ignored

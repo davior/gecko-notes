@@ -24,6 +24,8 @@ export interface UsageTotal {
   count: number
   units: number
   unit_type: string
+  cost?: number
+  currency?: string
 }
 
 export interface UsageByDay {
@@ -37,6 +39,8 @@ export interface UsageEvent {
   model: string
   units: number
   unit_type: string
+  cost?: number | null
+  currency?: string | null
   created_at: string
 }
 
@@ -109,6 +113,64 @@ export interface AIProviderTest {
   api_key?: string
   base_url?: string | null
   model: string
+}
+
+export interface FalModel {
+  id: string
+  label: string
+}
+
+export interface ImageSettings {
+  has_api_key: boolean
+  has_admin_key: boolean
+  curated_models: FalModel[]
+  image_sizes: string[]
+  custom_models: string[]
+  default_model: string
+  image_size: string
+}
+
+export interface ImageSettingsUpdate {
+  api_key?: string
+  admin_api_key?: string
+  default_model?: string
+  custom_models?: string[]
+  image_size?: string
+}
+
+export interface FalPrice {
+  unit?: string | null
+  unit_price: number
+  currency?: string | null
+}
+
+export interface ImageEndpointSpend {
+  endpoint_id: string
+  cost?: number | null
+  unit?: string | null
+  unit_price?: number | null
+  quantity?: number | null
+  currency?: string | null
+}
+
+// fal.ai account billing/usage. `available:false` (+ note) when the account/usage API
+// can't be read (no admin-scoped key or fal unreachable) — fall back to local totals.
+export interface ImageUsage {
+  available: boolean
+  has_admin_key?: boolean
+  days?: number
+  currency?: string
+  total_spend?: number
+  by_endpoint?: ImageEndpointSpend[]
+  prices?: Record<string, FalPrice>
+  balance?: number
+  balance_currency?: string
+  note?: string
+}
+
+export interface ImagePricing {
+  prices: Record<string, FalPrice>
+  fetched_at?: string | null
 }
 
 export interface Theme {
@@ -270,5 +332,21 @@ export const settingsApi = {
 
   getUsage(days = 30): Promise<UsageSummary> {
     return client.get('/settings/usage', { params: { days } }).then((r) => r.data)
+  },
+
+  getImageSettings(): Promise<ImageSettings> {
+    return client.get('/settings/images').then((r) => r.data)
+  },
+
+  updateImageSettings(payload: ImageSettingsUpdate): Promise<ImageSettings> {
+    return client.put('/settings/images', payload).then((r) => r.data)
+  },
+
+  getImageUsage(days = 30): Promise<ImageUsage> {
+    return client.get('/settings/images/usage', { params: { days } }).then((r) => r.data)
+  },
+
+  getImagePricing(): Promise<ImagePricing> {
+    return client.get('/settings/images/pricing').then((r) => r.data)
   },
 }

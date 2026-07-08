@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
-from app.routers import notes, categories, media, settings, folders, annotations, transcription
+from app.routers import notes, categories, media, settings, folders, annotations, transcription, images
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
@@ -131,6 +131,7 @@ app.include_router(categories.router, prefix="/api/categories", tags=["categorie
 app.include_router(folders.router, prefix="/api/folders", tags=["folders"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(transcription.router, prefix="/api/transcription", tags=["transcription"])
+app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])
 app.include_router(shared_router.router, prefix="/api/shared", tags=["shared"])

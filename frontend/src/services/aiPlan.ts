@@ -43,6 +43,11 @@ export type PlanAction =
   // actions carrying raw Mermaid diagram source text (not `content`).
   | { type: 'create_diagram'; noteId: string; source: string; description?: string }
   | { type: 'edit_diagram'; noteId: string; diagramId: string; source: string; description?: string }
+  // Generates an image via fal.ai from `prompt` and inserts it into the note. `section`
+  // (optional): a heading to place the image directly beneath (else appended at the end).
+  // `alt` (optional): a short caption for the image block. The prompt is authored by the
+  // model from the article content — it is NOT the user's raw request.
+  | { type: 'generate_image'; noteId: string; prompt: string; section?: string; alt?: string; description?: string }
 
 export interface Plan { actions: PlanAction[] }
 
@@ -102,6 +107,7 @@ Action types (every action MAY also include an optional "description": one short
 - delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
 - create_diagram:    { "type":"create_diagram", "noteId":"<id>", "source":"<complete Mermaid diagram source>" }
 - edit_diagram:      { "type":"edit_diagram", "noteId":"<id>", "diagramId":"<id>", "source":"<complete replacement Mermaid diagram source>" }
+- generate_image:    { "type":"generate_image", "noteId":"<id>", "prompt":"<detailed text-to-image prompt>", "section":"<optional heading to insert under>", "alt":"<optional caption>" }
 
 Rules:
 - Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request. Scope a find_notes action by free text, by folder, or both:
@@ -122,6 +128,7 @@ Rules:
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - Diagrams: use create_diagram to ADD a new diagram to a note, and edit_diagram to change an existing one. A note's existing diagrams are listed under it as "Diagrams on this note" with a "[diagram <id>]" tag and their current Mermaid source — use that "<id>" as "diagramId" for edit_diagram (which REPLACES the whole diagram, so "source" must be the complete new diagram, not a fragment). "source" must be complete, valid Mermaid syntax starting with the right header keyword for the kind: "flowchart TD" (or LR/BT/RL) for flow charts, "mindmap" for mind maps, "sequenceDiagram" for sequence diagrams, "classDiagram" for class diagrams, "stateDiagram-v2" for state diagrams, "erDiagram" for entity-relationship diagrams, "gantt" for Gantt charts, "pie" for pie charts, "timeline" for timelines. Node linking: in flowchart, classDiagram and stateDiagram-v2 ONLY, a node can link to another note or a URL by adding a line "click <nodeId> href \"/notes/<id>\"" (linking to a note id from the lists below) or "click <nodeId> href \"<url>\" \"_blank\"" (linking to the web) — do NOT add click/href lines for mindmap, sequenceDiagram, erDiagram, gantt, pie or timeline diagrams, since Mermaid does not support node links on those kinds (mindmap link support is a currently open Mermaid limitation). Only create or edit a diagram when the user explicitly asks for one (e.g. "make a mind map of this note", "add a step to the flow chart").
+- Images (generate_image): Use ONLY when the user explicitly asks to create/generate/add an image, picture, illustration or photo (e.g. "make an image for this article", "add a picture", "create an image for each chapter and put it under each title"). YOU author the "prompt": write a vivid, self-contained text-to-image prompt derived from the relevant article content (describe subject, setting, style, mood, composition) — do NOT just copy the user's request verbatim. Set "section" to a section/chapter heading's text to insert the image directly beneath that heading; omit "section" to append the image at the end of the note. For "an image for each chapter/section", emit ONE generate_image action per chapter — each with that chapter's heading text as "section" and its own prompt tailored to that chapter. Optionally set "alt" to a short caption. Generating images costs money, so create only the images the user asked for and no more.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
 
@@ -297,6 +304,14 @@ function validateAction(raw: unknown): PlanAction | null {
       if (!noteId || !diagramId || !source?.trim()) return null
       return { type: 'edit_diagram', noteId, diagramId, source, ...d }
     }
+    case 'generate_image': {
+      const noteId = asString(a.noteId)
+      const prompt = asString(a.prompt)
+      if (!noteId || !prompt?.trim()) return null
+      const section = asString(a.section)
+      const alt = asString(a.alt)
+      return { type: 'generate_image', noteId, prompt, ...(section ? { section } : {}), ...(alt ? { alt } : {}), ...d }
+    }
     default:
       return null
   }
@@ -460,6 +475,7 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
     case 'create_diagram': return `Create ${DIAGRAM_KIND_LABELS[detectMermaidKind(action.source)].toLowerCase()} in “${name(action.noteId)}”`
     case 'edit_diagram': return `Update diagram in “${name(action.noteId)}”`
+    case 'generate_image': return `Generate image${action.section ? ` under “${action.section}”` : ''} in “${name(action.noteId)}”: ${truncate(action.prompt, 60)}`
   }
 }
 

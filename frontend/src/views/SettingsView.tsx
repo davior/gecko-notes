@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings, Mic, BarChart3 } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings, Mic, BarChart3, Image as ImageIcon } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -12,6 +12,7 @@ import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
 import SpeechSettings from '@/components/settings/SpeechSettings'
+import ImageGenSettings from '@/components/settings/ImageGenSettings'
 import UsageMonitor from '@/components/settings/UsageMonitor'
 import UserAvatar from '@/components/UserAvatar'
 
@@ -22,6 +23,7 @@ const baseTabs = [
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
   { to: '/settings/ai-settings', label: 'AI Settings', icon: Sparkles, key: 'ai-settings' },
   { to: '/settings/speech', label: 'Speech', icon: Mic, key: 'speech' },
+  { to: '/settings/image-gen', label: 'Image Generation', icon: ImageIcon, key: 'image-gen' },
   { to: '/settings/usage', label: 'Usage', icon: BarChart3, key: 'usage' },
   { to: '/settings/general', label: 'General', icon: SlidersHorizontal, key: 'general' },
   { to: '/settings/data', label: 'Data', icon: HardDriveDownload, key: 'data' },
@@ -174,6 +176,7 @@ export default function SettingsView() {
             )}
 
             {tab === 'speech' && <SpeechSettings />}
+            {tab === 'image-gen' && <ImageGenSettings />}
             {tab === 'usage' && <UsageMonitor />}
             {tab === 'profile' && <ProfileSettings />}
             {tab === 'users' && <UserManager />}

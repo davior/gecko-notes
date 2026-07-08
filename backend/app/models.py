@@ -101,11 +101,17 @@ class UserSetting(SQLModel, table=True):
 class UsageEvent(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
-    kind: str = Field(index=True)        # "tts" | "stt" | "ai"
+    kind: str = Field(index=True)        # "tts" | "stt" | "ai" | "image"
     model: str = Field(default="")
-    units: int = Field(default=0)        # chars (tts) / seconds (stt) / tokens (ai)
-    unit_type: str = Field(default="")   # "chars" | "seconds" | "tokens"
+    units: int = Field(default=0)        # chars (tts) / seconds (stt) / tokens (ai) / images (image)
+    unit_type: str = Field(default="")   # "chars" | "seconds" | "tokens" | "images"
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    # Cost attribution (currently populated for image generation). external_ref is the
+    # provider request id (e.g. fal's x-fal-request-id); cost is the actual charge in
+    # `currency` when it can be resolved, else null.
+    external_ref: Optional[str] = Field(default=None)
+    cost: Optional[float] = Field(default=None)
+    currency: Optional[str] = Field(default=None)
 
 
 class SystemPrompt(SQLModel, table=True):

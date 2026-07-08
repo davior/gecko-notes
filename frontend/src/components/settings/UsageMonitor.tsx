@@ -1,17 +1,20 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Loader2, Mic, Volume2, Cpu } from 'lucide-react'
+import { Loader2, Mic, Volume2, Cpu, Image as ImageIcon } from 'lucide-react'
 import { settingsApi, type UsageSummary } from '@/api/settings'
+import { formatCost } from '@/api/imageGen'
 
 const KIND_META: Record<string, { label: string; icon: typeof Mic; color: string }> = {
   tts: { label: 'Text-to-Speech', icon: Volume2, color: 'text-blue-600 dark:text-blue-400' },
   stt: { label: 'Speech-to-Text', icon: Mic, color: 'text-green-600 dark:text-green-400' },
   ai: { label: 'AI Providers', icon: Cpu, color: 'text-purple-600 dark:text-purple-400' },
+  image: { label: 'Image Generation', icon: ImageIcon, color: 'text-pink-600 dark:text-pink-400' },
 }
 
 const UNIT_LABEL: Record<string, string> = {
   chars: 'characters',
   seconds: 'seconds',
   tokens: 'tokens',
+  images: 'images',
 }
 
 const RANGES = [
@@ -60,7 +63,7 @@ export default function UsageMonitor() {
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Usage</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Monitor your Deepgram TTS, Deepgram STT, and AI provider API usage.
+            Monitor your Deepgram TTS, Deepgram STT, AI provider, and image generation API usage.
           </p>
         </div>
         <select
@@ -82,14 +85,14 @@ export default function UsageMonitor() {
         <div className="text-sm text-red-500">{error}</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {['tts', 'stt', 'ai'].map((kind) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {['tts', 'stt', 'ai', 'image'].map((kind) => {
               const meta = KIND_META[kind]
               const Icon = meta.icon
               const total = totalsByKind.find((t) => t.kind === kind)
               const units = total?.units ?? 0
               const count = total?.count ?? 0
-              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : 'chars')
+              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : kind === 'image' ? 'images' : 'chars')
               return (
                 <div key={kind} className="card p-4">
                   <div className={`flex items-center gap-2 mb-2 ${meta.color}`}>
@@ -102,6 +105,11 @@ export default function UsageMonitor() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">
                     {UNIT_LABEL[unitType] ?? unitType} · {formatNumber(count)} request{count === 1 ? '' : 's'}
                   </div>
+                  {total?.cost ? (
+                    <div className="text-xs font-medium text-gray-600 dark:text-gray-300 mt-0.5">
+                      {formatCost(total.cost, total.currency)}
+                    </div>
+                  ) : null}
                 </div>
               )
             })}
@@ -122,6 +130,7 @@ export default function UsageMonitor() {
                       <th className="px-4 py-2 font-medium">Type</th>
                       <th className="px-4 py-2 font-medium">Model</th>
                       <th className="px-4 py-2 font-medium text-right">Usage</th>
+                      <th className="px-4 py-2 font-medium text-right">Cost</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -134,6 +143,9 @@ export default function UsageMonitor() {
                           <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.model || '—'}</td>
                           <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
                             {formatNumber(e.units)} {UNIT_LABEL[e.unit_type] ?? e.unit_type}
+                          </td>
+                          <td className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                            {e.cost != null ? formatCost(e.cost, e.currency) : '—'}
                           </td>
                         </tr>
                       )
