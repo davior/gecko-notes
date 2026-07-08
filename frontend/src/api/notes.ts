@@ -70,6 +70,23 @@ export interface NoteVersionListItem {
   created_at: string
 }
 
+export interface NoteMetrics {
+  word_count: number
+  character_count: number
+  reading_time_minutes: number
+  content_bytes: number
+  resource_bytes: number
+  resource_count: number
+  total_bytes: number
+  version_count: number
+  like_count: number
+  is_shared: boolean
+  views: number | null
+  views_available: boolean
+  created_at: string
+  modified_at: string
+}
+
 export type RestoreMode = 'in_place' | 'new_note'
 
 export interface ListNotesParams {
@@ -130,6 +147,11 @@ export const notesApi = {
 
   get(id: string): Promise<{ data: Note }> {
     return client.get(`/notes/${id}`).then((r) => r.data)
+  },
+
+  // On-demand stats for the note stats modal (word count, size, versions, likes).
+  getMetrics(id: string): Promise<{ data: NoteMetrics }> {
+    return client.get(`/notes/${id}/metrics`).then((r) => r.data)
   },
 
   create(payload: NoteCreate): Promise<{ data: Note }> {

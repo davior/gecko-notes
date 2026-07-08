@@ -1,12 +1,25 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 
 from app.database import get_session
-from app.models import User
-from app.schemas import UserRead, AdminUserUpdate, AdminPasswordReset
+from app.models import User, Note, Folder
+from app.routers.media import MEDIA_DIR
+from app.schemas import (
+    UserRead, AdminUserUpdate, AdminPasswordReset, UserMetrics, UserStorage,
+)
 from app.auth import hash_password
 
 router = APIRouter()
+
+
+def _count(session: Session, model, *conditions) -> int:
+    """COUNT(*) over `model` with optional filter conditions."""
+    query = select(func.count()).select_from(model)
+    for condition in conditions:
+        query = query.where(condition)
+    return session.exec(query).one()
 
 
 def _require_admin(request: Request, session: Session) -> User:
@@ -19,11 +32,70 @@ def _require_admin(request: Request, session: Session) -> User:
     return user
 
 
+def _require_self_or_admin(request: Request, session: Session, user_id: str) -> User:
+    """Allow a user to read their own resource; admins may read anyone's."""
+    requester_id = getattr(request.state, "user_id", None)
+    if not requester_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    requester = session.get(User, requester_id)
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+    if requester.id != user_id and not requester.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return requester
+
+
 @router.get("", response_model=list[UserRead])
 def list_users(request: Request, session: Session = Depends(get_session)):
     _require_admin(request, session)
     users = session.exec(select(User).order_by(User.created_at)).all()
     return [UserRead.model_validate(u) for u in users]
+
+
+@router.get("/{user_id}/metrics", response_model=UserMetrics)
+def user_metrics(user_id: str, request: Request, session: Session = Depends(get_session)):
+    _require_self_or_admin(request, session, user_id)
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    note_count = _count(session, Note, Note.user_id == user_id)
+    folder_count = _count(session, Folder, Folder.user_id == user_id)
+    shared_note_count = _count(session, Note, Note.user_id == user_id, Note.is_shared == True)  # noqa: E712
+    total_likes = session.exec(
+        select(func.coalesce(func.sum(Note.like_count), 0)).where(Note.user_id == user_id)
+    ).one()
+
+    return UserMetrics(
+        note_count=note_count,
+        folder_count=folder_count,
+        shared_note_count=shared_note_count,
+        total_likes=int(total_likes or 0),
+        last_login=user.last_login,
+        created_at=user.created_at,
+    )
+
+
+@router.get("/{user_id}/storage", response_model=UserStorage)
+def user_storage(user_id: str, request: Request, session: Session = Depends(get_session)):
+    """On-demand total size of a user's uploaded media folder (can be expensive)."""
+    _require_self_or_admin(request, session, user_id)
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    total_bytes = 0
+    file_count = 0
+    user_dir = os.path.join(MEDIA_DIR, user_id)
+    for root, _dirs, files in os.walk(user_dir):
+        for name in files:
+            try:
+                total_bytes += os.path.getsize(os.path.join(root, name))
+                file_count += 1
+            except OSError:
+                continue  # file vanished mid-walk; skip it
+
+    return UserStorage(total_bytes=total_bytes, file_count=file_count)
 
 
 @router.patch("/{user_id}", response_model=UserRead)

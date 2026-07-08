@@ -518,6 +518,42 @@ class AdminPasswordReset(BaseModel):
     new_password: str
 
 
+class UserMetrics(BaseModel):
+    """Admin-facing usage metrics for a single user."""
+    note_count: int
+    folder_count: int
+    shared_note_count: int
+    total_likes: int
+    last_login: Optional[UTCDatetime] = None
+    created_at: UTCDatetime
+
+
+class UserStorage(BaseModel):
+    """On-demand size of a user's uploaded media folder."""
+    total_bytes: int
+    file_count: int
+
+
+class NoteMetrics(BaseModel):
+    """Owner-facing stats for a single note (fetched on demand by the editor)."""
+    word_count: int
+    character_count: int
+    reading_time_minutes: int
+    content_bytes: int          # size of the stored BlockNote JSON
+    resource_bytes: int         # combined size of referenced media (images, attachments)
+    resource_count: int
+    total_bytes: int            # content_bytes + resource_bytes
+    version_count: int
+    like_count: int
+    is_shared: bool
+    # Public view count for the shared page. Left unset for now — Umami analytics
+    # isn't wired up, so `views_available` is False and clients hide/grey the row.
+    views: Optional[int] = None
+    views_available: bool = False
+    created_at: UTCDatetime
+    modified_at: UTCDatetime
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str

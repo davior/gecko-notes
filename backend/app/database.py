@@ -41,6 +41,12 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Track the most recent successful login (surfaced in the admin user metrics).
+        try:
+            conn.execute(text("ALTER TABLE user ADD COLUMN last_login TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         try:
             conn.execute(text("ALTER TABLE note ADD COLUMN summary TEXT"))
             conn.commit()

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2 } from 'lucide-react'
-import { usersApi } from '@/api/users'
+import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3 } from 'lucide-react'
+import { usersApi, type UserMetrics, type UserStorage } from '@/api/users'
 import { useAuthStore } from '@/stores/auth'
+import UserMetricsPanel from '@/components/settings/UserMetricsPanel'
 import type { User } from '@/api/auth'
 
 export default function UserManager() {
@@ -18,9 +19,41 @@ export default function UserManager() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // Per-user metrics are lazily loaded when a card is expanded (avoids N calls on
+  // list load); folder size is fetched separately on demand since it walks the disk.
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [metrics, setMetrics] = useState<Record<string, UserMetrics>>({})
+  const [metricsLoading, setMetricsLoading] = useState<string | null>(null)
+  const [storage, setStorage] = useState<Record<string, UserStorage>>({})
+  const [storageLoading, setStorageLoading] = useState<string | null>(null)
+
   useEffect(() => {
     usersApi.listUsers().then(setUsers).finally(() => setLoading(false))
   }, [])
+
+  async function toggleMetrics(user: User) {
+    if (expandedId === user.id) { setExpandedId(null); return }
+    setExpandedId(user.id)
+    if (!metrics[user.id]) {
+      setMetricsLoading(user.id)
+      try {
+        const m = await usersApi.getUserMetrics(user.id)
+        setMetrics((prev) => ({ ...prev, [user.id]: m }))
+      } finally {
+        setMetricsLoading(null)
+      }
+    }
+  }
+
+  async function loadStorage(userId: string) {
+    setStorageLoading(userId)
+    try {
+      const s = await usersApi.getUserStorage(userId)
+      setStorage((prev) => ({ ...prev, [userId]: s }))
+    } finally {
+      setStorageLoading(null)
+    }
+  }
 
   async function toggleAdmin(user: User) {
     const updated = await usersApi.updateUser(user.id, { is_admin: !user.is_admin })
@@ -79,7 +112,8 @@ export default function UserManager() {
         {users.map((user) => {
           const isSelf = user.id === currentUser?.id
           return (
-            <div key={user.id} className="card p-4 flex items-center gap-3">
+            <div key={user.id} className="card p-4">
+              <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold text-sm shrink-0 select-none">
                 {user.username.charAt(0).toUpperCase()}
               </div>
@@ -95,6 +129,15 @@ export default function UserManager() {
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                {/* Metrics toggle */}
+                <button
+                  title={expandedId === user.id ? 'Hide metrics' : 'Show metrics'}
+                  className={`p-1.5 rounded-lg transition-colors ${expandedId === user.id ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400'}`}
+                  onClick={() => toggleMetrics(user)}
+                >
+                  <BarChart3 className="w-4 h-4" />
+                </button>
+
                 {/* Active toggle */}
                 <button
                   title={user.is_active ? 'Deactivate user' : 'Activate user'}
@@ -138,6 +181,19 @@ export default function UserManager() {
                   <UserX className="w-4 h-4 text-gray-400 hover:text-red-500" />
                 </button>
               </div>
+              </div>
+
+              {expandedId === user.id && (
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                  <UserMetricsPanel
+                    metrics={metrics[user.id] ?? null}
+                    loading={metricsLoading === user.id}
+                    storage={storage[user.id] ?? null}
+                    storageLoading={storageLoading === user.id}
+                    onCalculateStorage={() => loadStorage(user.id)}
+                  />
+                </div>
+              )}
             </div>
           )
         })}

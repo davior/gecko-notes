@@ -55,6 +55,11 @@ def login(request: Request, payload: UserLogin, session: Session = Depends(get_s
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
 
+    user.last_login = datetime.utcnow()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
     token = create_access_token({"sub": user.id, "username": user.username})
     return Token(access_token=token, token_type="bearer", user=UserRead.model_validate(user))
 

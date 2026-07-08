@@ -10,10 +10,11 @@ from sqlmodel import Session, select, func, or_, and_, col
 
 from app.database import get_session
 from app.models import Note, NoteVersion, Folder, Annotation
+from app.routers.media import MEDIA_DIR
 from app.schemas import (
     NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest, NoteSearchFilter,
-    DataResponse, ListResponse, ErrorResponse
+    NoteMetrics, DataResponse, ListResponse, ErrorResponse
 )
 
 router = APIRouter()
@@ -90,6 +91,66 @@ def extract_plain_text(content_str: str, max_chars: int = 200) -> str:
         return plain[:max_chars]
     except Exception:
         return content_str[:max_chars] if content_str else ""
+
+
+def extract_full_text(content_str: str) -> str:
+    """Full plain text of a note (no cap), walking nested block children too.
+
+    Used for word/character counts in note metrics — unlike extract_plain_text,
+    which caps at max_chars for list previews and only reads top-level blocks.
+    """
+    try:
+        blocks = json.loads(content_str)
+    except Exception:
+        return content_str or ""
+
+    texts: List[str] = []
+
+    def walk(block_list):
+        for block in block_list:
+            if not isinstance(block, dict):
+                continue
+            content = block.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        texts.append(item.get("text", ""))
+                    elif isinstance(item, str):
+                        texts.append(item)
+            texts.append("\n")
+            walk(block.get("children", []) or [])
+
+    walk(blocks)
+    return "".join(texts).strip()
+
+
+def extract_media_urls(content_str: str) -> List[str]:
+    """Return the unique `/media/...` URLs referenced by a note's blocks.
+
+    Covers images and the custom/built-in file blocks (videoFile, audioFile,
+    file) — all of which store their file location in `props.url`.
+    """
+    try:
+        blocks = json.loads(content_str)
+    except Exception:
+        return []
+
+    urls: List[str] = []
+    seen = set()
+
+    def walk(block_list):
+        for block in block_list:
+            if not isinstance(block, dict):
+                continue
+            props = block.get("props", {}) or {}
+            url = props.get("url")
+            if isinstance(url, str) and url.startswith("/media/") and url not in seen:
+                seen.add(url)
+                urls.append(url)
+            walk(block.get("children", []) or [])
+
+    walk(blocks)
+    return urls
 
 
 # Matches the note-link convention written by the diagram editor's "Link to note" control
@@ -419,6 +480,64 @@ def get_note(note_id: str, request: Request, session: Session = Depends(get_sess
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
     return DataResponse(data=note_to_read(note))
+
+
+@router.get("/{note_id}/metrics", response_model=DataResponse[NoteMetrics])
+def note_metrics(note_id: str, request: Request, session: Session = Depends(get_session)):
+    """On-demand stats for a note: word/character count, reading time, size
+    (stored JSON + referenced media), version count, and public likes."""
+    user_id = _get_user_id(request)
+    note = _get_owned_note(session, note_id, user_id)
+
+    text = extract_full_text(note.content)
+    word_count = len(text.split())
+    character_count = len(text)
+    # Ceil-divide at ~200 wpm; 0 words → 0, otherwise at least 1 minute.
+    reading_time_minutes = (word_count + 199) // 200 if word_count else 0
+
+    content_bytes = len(note.content.encode("utf-8"))
+
+    resource_bytes = 0
+    resource_count = 0
+    seen_paths = set()
+    for url in extract_media_urls(note.content):
+        # URLs look like /media/{owner_id}/{filename}; only count this owner's
+        # files and reject path traversal before touching the filesystem.
+        rel = url[len("/media/"):].split("?")[0].split("#")[0]
+        parts = rel.split("/")
+        if len(parts) != 2:
+            continue
+        owner_id, filename = parts
+        if owner_id != note.user_id or ".." in filename or not filename:
+            continue
+        file_path = os.path.join(MEDIA_DIR, owner_id, filename)
+        if file_path in seen_paths:
+            continue
+        seen_paths.add(file_path)
+        try:
+            resource_bytes += os.path.getsize(file_path)
+            resource_count += 1
+        except OSError:
+            continue  # referenced file missing on disk; skip it
+
+    version_count = session.exec(
+        select(func.count()).select_from(NoteVersion).where(NoteVersion.note_id == note_id)
+    ).one()
+
+    return DataResponse(data=NoteMetrics(
+        word_count=word_count,
+        character_count=character_count,
+        reading_time_minutes=reading_time_minutes,
+        content_bytes=content_bytes,
+        resource_bytes=resource_bytes,
+        resource_count=resource_count,
+        total_bytes=content_bytes + resource_bytes,
+        version_count=version_count,
+        like_count=note.like_count or 0,
+        is_shared=note.is_shared,
+        created_at=note.created_at,
+        modified_at=note.modified_at,
+    ))
 
 
 @router.post("", response_model=DataResponse[NoteRead], status_code=201)

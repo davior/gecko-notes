@@ -1,6 +1,6 @@
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings, Mic, BarChart3, Image as ImageIcon } from 'lucide-react'
+import { ArrowLeft, Tag, Cpu, SlidersHorizontal, Sparkles, Users, UserCircle, HardDriveDownload, Palette, Settings, Mic, BarChart3, Activity, Image as ImageIcon } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
@@ -8,6 +8,7 @@ import CategoryManager from '@/components/settings/CategoryManager'
 import AIProviderManager from '@/components/settings/AIProviderManager'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
 import UserManager from '@/components/settings/UserManager'
+import UserStats from '@/components/settings/UserStats'
 import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
@@ -18,6 +19,7 @@ import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
   { to: '/settings/profile', label: 'Profile', icon: UserCircle, key: 'profile' },
+  { to: '/settings/stats', label: 'Stats', icon: Activity, key: 'stats' },
   { to: '/settings/categories', label: 'Categories', icon: Tag, key: 'categories' },
   { to: '/settings/themes', label: 'Themes', icon: Palette, key: 'themes' },
   { to: '/settings/ai-providers', label: 'AI Providers', icon: Cpu, key: 'ai-providers' },
@@ -179,6 +181,7 @@ export default function SettingsView() {
             {tab === 'image-gen' && <ImageGenSettings />}
             {tab === 'usage' && <UsageMonitor />}
             {tab === 'profile' && <ProfileSettings />}
+            {tab === 'stats' && <UserStats />}
             {tab === 'users' && <UserManager />}
             {tab === 'data' && <DataManager />}
 

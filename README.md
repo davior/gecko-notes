@@ -15,6 +15,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Tags with AI-powered tag generation
 - Block-level annotations (highlight a block and attach notes, with AI assistance)
 - Version history with periodic snapshots, checksum deduplication, and a side-by-side diff view
+- Per-note statistics (word/character count, reading time, size including attachments, versions, and likes) from an info button in the status bar
 
 ### AI assistant
 - Conversational AI assistant (Anthropic, OpenAI, Ollama, or any OpenAI-compatible endpoint)
@@ -52,7 +53,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Full-text search (in the title bar) and category filters
 - Infinite scroll note list with list/card view toggle
 - Light/dark theme and custom background themes (colors, gradients, images)
-- User accounts with registration, JWT-based authentication, and an admin user manager
+- User accounts with registration, JWT-based authentication, and an admin user manager with per-user metrics (note/folder/shared counts, total likes, last login, and on-demand media folder size)
 - Reverse-proxy aware (honors `X-Forwarded-*` headers, HTTPS by default behind a proxy)
 
 ## Tech Stack
