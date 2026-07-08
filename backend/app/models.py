@@ -12,6 +12,7 @@ class User(SQLModel, table=True):
     is_admin: bool = Field(default=False)
     avatar_url: Optional[str] = None
     created_at: datetime
+    last_login: Optional[datetime] = None
 
 
 class Category(SQLModel, table=True):

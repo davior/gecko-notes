@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -29,6 +29,7 @@ import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
 import ImageGenModal from '@/components/ImageGenModal'
+import NoteStatsModal from '@/components/NoteStatsModal'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -149,6 +150,7 @@ export default function EditorView() {
   const [showVideoRecorder, setShowVideoRecorder] = useState(false)
   const [showImageGen, setShowImageGen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [showStats, setShowStats] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
@@ -1428,7 +1430,18 @@ export default function EditorView() {
           </div>
 
           <div className="shrink-0 no-print px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center justify-between gap-3 flex-wrap">
-            <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
+            <div className="flex items-center gap-2">
+              <div className={`text-xs ${saveStatusClass}`}>{saveStatus}</div>
+              {note?.id && (
+                <button
+                  title="Note statistics"
+                  className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                  onClick={async () => { if (hasPendingChanges.current) await doSave(true); setShowStats(true) }}
+                >
+                  <Info className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
             {deepgramApiKey && ttsDocked && (
               <TTSPlaybackControls
                 tts={tts}
@@ -1486,6 +1499,10 @@ export default function EditorView() {
           onRestored={handleRestored}
           onRecoveredToNew={handleRecoveredToNew}
         />
+      )}
+
+      {showStats && note?.id && (
+        <NoteStatsModal noteId={note.id} onClose={() => setShowStats(false)} />
       )}
 
       {showDeleteConfirm && (

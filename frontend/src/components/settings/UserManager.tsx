@@ -1,8 +1,32 @@
 import { useState, useEffect } from 'react'
-import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2 } from 'lucide-react'
-import { usersApi } from '@/api/users'
+import {
+  ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3,
+  FileText, FolderTree, Share2, Heart, Clock, CalendarDays, HardDrive,
+} from 'lucide-react'
+import { usersApi, type UserMetrics, type UserStorage } from '@/api/users'
 import { useAuthStore } from '@/stores/auth'
+import { formatBytes } from '@/utils/format'
 import type { User } from '@/api/auth'
+
+function formatDateTime(dateStr: string | null): string {
+  if (!dateStr) return 'Never'
+  // Timestamps are UTC; toLocaleString renders in the viewer's local timezone.
+  return new Date(dateStr).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+        <span className="text-gray-400 dark:text-gray-500">{icon}</span>
+        {label}
+      </div>
+      <div className="mt-0.5 text-sm font-medium text-gray-900 dark:text-gray-100">{value}</div>
+    </div>
+  )
+}
 
 export default function UserManager() {
   const currentUser = useAuthStore((s) => s.user)
@@ -18,9 +42,41 @@ export default function UserManager() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // Per-user metrics are lazily loaded when a card is expanded (avoids N calls on
+  // list load); folder size is fetched separately on demand since it walks the disk.
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [metrics, setMetrics] = useState<Record<string, UserMetrics>>({})
+  const [metricsLoading, setMetricsLoading] = useState<string | null>(null)
+  const [storage, setStorage] = useState<Record<string, UserStorage>>({})
+  const [storageLoading, setStorageLoading] = useState<string | null>(null)
+
   useEffect(() => {
     usersApi.listUsers().then(setUsers).finally(() => setLoading(false))
   }, [])
+
+  async function toggleMetrics(user: User) {
+    if (expandedId === user.id) { setExpandedId(null); return }
+    setExpandedId(user.id)
+    if (!metrics[user.id]) {
+      setMetricsLoading(user.id)
+      try {
+        const m = await usersApi.getUserMetrics(user.id)
+        setMetrics((prev) => ({ ...prev, [user.id]: m }))
+      } finally {
+        setMetricsLoading(null)
+      }
+    }
+  }
+
+  async function loadStorage(userId: string) {
+    setStorageLoading(userId)
+    try {
+      const s = await usersApi.getUserStorage(userId)
+      setStorage((prev) => ({ ...prev, [userId]: s }))
+    } finally {
+      setStorageLoading(null)
+    }
+  }
 
   async function toggleAdmin(user: User) {
     const updated = await usersApi.updateUser(user.id, { is_admin: !user.is_admin })
@@ -79,7 +135,8 @@ export default function UserManager() {
         {users.map((user) => {
           const isSelf = user.id === currentUser?.id
           return (
-            <div key={user.id} className="card p-4 flex items-center gap-3">
+            <div key={user.id} className="card p-4">
+              <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold text-sm shrink-0 select-none">
                 {user.username.charAt(0).toUpperCase()}
               </div>
@@ -95,6 +152,15 @@ export default function UserManager() {
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                {/* Metrics toggle */}
+                <button
+                  title={expandedId === user.id ? 'Hide metrics' : 'Show metrics'}
+                  className={`p-1.5 rounded-lg transition-colors ${expandedId === user.id ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300' : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400'}`}
+                  onClick={() => toggleMetrics(user)}
+                >
+                  <BarChart3 className="w-4 h-4" />
+                </button>
+
                 {/* Active toggle */}
                 <button
                   title={user.is_active ? 'Deactivate user' : 'Activate user'}
@@ -138,6 +204,52 @@ export default function UserManager() {
                   <UserX className="w-4 h-4 text-gray-400 hover:text-red-500" />
                 </button>
               </div>
+              </div>
+
+              {expandedId === user.id && (
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                  {metricsLoading === user.id && !metrics[user.id] ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading metrics…
+                    </div>
+                  ) : metrics[user.id] ? (
+                    <>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                        <Metric icon={<FileText className="w-3.5 h-3.5" />} label="Notes" value={metrics[user.id].note_count.toLocaleString()} />
+                        <Metric icon={<FolderTree className="w-3.5 h-3.5" />} label="Folders" value={metrics[user.id].folder_count.toLocaleString()} />
+                        <Metric icon={<Share2 className="w-3.5 h-3.5" />} label="Shared" value={metrics[user.id].shared_note_count.toLocaleString()} />
+                        <Metric icon={<Heart className="w-3.5 h-3.5" />} label="Total likes" value={metrics[user.id].total_likes.toLocaleString()} />
+                        <Metric icon={<Clock className="w-3.5 h-3.5" />} label="Last login" value={formatDateTime(metrics[user.id].last_login)} />
+                        <Metric icon={<CalendarDays className="w-3.5 h-3.5" />} label="Member since" value={formatDateTime(metrics[user.id].created_at)} />
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center gap-3">
+                        <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                          <HardDrive className="w-3.5 h-3.5 text-gray-400" /> Folder size
+                        </div>
+                        {storage[user.id] ? (
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {formatBytes(storage[user.id].total_bytes)}
+                            <span className="ml-1 text-xs font-normal text-gray-400">
+                              · {storage[user.id].file_count.toLocaleString()} file{storage[user.id].file_count === 1 ? '' : 's'}
+                            </span>
+                          </span>
+                        ) : (
+                          <button
+                            className="btn-ghost text-xs px-2 py-1"
+                            disabled={storageLoading === user.id}
+                            onClick={() => loadStorage(user.id)}
+                          >
+                            {storageLoading === user.id ? 'Calculating…' : 'Calculate'}
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400">Could not load metrics.</p>
+                  )}
+                </div>
+              )}
             </div>
           )
         })}
