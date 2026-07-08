@@ -32,6 +32,19 @@ def _require_admin(request: Request, session: Session) -> User:
     return user
 
 
+def _require_self_or_admin(request: Request, session: Session, user_id: str) -> User:
+    """Allow a user to read their own resource; admins may read anyone's."""
+    requester_id = getattr(request.state, "user_id", None)
+    if not requester_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    requester = session.get(User, requester_id)
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+    if requester.id != user_id and not requester.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return requester
+
+
 @router.get("", response_model=list[UserRead])
 def list_users(request: Request, session: Session = Depends(get_session)):
     _require_admin(request, session)
@@ -41,7 +54,7 @@ def list_users(request: Request, session: Session = Depends(get_session)):
 
 @router.get("/{user_id}/metrics", response_model=UserMetrics)
 def user_metrics(user_id: str, request: Request, session: Session = Depends(get_session)):
-    _require_admin(request, session)
+    _require_self_or_admin(request, session, user_id)
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -66,7 +79,7 @@ def user_metrics(user_id: str, request: Request, session: Session = Depends(get_
 @router.get("/{user_id}/storage", response_model=UserStorage)
 def user_storage(user_id: str, request: Request, session: Session = Depends(get_session)):
     """On-demand total size of a user's uploaded media folder (can be expensive)."""
-    _require_admin(request, session)
+    _require_self_or_admin(request, session, user_id)
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

@@ -1,32 +1,9 @@
 import { useState, useEffect } from 'react'
-import {
-  ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3,
-  FileText, FolderTree, Share2, Heart, Clock, CalendarDays, HardDrive,
-} from 'lucide-react'
+import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3 } from 'lucide-react'
 import { usersApi, type UserMetrics, type UserStorage } from '@/api/users'
 import { useAuthStore } from '@/stores/auth'
-import { formatBytes } from '@/utils/format'
+import UserMetricsPanel from '@/components/settings/UserMetricsPanel'
 import type { User } from '@/api/auth'
-
-function formatDateTime(dateStr: string | null): string {
-  if (!dateStr) return 'Never'
-  // Timestamps are UTC; toLocaleString renders in the viewer's local timezone.
-  return new Date(dateStr).toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  })
-}
-
-function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
-  return (
-    <div>
-      <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-        <span className="text-gray-400 dark:text-gray-500">{icon}</span>
-        {label}
-      </div>
-      <div className="mt-0.5 text-sm font-medium text-gray-900 dark:text-gray-100">{value}</div>
-    </div>
-  )
-}
 
 export default function UserManager() {
   const currentUser = useAuthStore((s) => s.user)
@@ -208,46 +185,13 @@ export default function UserManager() {
 
               {expandedId === user.id && (
                 <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-                  {metricsLoading === user.id && !metrics[user.id] ? (
-                    <div className="flex items-center gap-2 text-sm text-gray-400">
-                      <Loader2 className="w-4 h-4 animate-spin" /> Loading metrics…
-                    </div>
-                  ) : metrics[user.id] ? (
-                    <>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                        <Metric icon={<FileText className="w-3.5 h-3.5" />} label="Notes" value={metrics[user.id].note_count.toLocaleString()} />
-                        <Metric icon={<FolderTree className="w-3.5 h-3.5" />} label="Folders" value={metrics[user.id].folder_count.toLocaleString()} />
-                        <Metric icon={<Share2 className="w-3.5 h-3.5" />} label="Shared" value={metrics[user.id].shared_note_count.toLocaleString()} />
-                        <Metric icon={<Heart className="w-3.5 h-3.5" />} label="Total likes" value={metrics[user.id].total_likes.toLocaleString()} />
-                        <Metric icon={<Clock className="w-3.5 h-3.5" />} label="Last login" value={formatDateTime(metrics[user.id].last_login)} />
-                        <Metric icon={<CalendarDays className="w-3.5 h-3.5" />} label="Member since" value={formatDateTime(metrics[user.id].created_at)} />
-                      </div>
-
-                      <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center gap-3">
-                        <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-                          <HardDrive className="w-3.5 h-3.5 text-gray-400" /> Folder size
-                        </div>
-                        {storage[user.id] ? (
-                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                            {formatBytes(storage[user.id].total_bytes)}
-                            <span className="ml-1 text-xs font-normal text-gray-400">
-                              · {storage[user.id].file_count.toLocaleString()} file{storage[user.id].file_count === 1 ? '' : 's'}
-                            </span>
-                          </span>
-                        ) : (
-                          <button
-                            className="btn-ghost text-xs px-2 py-1"
-                            disabled={storageLoading === user.id}
-                            onClick={() => loadStorage(user.id)}
-                          >
-                            {storageLoading === user.id ? 'Calculating…' : 'Calculate'}
-                          </button>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <p className="text-sm text-gray-400">Could not load metrics.</p>
-                  )}
+                  <UserMetricsPanel
+                    metrics={metrics[user.id] ?? null}
+                    loading={metricsLoading === user.id}
+                    storage={storage[user.id] ?? null}
+                    storageLoading={storageLoading === user.id}
+                    onCalculateStorage={() => loadStorage(user.id)}
+                  />
                 </div>
               )}
             </div>
