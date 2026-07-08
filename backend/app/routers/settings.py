@@ -1,3 +1,4 @@
+import base64
 import ipaddress
 import json
 import logging
@@ -13,6 +14,7 @@ from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
+from app.pricing import cost_for
 from app.models import AIProvider, AppSetting, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -40,19 +42,23 @@ def _record_usage(
     model: str,
     units: int,
     unit_type: str,
+    provider: Optional[str] = None,
     external_ref: Optional[str] = None,
     cost: Optional[float] = None,
     currency: Optional[str] = None,
+    cost_estimated: Optional[bool] = None,
 ) -> None:
     """Record an external-API usage event. Best-effort: never breaks the request.
 
-    `external_ref`/`cost`/`currency` are optional cost attribution (populated for image
-    generation); older callers omit them and get null columns."""
+    `provider` groups events in the usage dashboard ("anthropic"/"openai"/"ollama"/
+    "fal.ai"). `external_ref`/`cost`/`currency` are cost attribution; `cost_estimated`
+    flags a list-price estimate (LLM tokens) vs a provider-billed exact amount (fal)."""
     try:
         session.add(UsageEvent(
             id=str(uuid.uuid4()),
             user_id=user_id,
             kind=kind,
+            provider=provider,
             model=model or "",
             units=int(units or 0),
             unit_type=unit_type or "",
@@ -60,10 +66,36 @@ def _record_usage(
             external_ref=external_ref,
             cost=cost,
             currency=currency,
+            cost_estimated=cost_estimated,
         ))
         session.commit()
     except Exception:
         session.rollback()
+
+
+def _record_ai_usage(
+    session: Session,
+    user_id: str,
+    provider_type: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    """Record an `ai` usage event with a list-price cost estimate.
+
+    `units` stays the total token count (input+output, matching the historical shape);
+    cost is estimated per provider/model and flagged `cost_estimated=True`. Best-effort."""
+    total = int(input_tokens or 0) + int(output_tokens or 0)
+    if total <= 0:
+        return
+    estimate = cost_for(provider_type, model, input_tokens, output_tokens)
+    cost = estimate[0] if estimate else None
+    currency = estimate[1] if estimate else None
+    _record_usage(
+        session, user_id, "ai", model, total, "tokens",
+        provider=provider_type, cost=cost, currency=currency,
+        cost_estimated=True if estimate else None,
+    )
 
 
 def _require_safe_external_url(url: str) -> None:
@@ -662,7 +694,8 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
         # cache_read of ~0 across turns means a cache miss (prefix changed or too small).
         total = inp + out + cache_read + cache_write
         if total:
-            _record_usage(session, user_id, "ai", payload.model, total, "tokens")
+            # Cache reads/writes are billable input; fold them into the input side for costing.
+            _record_ai_usage(session, user_id, "anthropic", payload.model, inp + cache_read + cache_write, out)
         logger.info(
             "anthropic usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
             payload.model, inp, out, cache_read, cache_write,
@@ -719,9 +752,12 @@ async def proxy_openai(
     data = response.json()
     try:
         usage = data.get("usage") or {}
-        tokens = int(usage.get("total_tokens", 0))
-        if tokens:
-            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+        inp = int(usage.get("prompt_tokens", 0) or 0)
+        out = int(usage.get("completion_tokens", 0) or 0)
+        if not (inp or out):
+            # Some OpenAI-compatible providers only report total_tokens; cost it as input.
+            inp = int(usage.get("total_tokens", 0) or 0)
+        _record_ai_usage(session, user_id, provider.provider_type, payload.model, inp, out)
     except Exception:
         pass
     return data
@@ -776,9 +812,9 @@ async def proxy_ollama(
 
     data = response.json()
     try:
-        tokens = int(data.get("prompt_eval_count", 0)) + int(data.get("eval_count", 0))
-        if tokens:
-            _record_usage(session, user_id, "ai", payload.model, tokens, "tokens")
+        inp = int(data.get("prompt_eval_count", 0) or 0)
+        out = int(data.get("eval_count", 0) or 0)
+        _record_ai_usage(session, user_id, "ollama", payload.model, inp, out)
     except Exception:
         pass
     return data
@@ -828,7 +864,7 @@ def _record_anthropic_usage(user_id: str, model: str, data: Dict[str, Any]) -> N
         total = inp + out + cache_read + cache_write
         if total:
             with Session(engine) as s:
-                _record_usage(s, user_id, "ai", model, total, "tokens")
+                _record_ai_usage(s, user_id, "anthropic", model, inp + cache_read + cache_write, out)
         logger.info(
             "anthropic stream usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
             model, inp, out, cache_read, cache_write,
@@ -925,6 +961,7 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
     }
     url = f"{base}/v1/chat/completions"
     model = payload.model
+    provider_type = provider.provider_type  # capture before the request session closes
 
     async def gen():
         full = ""
@@ -963,10 +1000,13 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
                 "usage": usage or {},
             }
             try:
-                tokens = int((usage or {}).get("total_tokens", 0) or 0)
-                if tokens:
-                    with Session(engine) as s:
-                        _record_usage(s, user_id, "ai", model, tokens, "tokens")
+                u = usage or {}
+                inp = int(u.get("prompt_tokens", 0) or 0)
+                out = int(u.get("completion_tokens", 0) or 0)
+                if not (inp or out):
+                    inp = int(u.get("total_tokens", 0) or 0)
+                with Session(engine) as s:
+                    _record_ai_usage(s, user_id, provider_type, model, inp, out)
             except Exception:
                 pass
             yield _sse("final", final)
@@ -1045,10 +1085,8 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
                 "eval_count": eval_count,
             }
             try:
-                tokens = prompt_eval + eval_count
-                if tokens:
-                    with Session(engine) as s:
-                        _record_usage(s, user_id, "ai", model, tokens, "tokens")
+                with Session(engine) as s:
+                    _record_ai_usage(s, user_id, "ollama", model, prompt_eval, eval_count)
             except Exception:
                 pass
             yield _sse("final", final)
@@ -1066,106 +1104,88 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
 
-# ─── Speech / Deepgram ────────────────────────────────────────────────────────
+# ─── Speech (fal.ai) ──────────────────────────────────────────────────────────
+#
+# Speech runs on fal.ai and shares the single fal API key configured for image
+# generation (`load_fal_api_key`) — one fal account/key powers image + TTS + STT.
+#   • TTS (read-aloud)  → fal.run/<TTS model>, returns an ephemeral audio URL we
+#     download and stream back as audio/mpeg (same pattern as image generation).
+#   • STT (dictation + video transcription) → fal.run/fal-ai/wizper. fal file
+#     inputs accept a base64 data URI, so we post the audio bytes inline rather
+#     than uploading to fal storage first.
+# The model ids below are sensible defaults; edit these constants to switch models.
 
-_DEEPGRAM_KEY = "deepgram_api_key"
+DEFAULT_TTS_MODEL = "fal-ai/elevenlabs/tts/eleven-v3"
+DEFAULT_STT_MODEL = "fal-ai/wizper"
+DEFAULT_TTS_VOICE = "Aria"
 
-# Curated set of Deepgram Aura / Aura-2 English voices exposed in the UI.
-_TTS_VOICES = {
-    "aura-2-thalia-en",
-    "aura-2-andromeda-en",
-    "aura-2-apollo-en",
-    "aura-2-arcas-en",
-    "aura-2-aries-en",
-    "aura-asteria-en",
-    "aura-luna-en",
-    "aura-stella-en",
-    "aura-orion-en",
-    "aura-zeus-en",
-}
+# Curated ElevenLabs voices offered in the read-aloud picker. Values are passed
+# straight to fal's `voice` field — edit this list to expose different voices.
+FAL_TTS_VOICES = [
+    "Aria", "Roger", "Sarah", "Laura", "Charlie", "George", "Callum", "River",
+    "Liam", "Charlotte", "Alice", "Matilda", "Will", "Jessica", "Eric", "Chris",
+    "Brian", "Daniel", "Lily", "Bill",
+]
 
 _TTS_MAX_CHARS = 2000
+# Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
 @router.get("/speech")
 def get_speech_settings(request: Request, session: Session = Depends(get_session)):
+    """Speech uses the shared fal.ai key; report whether it's configured + the voices."""
     user_id = _get_user_id(request)
-    row = session.exec(
-        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
-    ).first()
-    has_key = bool(row and row.value and json.loads(row.value))
-    return {"deepgram_api_key": "***" if has_key else ""}
-
-
-class SpeechSettingsUpdate(BaseModel):
-    deepgram_api_key: str
-
-
-@router.put("/speech")
-def update_speech_settings(
-    payload: SpeechSettingsUpdate,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    user_id = _get_user_id(request)
-    encrypted = encrypt_api_key(payload.deepgram_api_key) if payload.deepgram_api_key else ""
-    existing = session.exec(
-        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
-    ).first()
-    serialised = json.dumps(encrypted)
-    if existing:
-        existing.value = serialised
-        session.add(existing)
-    else:
-        session.add(UserSetting(user_id=user_id, key=_DEEPGRAM_KEY, value=serialised))
-    session.commit()
-    return {"deepgram_api_key": "***" if payload.deepgram_api_key else ""}
+    return {
+        "has_fal_key": bool(load_fal_api_key(session, user_id)),
+        "voices": FAL_TTS_VOICES,
+        "default_voice": DEFAULT_TTS_VOICE,
+    }
 
 
 @router.post("/speech/transcribe")
 async def transcribe_speech(
     request: Request,
     file: UploadFile = File(...),
-    model: str = Form("nova-2"),
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    row = session.exec(
-        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
-    ).first()
-    if not row or not row.value:
-        raise HTTPException(status_code=400, detail={"code": "no_deepgram_key", "message": "Deepgram API key is not configured"})
+    api_key = load_fal_api_key(session, user_id)
+    if not api_key:
+        raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
 
-    api_key = decrypt_api_key(json.loads(row.value))
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/webm"
+    data_uri = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode()}"
 
-    async with httpx.AsyncClient(timeout=120.0) as http:
-        response = await http.post(
-            f"https://api.deepgram.com/v1/listen?model={model}&smart_format=true",
-            headers={
-                "Authorization": f"Token {api_key}",
-                "Content-Type": content_type,
-            },
-            content=audio_bytes,
-        )
+    resp = await _post_upstream(
+        f"https://fal.run/{DEFAULT_STT_MODEL}",
+        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+        json_body={"audio_url": data_uri, "task": "transcribe"},
+        timeout=180.0,
+        provider_label="fal.ai",
+    )
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
 
-    if not response.is_success:
-        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": response.text})
-
-    body = response.json()
     try:
-        transcript = body["results"]["channels"][0]["alternatives"][0]["transcript"]
-    except (KeyError, IndexError):
-        raise HTTPException(status_code=502, detail={"code": "deepgram_parse_error", "message": "Unexpected Deepgram response"})
+        body = resp.json()
+        transcript = (body.get("text") or "").strip()
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
 
-    # Record STT usage by audio duration (how Deepgram bills), falling back to chars.
+    # Record STT usage in audio seconds when Wizper returns chunk timestamps, else chars.
     try:
-        duration = body.get("metadata", {}).get("duration")
-        if duration is not None:
-            _record_usage(session, user_id, "stt", model, round(float(duration)), "seconds")
+        seconds = None
+        chunks = body.get("chunks") or []
+        if chunks and isinstance(chunks[-1], dict):
+            ts = chunks[-1].get("timestamp")
+            if isinstance(ts, (list, tuple)) and len(ts) == 2 and ts[1] is not None:
+                seconds = round(float(ts[1]))
+        if seconds:
+            _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, seconds, "seconds", provider="fal.ai")
         else:
-            _record_usage(session, user_id, "stt", model, len(transcript), "chars")
+            _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, len(transcript), "chars", provider="fal.ai")
     except Exception:
         pass
 
@@ -1174,14 +1194,15 @@ async def transcribe_speech(
 
 class TTSRequest(BaseModel):
     text: str
-    model: str = "aura-2-thalia-en"
+    # The voice name; kept as `model` for backwards-compat with the frontend request shape.
+    model: str = DEFAULT_TTS_VOICE
     speed: float = 1.0
 
 
 @router.get("/speech/voices")
 def list_tts_voices():
-    """Curated Deepgram TTS voices available for read-aloud."""
-    return {"voices": sorted(_TTS_VOICES)}
+    """Curated fal.ai (ElevenLabs) TTS voices available for read-aloud."""
+    return {"voices": FAL_TTS_VOICES}
 
 
 @router.post("/speech/tts")
@@ -1191,37 +1212,50 @@ async def synthesize_speech(
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    row = session.exec(
-        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
-    ).first()
-    if not row or not row.value:
-        raise HTTPException(status_code=400, detail={"code": "no_deepgram_key", "message": "Deepgram API key is not configured"})
+    api_key = load_fal_api_key(session, user_id)
+    if not api_key:
+        raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
 
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
     if len(text) > _TTS_MAX_CHARS:
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
-    if payload.model not in _TTS_VOICES:
-        raise HTTPException(status_code=400, detail={"code": "invalid_voice", "message": "Unknown TTS voice"})
+    voice = (payload.model or DEFAULT_TTS_VOICE).strip() or DEFAULT_TTS_VOICE
 
-    api_key = decrypt_api_key(json.loads(row.value))
+    # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
+    resp = await _post_upstream(
+        f"https://fal.run/{DEFAULT_TTS_MODEL}",
+        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+        json_body={"text": text, "voice": voice},
+        timeout=120.0,
+        provider_label="fal.ai",
+    )
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
 
-    async with httpx.AsyncClient(timeout=120.0) as http:
-        response = await http.post(
-            f"https://api.deepgram.com/v1/speak?model={payload.model}&speed={payload.speed}",
-            headers={
-                "Authorization": f"Token {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"text": text},
-        )
+    try:
+        body = resp.json()
+        audio_url = body["audio"]["url"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
 
-    if not response.is_success:
-        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": response.text})
+    # 2) Download the generated audio (fal URLs are ephemeral) and stream it back.
+    _require_safe_external_url(audio_url)
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            audio_resp = await http.get(audio_url)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail={"code": "download_failed", "message": f"Could not download audio: {type(e).__name__}"})
+    if not audio_resp.is_success:
+        raise HTTPException(status_code=502, detail={"code": "download_failed", "message": f"Audio download returned HTTP {audio_resp.status_code}"})
+    data = audio_resp.content
+    if len(data) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
 
-    _record_usage(session, user_id, "tts", payload.model, len(text), "chars")
-    return Response(content=response.content, media_type="audio/mpeg")
+    _record_usage(session, user_id, "tts", DEFAULT_TTS_MODEL, len(text), "chars", provider="fal.ai")
+    media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
+    return Response(content=data, media_type=media_type)
 
 
 @router.get("/usage")
@@ -1238,8 +1272,10 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
     ).all()
 
     totals: Dict[str, Dict[str, Any]] = {}
-    by_day: Dict[tuple, int] = {}
+    providers: Dict[str, Dict[str, Any]] = {}
+    by_day: Dict[tuple, Dict[str, float]] = {}
     for ev in events:
+        # Aggregate by kind (tts / stt / ai / image) — powers the summary cards.
         t = totals.setdefault(ev.kind, {"kind": ev.kind, "count": 0, "units": 0, "unit_type": ev.unit_type, "cost": 0.0})
         t["count"] += 1
         t["units"] += ev.units
@@ -1249,30 +1285,54 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
                 t["currency"] = ev.currency
         if not t["unit_type"]:
             t["unit_type"] = ev.unit_type
-        day = ev.created_at.date().isoformat()
-        by_day[(day, ev.kind)] = by_day.get((day, ev.kind), 0) + ev.units
 
-    # Round the accumulated cost so floating-point noise doesn't leak into the UI.
+        # Aggregate by provider — powers the cost breakdown. Legacy rows have no
+        # provider column; fall back to the kind so they still bucket sensibly.
+        pkey = ev.provider or ev.kind
+        p = providers.setdefault(pkey, {"provider": pkey, "count": 0, "units": 0, "cost": 0.0, "estimated": False})
+        p["count"] += 1
+        p["units"] += ev.units
+        if ev.cost is not None:
+            p["cost"] += ev.cost
+            if ev.currency and not p.get("currency"):
+                p["currency"] = ev.currency
+        if ev.cost_estimated:
+            p["estimated"] = True
+
+        # Daily time series (requests + units + cost) — powers the trend chart.
+        day = ev.created_at.date().isoformat()
+        d = by_day.setdefault((day, ev.kind), {"count": 0, "units": 0, "cost": 0.0})
+        d["count"] += 1
+        d["units"] += ev.units
+        if ev.cost is not None:
+            d["cost"] += ev.cost
+
+    # Round accumulated costs so floating-point noise doesn't leak into the UI.
     for t in totals.values():
         t["cost"] = round(t["cost"], 4)
+    for p in providers.values():
+        p["cost"] = round(p["cost"], 4)
 
     recent = sorted(events, key=lambda e: e.created_at, reverse=True)[:50]
 
     return {
         "days": days,
         "totals_by_kind": list(totals.values()),
+        "by_provider": sorted(providers.values(), key=lambda x: x["cost"], reverse=True),
         "by_day": [
-            {"date": day, "kind": kind, "units": units}
-            for (day, kind), units in sorted(by_day.items())
+            {"date": day, "kind": kind, "count": v["count"], "units": v["units"], "cost": round(v["cost"], 6)}
+            for (day, kind), v in sorted(by_day.items())
         ],
         "recent": [
             {
                 "kind": e.kind,
+                "provider": e.provider,
                 "model": e.model,
                 "units": e.units,
                 "unit_type": e.unit_type,
                 "cost": e.cost,
                 "currency": e.currency,
+                "cost_estimated": e.cost_estimated,
                 "created_at": e.created_at.replace(tzinfo=None).isoformat() + "Z",
             }
             for e in recent

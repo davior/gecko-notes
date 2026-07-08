@@ -200,7 +200,7 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
             Generate transcript after recording
             {!canTranscribe && (
               <span className="text-xs text-amber-600 dark:text-amber-400">
-                (set a Deepgram key in Settings → Speech)
+                (set a fal.ai key in Settings → AI Services → Images)
               </span>
             )}
           </label>

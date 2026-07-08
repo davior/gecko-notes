@@ -11,9 +11,9 @@ export interface TranscriptionJob {
 export const transcriptionApi = {
   // `filename` is the filename returned by mediaApi.upload for the source video
   // (already saved under /media). The backend extracts its audio track and
-  // transcribes it via Deepgram in the background.
-  createJob(filename: string, model = 'nova-2'): Promise<{ data: TranscriptionJob }> {
-    return client.post('/transcription/jobs', { filename, model }).then((r) => r.data)
+  // transcribes it via fal.ai (Wizper) in the background.
+  createJob(filename: string): Promise<{ data: TranscriptionJob }> {
+    return client.post('/transcription/jobs', { filename }).then((r) => r.data)
   },
 
   getJob(jobId: string): Promise<{ data: TranscriptionJob }> {

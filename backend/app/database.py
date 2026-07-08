@@ -267,8 +267,12 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
-        # Cost-attribution columns on usageevent (added for image-generation billing).
-        for _col, _type in (("external_ref", "TEXT"), ("cost", "REAL"), ("currency", "TEXT")):
+        # Cost-attribution columns on usageevent (added for image-generation billing;
+        # provider/cost_estimated added for the per-provider usage & cost dashboard).
+        for _col, _type in (
+            ("external_ref", "TEXT"), ("cost", "REAL"), ("currency", "TEXT"),
+            ("provider", "TEXT"), ("cost_estimated", "INTEGER"),
+        ):
             try:
                 conn.execute(text(f"ALTER TABLE usageevent ADD COLUMN {_col} {_type}"))
                 conn.commit()

@@ -128,7 +128,7 @@ export function useDictation(
   useEffect(() => { onRecordingCompleteRef.current = options?.onRecordingComplete })
 
   // Sync status when support becomes available after initial mount
-  // (e.g. Deepgram key loads asynchronously from settings)
+  // (e.g. the fal.ai key loads asynchronously from settings)
   useEffect(() => {
     if (isSupported && status === 'unsupported') setStatus('idle')
     if (!isSupported && status === 'idle') setStatus('unsupported')
@@ -214,7 +214,7 @@ export function useDictation(
         try {
           text = await transcribeAudioRef.current!(blob)
         } catch {
-          setErrorMessage('Transcription failed — check your Deepgram key in Settings → Speech')
+          setErrorMessage('Transcription failed — set a fal.ai key in Settings → AI Services → Images')
           // In record mode we still want to keep the audio, so don't bail here.
           if (!isRecord) setStatus('error')
         } finally {

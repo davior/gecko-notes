@@ -60,6 +60,8 @@ export default function App() {
         <Route path="/notes/new" element={<ProtectedRoute><EditorView /></ProtectedRoute>} />
         <Route path="/notes/:id" element={<ProtectedRoute><EditorView /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Navigate to="/settings/profile" replace /></ProtectedRoute>} />
+        <Route path="/settings/ai" element={<ProtectedRoute><Navigate to="/settings/ai/providers" replace /></ProtectedRoute>} />
+        <Route path="/settings/ai/:section" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
         <Route path="/settings/:tab" element={<ProtectedRoute><SettingsView /></ProtectedRoute>} />
         <Route path="/shared/:token" element={<SharedNoteView />} />
       </Routes>

@@ -103,16 +103,19 @@ class UsageEvent(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
     kind: str = Field(index=True)        # "tts" | "stt" | "ai" | "image"
+    provider: Optional[str] = Field(default=None, index=True)  # "anthropic" | "openai" | "ollama" | "fal.ai"
     model: str = Field(default="")
     units: int = Field(default=0)        # chars (tts) / seconds (stt) / tokens (ai) / images (image)
     unit_type: str = Field(default="")   # "chars" | "seconds" | "tokens" | "images"
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
-    # Cost attribution (currently populated for image generation). external_ref is the
-    # provider request id (e.g. fal's x-fal-request-id); cost is the actual charge in
-    # `currency` when it can be resolved, else null.
+    # Cost attribution. external_ref is the provider request id (e.g. fal's
+    # x-fal-request-id); cost is the charge in `currency` when it can be resolved,
+    # else null. cost_estimated flags a list-price estimate (LLM token pricing) as
+    # opposed to a provider-billed exact amount (fal's x-fal-billable-units).
     external_ref: Optional[str] = Field(default=None)
     cost: Optional[float] = Field(default=None)
     currency: Optional[str] = Field(default=None)
+    cost_estimated: Optional[bool] = Field(default=None)
 
 
 class SystemPrompt(SQLModel, table=True):

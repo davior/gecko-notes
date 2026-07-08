@@ -368,7 +368,7 @@ export default function AIConversationPanel({
   // list-view assistant (null note_id). A brand-new, unsaved editor note has no id yet.
   const sessionsEnabled = isList || !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
-  const deepgramApiKey = useSettingsStore((s) => s.deepgramApiKey)
+  const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const categories = useCategoriesStore((s) => s.categories)
 
   // Conversation and session state (self-managed — not driven by props)
@@ -450,7 +450,7 @@ export default function AIConversationPanel({
     [],
   )
   const dictation = useDictation(handleDictationResult, {
-    transcribeAudio: deepgramApiKey ? transcribeAudio : undefined,
+    transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
   })
 
   // Reset step selection (all checked) whenever a new plan is ready to review.
