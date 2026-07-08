@@ -1129,18 +1129,72 @@ FAL_TTS_VOICES = [
     "Brian", "Daniel", "Lily", "Bill",
 ]
 
+# TTS models available via fal.ai with their supported voices
+FAL_TTS_MODELS = [
+    {
+        "id": "fal-ai/elevenlabs/tts/eleven-v3",
+        "label": "ElevenLabs v3",
+        "voices": FAL_TTS_VOICES,
+    },
+    {
+        "id": "fal-ai/elevenlabs/tts/eleven-v3-turbo",
+        "label": "ElevenLabs v3 Turbo (faster)",
+        "voices": FAL_TTS_VOICES,
+    },
+]
+
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models}
+
 _TTS_MAX_CHARS = 2000
 # Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
+def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
+    """Per-user speech config with defaults. Returns tts_model and custom_tts_models."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _SPEECH_CONFIG)
+    ).first()
+    cfg: Dict[str, Any] = {}
+    if row and row.value:
+        try:
+            cfg = json.loads(row.value) or {}
+        except (ValueError, TypeError):
+            cfg = {}
+    custom = [m for m in (cfg.get("custom_tts_models") or []) if isinstance(m, dict) and m.get("id")]
+    return {
+        "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
+        "custom_tts_models": custom,
+    }
+
+
+def get_voices_for_model(model_id: str, custom_models: List[Dict[str, Any]]) -> List[str]:
+    """Get available voices for a given TTS model."""
+    # Check curated models
+    for model in FAL_TTS_MODELS:
+        if model["id"] == model_id:
+            return model.get("voices", [])
+    # Check custom models
+    for model in custom_models:
+        if model.get("id") == model_id:
+            return model.get("voices", [])
+    # Fallback to default voices if model not found
+    return FAL_TTS_VOICES
+
+
 @router.get("/speech")
 def get_speech_settings(request: Request, session: Session = Depends(get_session)):
-    """Speech uses the shared fal.ai key; report whether it's configured + the voices."""
+    """Speech uses the shared fal.ai key; report models, config, and available voices."""
     user_id = _get_user_id(request)
+    cfg = load_speech_config(session, user_id)
+    available_voices = get_voices_for_model(cfg["tts_model"], cfg["custom_tts_models"])
+
     return {
         "has_fal_key": bool(load_fal_api_key(session, user_id)),
-        "voices": FAL_TTS_VOICES,
+        "tts_models": FAL_TTS_MODELS,
+        "custom_tts_models": cfg["custom_tts_models"],
+        "tts_model": cfg["tts_model"],
+        "voices": available_voices,
         "default_voice": DEFAULT_TTS_VOICE,
     }
 
@@ -1207,6 +1261,39 @@ def list_tts_voices():
     return {"voices": FAL_TTS_VOICES}
 
 
+class SpeechConfigUpdate(BaseModel):
+    tts_model: Optional[str] = None
+    custom_tts_models: Optional[List[Dict[str, Any]]] = None
+
+
+@router.put("/speech/config")
+def update_speech_config(
+    payload: SpeechConfigUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Update user's speech configuration (TTS model selection and custom models)."""
+    user_id = _get_user_id(request)
+
+    # Load existing config
+    cfg = load_speech_config(session, user_id)
+
+    # Update with provided values
+    if payload.tts_model is not None:
+        cfg["tts_model"] = payload.tts_model
+    if payload.custom_tts_models is not None:
+        cfg["custom_tts_models"] = payload.custom_tts_models
+
+    # Persist to database
+    _upsert_user_setting(session, user_id, _SPEECH_CONFIG, json.dumps(cfg))
+    session.commit()
+
+    return {
+        "tts_model": cfg["tts_model"],
+        "custom_tts_models": cfg["custom_tts_models"],
+    }
+
+
 @router.post("/speech/tts")
 async def synthesize_speech(
     payload: TTSRequest,
@@ -1223,15 +1310,21 @@ async def synthesize_speech(
         raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
     if len(text) > _TTS_MAX_CHARS:
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
+
+    # Load user's selected TTS model and its available voices
+    speech_cfg = load_speech_config(session, user_id)
+    tts_model = speech_cfg["tts_model"]
+    available_voices = get_voices_for_model(tts_model, speech_cfg["custom_tts_models"])
+
     # Coerce unknown/legacy voices (e.g. a stale Deepgram value persisted before the
     # fal migration) to the default so fal never rejects an invalid voice id.
     voice = (payload.model or "").strip()
-    if voice not in FAL_TTS_VOICES:
+    if voice not in available_voices:
         voice = DEFAULT_TTS_VOICE
 
     # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
     resp = await _post_upstream(
-        f"https://fal.run/{DEFAULT_TTS_MODEL}",
+        f"https://fal.run/{tts_model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
         json_body={"text": text, "voice": voice},
         timeout=120.0,
@@ -1259,7 +1352,7 @@ async def synthesize_speech(
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
 
-    _record_usage(session, user_id, "tts", DEFAULT_TTS_MODEL, len(text), "chars", provider="fal.ai")
+    _record_usage(session, user_id, "tts", tts_model, len(text), "chars", provider="fal.ai")
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
     return Response(content=data, media_type=media_type)
 

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type CustomTTSModel, type SpeechConfigUpdate } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -22,6 +22,10 @@ interface SettingsState {
   // Providers tab (Media Provider); this flag reflects whether that key is present.
   falKeyConfigured: boolean
   ttsModel: string
+  ttsModels: TTSModel[]
+  availableVoices: string[]
+  customTtsModels: CustomTTSModel[]
+  updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -127,6 +131,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sharedThemeId: null,
   falKeyConfigured: false,
   ttsModel: DEFAULT_TTS_VOICE,
+  ttsModels: [],
+  availableVoices: TTS_VOICES.map(v => v.id),
+  customTtsModels: [],
 
   async loadSettings() {
     set({ loading: true })
@@ -164,7 +171,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // breaks the rest of the settings load (e.g. old backend in dev).
     try {
       const speechSettings = await settingsApi.getSpeechSettings()
-      set({ falKeyConfigured: speechSettings.has_fal_key })
+      set({
+        falKeyConfigured: speechSettings.has_fal_key,
+        ttsModels: speechSettings.tts_models,
+        ttsModel: speechSettings.tts_model,
+        customTtsModels: speechSettings.custom_tts_models,
+        availableVoices: speechSettings.voices,
+      })
     } catch { /* no speech endpoint — falKeyConfigured stays false */ }
   },
 
@@ -177,6 +190,25 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       aiPrefill: (updated['ai_prefill'] as string) ?? '',
       summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
       ttsModel: normalizeVoice(updated['tts_model']),
+    })
+  },
+
+  async updateSpeechConfig(config) {
+    const updated = await settingsApi.updateSpeechConfig(config)
+    const state = get()
+    // Find voices for the potentially new model
+    let voices = state.availableVoices
+    if (config.tts_model) {
+      const allModels = [...state.ttsModels, ...state.customTtsModels]
+      const model = allModels.find(m => m.id === config.tts_model)
+      if (model && 'voices' in model) {
+        voices = (model as any).voices
+      }
+    }
+    set({
+      ttsModel: updated.tts_model,
+      customTtsModels: updated.custom_tts_models,
+      availableVoices: voices,
     })
   },
 
