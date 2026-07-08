@@ -58,7 +58,9 @@ function extractPlainText(contentStr: string): string {
         return
       }
       if (block.type === 'diagram') {
-        texts.push('[Diagram]')
+        const diagramProps = block.props as Record<string, unknown> | undefined
+        const diagramSource = ((diagramProps?.source as string) ?? '').trim()
+        texts.push(diagramSource ? `\n\`\`\`mermaid\n${diagramSource}\n\`\`\`\n` : '[Diagram]')
         return
       }
       const content = block.content
@@ -146,7 +148,7 @@ function buildInlineContent(content: unknown[]): string {
 
 // ─── Helper: convert blocks array to HTML with correct element types ──────────
 
-async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<string> {
+async function buildBlocksHTML(blocks: Record<string, unknown>[], mode: 'render' | 'source' = 'render'): Promise<string> {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
   const parts: string[] = []
   let i = 0
@@ -163,7 +165,7 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
         const b = blocks[i]
         const bc = b.content as unknown[] | undefined
         const bch = b.children as Record<string, unknown>[] | undefined
-        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch, mode) : ''
         items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -177,7 +179,7 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
         const b = blocks[i]
         const bc = b.content as unknown[] | undefined
         const bch = b.children as Record<string, unknown>[] | undefined
-        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch, mode) : ''
         items.push(`<li>${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -193,7 +195,7 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
         const bch = b.children as Record<string, unknown>[] | undefined
         const bp = b.props as Record<string, unknown> | undefined
         const checked = bp?.checked === true
-        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch) : ''
+        const nested = Array.isArray(bch) && bch.length > 0 ? await buildBlocksHTML(bch, mode) : ''
         items.push(`<li>${checked ? '&#9745;' : '&#9744;'} ${buildInlineContent(bc ?? [])}${nested}</li>`)
         i++
       }
@@ -220,6 +222,12 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
     }
 
     if (type === 'diagram') {
+      if (mode === 'source') {
+        const source = (props?.source as string) ?? ''
+        parts.push(`<pre><code class="language-mermaid">${escapeHtml(source)}</code></pre>`)
+        i++
+        continue
+      }
       const { svg, error } = await renderMermaid((props?.source as string) ?? '')
       if (svg) {
         parts.push(`<figure style="margin:16px 0"><img src="${svgToDataUri(svg)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
@@ -233,7 +241,7 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
     if (type === 'heading') {
       const level = (props?.level as number) ?? 1
       const tag = `h${Math.min(Math.max(level, 1), 6)}`
-      const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children) : ''
+      const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children, mode) : ''
       parts.push(`<${tag}>${buildInlineContent(content ?? [])}</${tag}>${nested}`)
       i++
       continue
@@ -264,7 +272,7 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[]): Promise<strin
     }
 
     // paragraph and any unknown block types
-    const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children) : ''
+    const nested = Array.isArray(children) && children.length > 0 ? await buildBlocksHTML(children, mode) : ''
     parts.push(`<p>${buildInlineContent(content ?? [])}</p>${nested}`)
     i++
   }
@@ -763,7 +771,7 @@ export async function exportToMarkdown(note: Note): Promise<void> {
   let blocks: Record<string, unknown>[] = []
   try { blocks = JSON.parse(note.content) } catch { blocks = [] }
 
-  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks)}`
+  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks, 'source')}`
   const frontmatter = buildMarkdownFrontmatter(note)
   const md = `${frontmatter}\n\n${td.turndown(bodyHTML)}`
   downloadText(md, `${note.title || 'note'}.md`, 'text/markdown')
