@@ -1141,6 +1141,32 @@ FAL_TTS_MODELS = [
         "label": "ElevenLabs v3 Turbo (faster)",
         "voices": FAL_TTS_VOICES,
     },
+    {
+        "id": "fal-ai/kokoro/american-english",
+        "label": "Kokoro TTS (American English)",
+        "voices": [
+            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore",
+            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam",
+            "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
+            "am_puck", "am_santa",
+        ],
+    },
+    {
+        "id": "fal-ai/gemini-tts",
+        "label": "Gemini TTS",
+        "voices": [
+            "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+            "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir",
+            "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Pulcherrima",
+            "Puck", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat",
+            "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+        ],
+    },
+    {
+        "id": "xai/tts/v1",
+        "label": "xAI TTS",
+        "voices": ["eve", "ara", "rex", "sal", "leo"],
+    },
 ]
 
 _SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models}
