@@ -18,8 +18,8 @@ interface SettingsState {
   themes: Theme[]
   activeThemeId: string | null
   sharedThemeId: string | null
-  // Speech (TTS/STT) runs on fal.ai using the shared fal key configured in the
-  // Images tab; this flag reflects whether that key is present.
+  // Speech (TTS/STT) runs on fal.ai using the shared fal key configured on the
+  // Providers tab (Media Provider); this flag reflects whether that key is present.
   falKeyConfigured: boolean
   ttsModel: string
   loadSettings: () => Promise<void>

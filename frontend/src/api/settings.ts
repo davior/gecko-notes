@@ -314,8 +314,9 @@ export const settingsApi = {
     return client.delete('/settings/themes/activate').then(() => undefined)
   },
 
-  // Speech uses the shared fal.ai key (configured in the Images tab); this reports
-  // whether that key is present so the UI can gate read-aloud / dictation.
+  // Speech uses the shared fal.ai key (configured on the Providers tab, under
+  // Media Provider); this reports whether that key is present so the UI can gate
+  // read-aloud / dictation.
   getSpeechSettings(): Promise<{ has_fal_key: boolean; voices: string[]; default_voice: string }> {
     return client.get('/settings/speech').then((r) => r.data)
   },

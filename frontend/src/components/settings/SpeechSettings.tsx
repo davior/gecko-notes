@@ -13,15 +13,16 @@ export default function SpeechSettings() {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Voice dictation and read-aloud run on fal.ai and share the same API key as image
-          generation. Set that key in the <span className="font-medium">Images</span> tab; once it's
-          configured, dictation works in all browsers and notes can be read aloud.
+          generation. Set that key on the <span className="font-medium">Providers</span> tab, under{' '}
+          <span className="font-medium">Media Provider</span>; once it's configured, dictation works
+          in all browsers and notes can be read aloud.
         </p>
       </div>
 
       {!falKeyConfigured && (
         <p className="text-sm text-amber-600 dark:text-amber-400">
-          No fal.ai key is configured yet. Add one in the <span className="font-medium">Images</span>{' '}
-          tab to enable read-aloud, voice preview, and dictation.
+          No fal.ai key is configured yet. Add one on the <span className="font-medium">Providers</span>{' '}
+          tab (Media Provider) to enable read-aloud, voice preview, and dictation.
         </p>
       )}
 

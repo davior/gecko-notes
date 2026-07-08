@@ -169,7 +169,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       blob = await blobPromise
     } catch {
       if (cancelledRef.current) return
-      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Images')
+      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers')
       setStatus('error')
       return
     }
@@ -305,7 +305,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       }
       return new Blob(blobs, { type: 'audio/mpeg' })
     } catch (e) {
-      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Images')
+      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers')
       setStatus('error')
       throw e
     }
