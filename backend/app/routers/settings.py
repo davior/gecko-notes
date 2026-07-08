@@ -1,10 +1,10 @@
-import base64
 import ipaddress
 import json
 import logging
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta
+import fal_client
 import httpx
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -1110,9 +1110,11 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
 # generation (`load_fal_api_key`) — one fal account/key powers image + TTS + STT.
 #   • TTS (read-aloud)  → fal.run/<TTS model>, returns an ephemeral audio URL we
 #     download and stream back as audio/mpeg (same pattern as image generation).
-#   • STT (dictation + video transcription) → fal.run/fal-ai/wizper. fal file
-#     inputs accept a base64 data URI, so we post the audio bytes inline rather
-#     than uploading to fal storage first.
+#   • STT (dictation + video transcription) → fal.run/fal-ai/wizper. fal's model
+#     endpoints reject data: URIs for file inputs like `audio_url` (they need a
+#     real, fetchable URL), so we use the official `fal_client` SDK to upload the
+#     audio to fal's storage first and pass back the resulting URL — this also
+#     insulates us from fal's undocumented raw upload-endpoint details changing.
 # The model ids below are sensible defaults; edit these constants to switch models.
 
 DEFAULT_TTS_MODEL = "fal-ai/elevenlabs/tts/eleven-v3"
@@ -1143,6 +1145,20 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
     }
 
 
+async def _fal_wizper_transcribe(api_key: str, audio_bytes: bytes, content_type: str, filename: str) -> Dict[str, Any]:
+    """Upload audio to fal's storage and run Wizper transcription on it, via the
+    official fal_client SDK. Raises HTTPException with the real upstream message
+    on any failure instead of a generic/opaque error."""
+    client = fal_client.AsyncClient(key=api_key)
+    try:
+        audio_url = await client.upload(audio_bytes, content_type, filename)
+        return await client.run(DEFAULT_STT_MODEL, arguments={"audio_url": audio_url, "task": "transcribe"})
+    except fal_client.FalClientHTTPError as e:
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": str(e)[:500]})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": f"fal.ai request failed: {type(e).__name__}: {e}"[:500]})
+
+
 @router.post("/speech/transcribe")
 async def transcribe_speech(
     request: Request,
@@ -1156,23 +1172,9 @@ async def transcribe_speech(
 
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/webm"
-    data_uri = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode()}"
 
-    resp = await _post_upstream(
-        f"https://fal.run/{DEFAULT_STT_MODEL}",
-        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body={"audio_url": data_uri, "task": "transcribe"},
-        timeout=180.0,
-        provider_label="fal.ai",
-    )
-    if not resp.is_success:
-        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
-
-    try:
-        body = resp.json()
-        transcript = (body.get("text") or "").strip()
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
+    body = await _fal_wizper_transcribe(api_key, audio_bytes, content_type, file.filename or "recording.webm")
+    transcript = (body.get("text") or "").strip()
 
     # Record STT usage in audio seconds when Wizper returns chunk timestamps, else chars.
     try:

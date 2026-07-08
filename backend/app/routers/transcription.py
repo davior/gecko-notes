@@ -1,4 +1,3 @@
-import base64
 import os
 import shutil
 import subprocess
@@ -7,7 +6,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-import httpx
+import fal_client
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -100,18 +99,17 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
                 except OSError:
                     pass
 
-            # fal file inputs accept a base64 data URI, so post the audio inline.
-            data_uri = f"data:audio/wav;base64,{base64.b64encode(audio_bytes).decode()}"
-            response = httpx.post(
-                f"https://fal.run/{DEFAULT_STT_MODEL}",
-                headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-                json={"audio_url": data_uri, "task": "transcribe"},
-                timeout=600.0,
-            )
-            if not response.is_success:
-                raise RuntimeError(f"fal.ai error: {response.text[:500]}")
+            # fal's model endpoints need a real, fetchable URL for file inputs (not a
+            # data: URI), so upload via the official SDK first and run on the result.
+            try:
+                fal = fal_client.SyncClient(key=api_key)
+                audio_url = fal.upload(audio_bytes, "audio/wav", "recording.wav")
+                body = fal.run(DEFAULT_STT_MODEL, arguments={"audio_url": audio_url, "task": "transcribe"})
+            except fal_client.FalClientHTTPError as e:
+                raise RuntimeError(f"fal.ai error: {str(e)[:500]}")
+            except Exception as e:
+                raise RuntimeError(f"fal.ai request failed: {type(e).__name__}: {e}")
 
-            body = response.json()
             transcript = (body.get("text") or "").strip()
 
             user_dir = os.path.join(MEDIA_DIR, user_id)

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { apiErrorMessage } from '@/utils/format'
 
 // Self-contained type declarations for the Web Speech API — not universally present
 // in all TypeScript DOM lib versions, so we declare them explicitly here.
@@ -213,8 +214,8 @@ export function useDictation(
         let text = ''
         try {
           text = await transcribeAudioRef.current!(blob)
-        } catch {
-          setErrorMessage('Transcription failed — set a fal.ai key in Settings → AI Services → Providers')
+        } catch (err) {
+          setErrorMessage(apiErrorMessage(err, 'Transcription failed — set a fal.ai key in Settings → AI Services → Providers'))
           // In record mode we still want to keep the audio, so don't bail here.
           if (!isRecord) setStatus('error')
         } finally {

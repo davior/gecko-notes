@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { settingsApi } from '@/api/settings'
+import { apiErrorMessage } from '@/utils/format'
 
 export type TTSStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
@@ -167,9 +168,9 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     let blob: Blob
     try {
       blob = await blobPromise
-    } catch {
+    } catch (err) {
       if (cancelledRef.current) return
-      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers')
+      setErrorMessage(apiErrorMessage(err, 'Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers'))
       setStatus('error')
       return
     }
@@ -305,7 +306,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       }
       return new Blob(blobs, { type: 'audio/mpeg' })
     } catch (e) {
-      setErrorMessage('Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers')
+      setErrorMessage(apiErrorMessage(e, 'Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers'))
       setStatus('error')
       throw e
     }
