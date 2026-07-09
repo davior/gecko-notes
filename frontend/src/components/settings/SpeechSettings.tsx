@@ -1,13 +1,87 @@
 import { useState } from 'react'
-import { Volume2, Square, Plus, Trash2 } from 'lucide-react'
+import { Volume2, Square, Plus, Trash2, X } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 
+function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: string[]) => string | void; onClose: () => void }) {
+  const [modelId, setModelId] = useState('')
+  const [modelVoices, setModelVoices] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  function submit() {
+    const id = modelId.trim()
+    const voicesList = modelVoices
+      .split(/[,\n]+/)
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+
+    if (!id || voicesList.length === 0) {
+      setError('Please provide both a model ID and at least one voice')
+      return
+    }
+
+    const result = onAdd(id, voicesList)
+    if (result) {
+      setError(result)
+      return
+    }
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Add Custom Model</h3>
+          <button className="btn-ghost p-1" onClick={onClose}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Add a fal.ai TTS model ID with its supported voices. Specify voices as a comma-separated list or one per line.
+          </p>
+          <div>
+            <label className="label">Model ID</label>
+            <input
+              className="input w-full"
+              placeholder="e.g., fal-ai/openai/tts-1"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="label">Voices</label>
+            <textarea
+              className="input w-full"
+              placeholder="Voice1, Voice2, Voice3&#10;(comma-separated or one per line)"
+              rows={3}
+              value={modelVoices}
+              onChange={(e) => setModelVoices(e.target.value)}
+            />
+          </div>
+          {error && <p className="text-sm text-red-500">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
+            <button className="btn-primary text-sm flex items-center gap-1" onClick={submit}>
+              <Plus className="w-4 h-4" /> Add Model
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SpeechSettings() {
   const { falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
-  const [newModelId, setNewModelId] = useState('')
-  const [newModelVoices, setNewModelVoices] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
   const tts = useTextToSpeech({ model: voice })
 
   const allModels = [...ttsModels, ...customTtsModels.map((m) => ({ ...m, label: m.id }))]
@@ -21,29 +95,14 @@ export default function SpeechSettings() {
     }
   }
 
-  function addCustomModel() {
-    const id = newModelId.trim()
-    const voicesList = newModelVoices
-      .split(/[,\n]+/)
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0)
-
-    if (!id || voicesList.length === 0) {
-      setError('Please provide both a model ID and at least one voice')
-      return
-    }
-
+  function addCustomModel(id: string, voicesList: string[]): string | void {
     if (customTtsModels.some((m) => m.id === id) || ttsModels.some((m) => m.id === id)) {
-      setError('This model is already in your list')
-      return
+      return 'This model is already in your list'
     }
-
     setError(null)
     void updateSpeechConfig({
       custom_tts_models: [...customTtsModels, { id, voices: voicesList }],
     })
-    setNewModelId('')
-    setNewModelVoices('')
   }
 
   function removeCustomModel(id: string) {
@@ -131,12 +190,14 @@ export default function SpeechSettings() {
           </div>
 
           <div>
-            <label className="label">Custom models</label>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              Add fal.ai TTS model IDs with their supported voices. Specify voices as a comma-separated list or one per line.
-            </p>
-            {customTtsModels.length > 0 && (
-              <ul className="mb-3 space-y-1">
+            <div className="flex items-center justify-between mb-2">
+              <label className="label mb-0">Custom models</label>
+              <button className="btn-secondary text-sm flex items-center gap-1" onClick={() => setShowAddModal(true)}>
+                <Plus className="w-4 h-4" /> Add Custom Model
+              </button>
+            </div>
+            {customTtsModels.length > 0 ? (
+              <ul className="space-y-1">
                 {customTtsModels.map((model) => (
                   <li key={model.id} className="text-sm bg-gray-50 dark:bg-gray-700/40 rounded p-2">
                     <div className="flex items-start justify-between gap-2">
@@ -157,28 +218,18 @@ export default function SpeechSettings() {
                   </li>
                 ))}
               </ul>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Add fal.ai TTS model IDs with their supported voices.
+              </p>
             )}
-            <div className="space-y-2">
-              <input
-                className="input w-full"
-                placeholder="e.g., fal-ai/openai/tts-1"
-                value={newModelId}
-                onChange={(e) => setNewModelId(e.target.value)}
-              />
-              <textarea
-                className="input w-full"
-                placeholder="Voices: Voice1, Voice2, Voice3&#10;(comma-separated or one per line)"
-                rows={2}
-                value={newModelVoices}
-                onChange={(e) => setNewModelVoices(e.target.value)}
-              />
-              <button className="btn-secondary text-sm flex items-center gap-1" onClick={addCustomModel}>
-                <Plus className="w-4 h-4" /> Add Custom Model
-              </button>
-            </div>
           </div>
         </div>
       </div>
+
+      {showAddModal && (
+        <AddCustomModelModal onAdd={addCustomModel} onClose={() => setShowAddModal(false)} />
+      )}
     </div>
   )
 }
