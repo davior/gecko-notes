@@ -177,6 +177,7 @@ class NoteListItem(BaseModel):
     title: str
     content_preview: str
     first_image_url: Optional[str]
+    thumbnail_url: Optional[str] = None
     category_id: str
     folder_id: Optional[str] = None
     parent_note_id: Optional[str] = None
@@ -550,10 +551,20 @@ class UserMetrics(BaseModel):
     created_at: UTCDatetime
 
 
+class FileTypeBreakdown(BaseModel):
+    category: str
+    file_count: int
+    total_bytes: int
+
+
 class UserStorage(BaseModel):
     """On-demand size of a user's uploaded media folder."""
     total_bytes: int
     file_count: int
+    by_type: List[FileTypeBreakdown] = []
+    thumbnail_count: int = 0
+    thumbnail_bytes: int = 0
+    images_without_thumbnail: int = 0
 
 
 class NoteMetrics(BaseModel):

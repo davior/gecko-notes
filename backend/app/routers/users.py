@@ -5,9 +5,10 @@ from sqlmodel import Session, select, func
 
 from app.database import get_session
 from app.models import User, Note, Folder
-from app.routers.media import MEDIA_DIR
+from app.routers.media import MEDIA_DIR, IMAGE_EXTENSIONS, categorize_extension
+from app.thumbnails import is_thumbnail_filename, thumbnail_filename_for
 from app.schemas import (
-    UserRead, AdminUserUpdate, AdminPasswordReset, UserMetrics, UserStorage,
+    UserRead, AdminUserUpdate, AdminPasswordReset, UserMetrics, UserStorage, FileTypeBreakdown,
 )
 from app.auth import hash_password
 
@@ -86,16 +87,46 @@ def user_storage(user_id: str, request: Request, session: Session = Depends(get_
 
     total_bytes = 0
     file_count = 0
+    thumbnail_count = 0
+    thumbnail_bytes = 0
+    images_without_thumbnail = 0
+    by_type: dict[str, dict[str, int]] = {}
     user_dir = os.path.join(MEDIA_DIR, user_id)
     for root, _dirs, files in os.walk(user_dir):
         for name in files:
+            path = os.path.join(root, name)
             try:
-                total_bytes += os.path.getsize(os.path.join(root, name))
-                file_count += 1
+                size = os.path.getsize(path)
             except OSError:
                 continue  # file vanished mid-walk; skip it
+            total_bytes += size
+            file_count += 1
 
-    return UserStorage(total_bytes=total_bytes, file_count=file_count)
+            if is_thumbnail_filename(name):
+                thumbnail_count += 1
+                thumbnail_bytes += size
+                continue  # kept out of by_type so "images" reflects original files
+
+            ext = os.path.splitext(name)[1].lower()
+            category = categorize_extension(ext)
+            bucket = by_type.setdefault(category, {"file_count": 0, "total_bytes": 0})
+            bucket["file_count"] += 1
+            bucket["total_bytes"] += size
+
+            if ext in IMAGE_EXTENSIONS and not os.path.exists(os.path.join(root, thumbnail_filename_for(name))):
+                images_without_thumbnail += 1
+
+    return UserStorage(
+        total_bytes=total_bytes,
+        file_count=file_count,
+        by_type=[
+            FileTypeBreakdown(category=cat, file_count=v["file_count"], total_bytes=v["total_bytes"])
+            for cat, v in sorted(by_type.items())
+        ],
+        thumbnail_count=thumbnail_count,
+        thumbnail_bytes=thumbnail_bytes,
+        images_without_thumbnail=images_without_thumbnail,
+    )
 
 
 @router.patch("/{user_id}", response_model=UserRead)

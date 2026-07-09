@@ -72,6 +72,31 @@ export default function UserMetricsPanel({ metrics, loading, storage, storageLoa
           </button>
         )}
       </div>
+
+      {storage && storage.by_type.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {storage.by_type.map((t) => (
+            <div key={t.category} className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+              <span className="capitalize">{t.category}</span>
+              <span>
+                {formatBytes(t.total_bytes)}
+                <span className="text-gray-400 dark:text-gray-500"> · {t.file_count.toLocaleString()} file{t.file_count === 1 ? '' : 's'}</span>
+              </span>
+            </div>
+          ))}
+          {storage.thumbnail_count > 0 && (
+            <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500 italic">
+              <span>Thumbnails</span>
+              <span>{formatBytes(storage.thumbnail_bytes)} · {storage.thumbnail_count.toLocaleString()} generated</span>
+            </div>
+          )}
+          {storage.images_without_thumbnail > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {storage.images_without_thumbnail.toLocaleString()} image{storage.images_without_thumbnail === 1 ? '' : 's'} pending thumbnails
+            </p>
+          )}
+        </div>
+      )}
     </>
   )
 }
