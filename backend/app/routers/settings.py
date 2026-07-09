@@ -1137,8 +1137,8 @@ FAL_TTS_MODELS = [
         "voices": FAL_TTS_VOICES,
     },
     {
-        "id": "fal-ai/elevenlabs/tts/eleven-v3-turbo",
-        "label": "ElevenLabs v3 Turbo (faster)",
+        "id": "fal-ai/elevenlabs/tts/turbo-v2.5",
+        "label": "ElevenLabs Turbo v2.5 (faster)",
         "voices": FAL_TTS_VOICES,
     },
     {
