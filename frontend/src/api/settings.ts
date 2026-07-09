@@ -9,6 +9,8 @@ export interface TTSVoice {
 export const DEFAULT_TTS_VOICE = 'Aria'
 // Mirrors backend `DEFAULT_TTS_MODEL` — used before speech settings finish loading.
 export const DEFAULT_TTS_MODEL = 'fal-ai/elevenlabs/tts/eleven-v3'
+// Mirrors backend `DEFAULT_STT_MODEL` — used before speech settings finish loading.
+export const DEFAULT_STT_MODEL = 'fal-ai/wizper'
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
@@ -18,7 +20,14 @@ export const TTS_VOICES: TTSVoice[] = [
 export interface TTSModel {
   id: string
   label: string
+  maker_note?: string | null
   voices: string[]
+}
+
+export interface STTModel {
+  id: string
+  label: string
+  maker_note?: string | null
 }
 
 export interface CustomTTSModel {
@@ -33,11 +42,14 @@ export interface SpeechSettings {
   tts_model: string
   voices: string[]
   default_voice: string
+  stt_models: STTModel[]
+  stt_model: string
 }
 
 export interface SpeechConfigUpdate {
   tts_model?: string
   custom_tts_models?: CustomTTSModel[]
+  stt_model?: string
 }
 
 export interface UsageTotal {
@@ -153,6 +165,7 @@ export interface AIProviderTest {
 export interface FalModel {
   id: string
   label: string
+  maker_note?: string | null
 }
 
 export interface ImageSettings {
@@ -348,7 +361,7 @@ export const settingsApi = {
     return client.get('/settings/speech').then((r) => r.data)
   },
 
-  updateSpeechConfig(payload: SpeechConfigUpdate): Promise<{ tts_model: string; custom_tts_models: CustomTTSModel[] }> {
+  updateSpeechConfig(payload: SpeechConfigUpdate): Promise<{ tts_model: string; custom_tts_models: CustomTTSModel[]; stt_model: string }> {
     return client.put('/settings/speech/config', payload).then((r) => r.data)
   },
 

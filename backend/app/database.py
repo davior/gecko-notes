@@ -411,6 +411,29 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 pass
+        # Backfill stt_model into existing users' speech_gen_config, so the stored
+        # JSON blob is materialized consistently with the new tts_model/stt_model
+        # shape (load_speech_config already defaults a missing key at read time —
+        # this just keeps the on-disk row in sync, matching the sibling migration
+        # above for tts_model/custom_tts_models).
+        try:
+            import json as _json
+            rows = conn.execute(text(
+                "SELECT user_id, value FROM usersetting WHERE key = 'speech_gen_config'"
+            )).fetchall()
+            for uid, value in rows:
+                try:
+                    cfg = _json.loads(value) or {}
+                except Exception:
+                    continue
+                if "stt_model" not in cfg:
+                    cfg["stt_model"] = "fal-ai/wizper"
+                    conn.execute(text(
+                        "UPDATE usersetting SET value = :value WHERE user_id = :uid AND key = 'speech_gen_config'"
+                    ), {"value": _json.dumps(cfg), "uid": uid})
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

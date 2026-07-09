@@ -474,6 +474,56 @@ class ThemeRead(BaseModel):
         from_attributes = True
 
 
+_CATALOG_KINDS = {"image", "tts", "stt"}
+
+
+class ModelCatalogEntryCreate(BaseModel):
+    kind: str
+    model_id: str
+    label: str
+    maker_note: Optional[str] = None
+    sort_order: int = 0
+    is_active: bool = True
+    voices: Optional[List[str]] = None
+    text_field: Optional[str] = None
+    voice_field: Optional[str] = None
+    extra_params: Optional[dict[str, Any]] = None
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, v: str) -> str:
+        if v not in _CATALOG_KINDS:
+            raise ValueError(f"kind must be one of {sorted(_CATALOG_KINDS)}")
+        return v
+
+
+class ModelCatalogEntryUpdate(BaseModel):
+    # kind/model_id are immutable after creation (delete + recreate instead).
+    label: Optional[str] = None
+    maker_note: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+    voices: Optional[List[str]] = None
+    text_field: Optional[str] = None
+    voice_field: Optional[str] = None
+    extra_params: Optional[dict[str, Any]] = None
+
+
+class ModelCatalogEntryRead(BaseModel):
+    id: str
+    kind: str
+    model_id: str
+    label: str
+    maker_note: Optional[str] = None
+    sort_order: int
+    is_active: bool
+    voices: Optional[List[str]] = None
+    text_field: Optional[str] = None
+    voice_field: Optional[str] = None
+    extra_params: Optional[dict[str, Any]] = None
+    created_at: datetime
+
+
 # Settings schemas
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]

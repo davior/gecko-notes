@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type CustomTTSModel, type SpeechConfigUpdate } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -26,6 +26,8 @@ interface SettingsState {
   voice: string
   availableVoices: string[]
   customTtsModels: CustomTTSModel[]
+  sttModel: string
+  sttModels: STTModel[]
   updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
@@ -137,6 +139,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   voice: DEFAULT_TTS_VOICE,
   availableVoices: [],
   customTtsModels: [],
+  sttModel: DEFAULT_STT_MODEL,
+  sttModels: [],
 
   async loadSettings() {
     set({ loading: true })
@@ -181,6 +185,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         customTtsModels: speechSettings.custom_tts_models,
         availableVoices: speechSettings.voices,
         voice: normalizeVoice(rawVoice, speechSettings.voices),
+        sttModels: speechSettings.stt_models,
+        sttModel: speechSettings.stt_model,
       })
     } catch {
       // no speech endpoint — falKeyConfigured stays false, fall back to the
@@ -224,6 +230,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       customTtsModels: updated.custom_tts_models,
       availableVoices: voices,
       voice,
+      sttModel: updated.stt_model,
     })
     if (config.tts_model && voice !== state.voice) {
       await get().updateAppSettings({ tts_model: voice })
@@ -397,6 +404,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ttsModels: [],
       availableVoices: [],
       customTtsModels: [],
+      sttModel: DEFAULT_STT_MODEL,
+      sttModels: [],
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

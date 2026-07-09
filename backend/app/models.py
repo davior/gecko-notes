@@ -174,3 +174,23 @@ class Theme(SQLModel, table=True):
     shadow_size: float = Field(default=8.0)
     shadow_blur: float = Field(default=16.0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ModelCatalogEntry(SQLModel, table=True):
+    """Admin-managed, shared catalog of fal.ai models offered for image/TTS/STT
+    generation. Global (not per-user) — distinct from each user's own custom_models /
+    custom_tts_models, which stay in UserSetting."""
+    id: str = Field(primary_key=True)
+    kind: str = Field(index=True)          # "image" | "tts" | "stt"
+    model_id: str                          # fal endpoint id, e.g. "fal-ai/flux/dev"
+    label: str
+    maker_note: Optional[str] = None       # maker + one-line pitch
+    sort_order: int = Field(default=0)
+    is_active: bool = Field(default=True)  # soft-hide without losing the row
+    # TTS-only overrides (null for image/stt kinds). JSON stored as plain text,
+    # matching this codebase's existing convention (Note.tags, AISession.messages).
+    voices: Optional[str] = None
+    text_field: Optional[str] = None
+    voice_field: Optional[str] = None
+    extra_params: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

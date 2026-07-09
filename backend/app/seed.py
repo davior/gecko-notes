@@ -1,6 +1,7 @@
+import json
 import uuid
 from sqlmodel import Session, select
-from app.models import Category, AppSetting, UserSetting, Theme
+from app.models import Category, AppSetting, UserSetting, Theme, ModelCatalogEntry
 
 DEFAULT_CATEGORIES = [
     {"label": "Article", "emoji": "📝", "color": "#3B82F6"},
@@ -150,7 +151,97 @@ def seed_global_themes(session: Session):
     session.commit()
 
 
+_FAL_TTS_VOICES_SEED = [
+    "Aria", "Roger", "Sarah", "Laura", "Charlie", "George", "Callum", "River",
+    "Liam", "Charlotte", "Alice", "Matilda", "Will", "Jessica", "Eric", "Chris",
+    "Brian", "Daniel", "Lily", "Bill",
+]
+
+DEFAULT_IMAGE_CATALOG = [
+    # The 5 pre-existing curated models.
+    {"model_id": "fal-ai/flux/schnell", "label": "FLUX.1 [schnell]", "maker_note": "fastest, low cost"},
+    {"model_id": "fal-ai/flux/dev", "label": "FLUX.1 [dev]", "maker_note": "high quality"},
+    {"model_id": "fal-ai/flux-pro/v1.1", "label": "FLUX1.1 [pro]", "maker_note": "top quality"},
+    {"model_id": "fal-ai/recraft-v3", "label": "Recraft V3", "maker_note": "styles, text, vectors"},
+    {"model_id": "fal-ai/stable-diffusion-v35-large", "label": "Stable Diffusion 3.5 Large", "maker_note": None},
+    # New additions.
+    {"model_id": "fal-ai/flux-2-pro", "label": "FLUX.2 [pro]", "maker_note": "Black Forest Labs — top-tier photorealism & detail"},
+    {"model_id": "fal-ai/flux-2/dev", "label": "FLUX.2 [dev]", "maker_note": "Black Forest Labs — realism + native editing"},
+    {"model_id": "fal-ai/flux-2/dev/turbo", "label": "FLUX.2 [dev] Turbo", "maker_note": "fal's distilled version — cheap, fast"},
+    {"model_id": "fal-ai/flux-pro/v1.1-ultra", "label": "FLUX1.1 [pro] ultra", "maker_note": "Black Forest Labs — up to 2K, print-scale"},
+    {"model_id": "fal-ai/flux-pro/kontext", "label": "FLUX.1 Kontext [pro]", "maker_note": "Black Forest Labs — context-aware editing"},
+    {"model_id": "fal-ai/nano-banana-2", "label": "Nano Banana 2", "maker_note": "Google (Gemini 3.1 Flash Image) — fast, vibrant, text-aware"},
+    {"model_id": "fal-ai/nano-banana-pro", "label": "Nano Banana Pro", "maker_note": "Google (Gemini 3 Pro Image) — SOTA high-fidelity"},
+    {"model_id": "fal-ai/bytedance/seedream/v4.5/text-to-image", "label": "Seedream V4.5", "maker_note": "ByteDance — photoreal, unified gen+edit"},
+    {"model_id": "fal-ai/bytedance/seedream/v4/text-to-image", "label": "Seedream V4", "maker_note": "ByteDance — photoreal, unified gen+edit"},
+    {"model_id": "fal-ai/qwen-image", "label": "Qwen Image (Max)", "maker_note": "Alibaba — LLM-based, best complex text rendering"},
+    {"model_id": "fal-ai/gpt-image-2", "label": "GPT Image 2", "maker_note": "OpenAI — strong instruction-following, multilingual text"},
+    {"model_id": "fal-ai/gpt-image-1.5", "label": "GPT Image 1.5", "maker_note": "OpenAI — high-fidelity, strong prompt adherence"},
+    {"model_id": "fal-ai/ideogram/v3", "label": "Ideogram V3", "maker_note": "Ideogram — best-in-class typography, posters/logos"},
+    {"model_id": "fal-ai/krea-2", "label": "Krea 2 (Large)", "maker_note": "Krea — aesthetic-focused, stylized"},
+    {"model_id": "fal-ai/z-image/turbo", "label": "Z-Image Turbo", "maker_note": "Tongyi-MAI — 6B, ultra-fast, bilingual EN/CN"},
+    {"model_id": "fal-ai/fast-sdxl", "label": "Fast SDXL", "maker_note": "Stability (SDXL) — for existing SDXL prompts/LoRAs"},
+]
+
+DEFAULT_TTS_CATALOG = [
+    {"model_id": "fal-ai/elevenlabs/tts/eleven-v3", "label": "ElevenLabs v3", "maker_note": None,
+     "voices": _FAL_TTS_VOICES_SEED},
+    {"model_id": "fal-ai/elevenlabs/tts/turbo-v2.5", "label": "ElevenLabs Turbo v2.5 (faster)", "maker_note": None,
+     "voices": _FAL_TTS_VOICES_SEED},
+    {"model_id": "fal-ai/kokoro/american-english", "label": "Kokoro TTS (American English)", "maker_note": None,
+     "voices": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore",
+                "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam",
+                "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
+                "am_puck", "am_santa"],
+     "text_field": "prompt"},
+    {"model_id": "fal-ai/gemini-tts", "label": "Gemini TTS", "maker_note": None,
+     "voices": ["Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+                "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir",
+                "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Pulcherrima",
+                "Puck", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat",
+                "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi"],
+     "text_field": "prompt"},
+    {"model_id": "xai/tts/v1", "label": "xAI TTS", "maker_note": None,
+     "voices": ["eve", "ara", "rex", "sal", "leo"],
+     "voice_field": "voice_id", "extra_params": {"language": "auto"}},
+]
+
+DEFAULT_STT_CATALOG = [
+    {"model_id": "fal-ai/wizper", "label": "Wizper (Whisper v3 Large)",
+     "maker_note": "fal — Whisper v3 Large optimized, ~2x speed, 99-lang translate"},
+    {"model_id": "fal-ai/elevenlabs/speech-to-text/scribe-v2", "label": "ElevenLabs Scribe v2",
+     "maker_note": "ElevenLabs — top accuracy, 99 langs, word timestamps, diarization, audio-event detection"},
+    {"model_id": "fal-ai/elevenlabs/speech-to-text", "label": "ElevenLabs Scribe v1",
+     "maker_note": "ElevenLabs — 99 langs, word timestamps, audio-event tagging"},
+    {"model_id": "fal-ai/whisper", "label": "Whisper (OpenAI, via fal)",
+     "maker_note": "OpenAI — transcription + translation, batch, cheap baseline"},
+]
+
+
+def seed_model_catalog(session: Session):
+    existing = session.exec(select(ModelCatalogEntry)).first()
+    if existing:
+        return
+    for kind, items in (("image", DEFAULT_IMAGE_CATALOG), ("tts", DEFAULT_TTS_CATALOG), ("stt", DEFAULT_STT_CATALOG)):
+        for i, item in enumerate(items):
+            session.add(ModelCatalogEntry(
+                id=str(uuid.uuid4()),
+                kind=kind,
+                model_id=item["model_id"],
+                label=item["label"],
+                maker_note=item.get("maker_note"),
+                sort_order=i,
+                is_active=True,
+                voices=json.dumps(item["voices"]) if item.get("voices") else None,
+                text_field=item.get("text_field"),
+                voice_field=item.get("voice_field"),
+                extra_params=json.dumps(item["extra_params"]) if item.get("extra_params") else None,
+            ))
+    session.commit()
+
+
 def run_seed(session: Session):
     seed_categories(session)
     seed_settings(session)
     seed_global_themes(session)
+    seed_model_catalog(session)

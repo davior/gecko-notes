@@ -1,12 +1,14 @@
 import { NavLink } from 'react-router-dom'
-import { Cpu, Sparkles, Mic, Image as ImageIcon, BarChart3 } from 'lucide-react'
+import { Cpu, Sparkles, Mic, Image as ImageIcon, BarChart3, Database } from 'lucide-react'
 import AIProviderManager from '@/components/settings/AIProviderManager'
 import AssistantSettings from '@/components/settings/AssistantSettings'
 import SpeechSettings from '@/components/settings/SpeechSettings'
 import ImageGenSettings from '@/components/settings/ImageGenSettings'
 import UsageDashboard from '@/components/settings/UsageDashboard'
+import ModelCatalogManager from '@/components/settings/ModelCatalogManager'
+import { useAuthStore } from '@/stores/auth'
 
-const SUBTABS = [
+const BASE_SUBTABS = [
   { key: 'providers', label: 'Providers', icon: Cpu },
   { key: 'assistant', label: 'Assistant', icon: Sparkles },
   { key: 'speech', label: 'Speech', icon: Mic },
@@ -16,7 +18,12 @@ const SUBTABS = [
 
 // Unified AI hub: the five formerly-separate AI settings tabs, laid out as
 // horizontal sub-tabs. Each body is the existing component, re-hosted unchanged.
+// A 6th tab (Model Catalog) is added for admins only.
 export default function AIServicesHub({ section }: { section: string }) {
+  const isAdmin = useAuthStore((s) => s.user?.is_admin) ?? false
+  const SUBTABS = isAdmin
+    ? [...BASE_SUBTABS, { key: 'model-catalog' as const, label: 'Model Catalog', icon: Database }]
+    : BASE_SUBTABS
   const active = SUBTABS.some((t) => t.key === section) ? section : 'providers'
 
   return (
@@ -49,6 +56,7 @@ export default function AIServicesHub({ section }: { section: string }) {
         {active === 'speech' && <SpeechSettings />}
         {active === 'images' && <ImageGenSettings />}
         {active === 'usage' && <UsageDashboard />}
+        {active === 'model-catalog' && isAdmin && <ModelCatalogManager />}
       </div>
     </div>
   )

@@ -5,6 +5,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import fal_client
 import httpx
@@ -14,7 +15,7 @@ from sqlmodel import Session
 
 from app.database import engine
 from app.models import TranscriptionJob
-from app.routers.settings import DEFAULT_STT_MODEL, _record_usage, compute_fal_cost, load_fal_api_key
+from app.routers.settings import _record_usage, compute_fal_cost, load_fal_api_key, load_speech_config
 from app.schemas import DataResponse, TranscriptionJobRead
 
 router = APIRouter()
@@ -43,7 +44,7 @@ def _safe_source_path(user_id: str, filename: str) -> str:
 
 class TranscribeRequest(BaseModel):
     filename: str
-    model: str = DEFAULT_STT_MODEL
+    model: Optional[str] = None  # None = use the caller's configured STT model
 
 
 def _job_to_read(job: TranscriptionJob) -> TranscriptionJobRead:
@@ -116,7 +117,7 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             try:
                 with httpx.Client(timeout=120.0) as http:
                     resp = http.post(
-                        f"https://fal.run/{DEFAULT_STT_MODEL}",
+                        f"https://fal.run/{model}",
                         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
                         json={"audio_url": audio_url, "task": "transcribe"},
                     )
@@ -145,7 +146,7 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             session.add(job)
             session.commit()
 
-            cost, currency, request_id = compute_fal_cost(session, user_id, DEFAULT_STT_MODEL, resp)
+            cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
             try:
                 seconds = None
                 chunks = body.get("chunks") or []
@@ -155,9 +156,9 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
                         seconds = round(float(ts[1]))
                 units, unit_type = (seconds, "seconds") if seconds else (len(transcript), "chars")
                 _record_usage(
-                    session, user_id, "stt", DEFAULT_STT_MODEL, units, unit_type,
+                    session, user_id, "stt", model, units, unit_type,
                     provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
-                    cost_estimated=False if cost is not None else None,
+                    cost_estimated=cost_estimated,
                 )
             except Exception:
                 pass
@@ -187,12 +188,13 @@ def create_job(payload: TranscribeRequest, request: Request, background_tasks: B
         updated_at=datetime.utcnow(),
     )
     with Session(engine) as session:
+        model = payload.model or load_speech_config(session, user_id)["stt_model"]
         session.add(job)
         session.commit()
         session.refresh(job)
         result = _job_to_read(job)
 
-    background_tasks.add_task(_run_job, job.id, user_id, video_path, payload.model)
+    background_tasks.add_task(_run_job, job.id, user_id, video_path, model)
 
     return DataResponse(data=result)
 

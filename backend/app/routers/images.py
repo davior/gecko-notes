@@ -96,7 +96,7 @@ async def generate_image(
 
     cfg = load_fal_config(session, user_id)
     model = (payload.model or cfg["default_model"]).strip()
-    if model not in allowed_fal_models(cfg):
+    if model not in allowed_fal_models(session, cfg):
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_model", "message": f"Model '{model}' is not in the configured model list"},
@@ -153,14 +153,14 @@ async def generate_image(
     # 3) Attribute the actual cost: fal returns the request id and billed quantity as
     #    response headers; multiplied by the endpoint's cached unit price this gives the
     #    exact charge for this image (null when the price isn't cached yet).
-    cost, currency, request_id = compute_fal_cost(session, user_id, model, resp)
+    cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
 
     # 4) Record usage (surfaced in Settings → Usage as kind "image"). cost is the
     #    exact fal-billed amount (not an estimate), so cost_estimated stays False.
     _record_usage(
         session, user_id, "image", model, 1, "images",
         provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
-        cost_estimated=False if cost is not None else None,
+        cost_estimated=cost_estimated,
     )
 
     return ImageGenerateResponse(

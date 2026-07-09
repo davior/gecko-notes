@@ -16,10 +16,11 @@ from sqlmodel import Session, select
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
 from app.pricing import cost_for
-from app.models import AIProvider, AppSetting, User, UsageEvent, UserSetting, SystemPrompt, Theme
+from app.models import AIProvider, AppSetting, ModelCatalogEntry, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
     DataResponse, ListResponse, SettingsUpdate,
+    ModelCatalogEntryCreate, ModelCatalogEntryUpdate, ModelCatalogEntryRead,
     SystemPromptCreate, SystemPromptUpdate, SystemPromptRead,
     ThemeCreate, ThemeUpdate, ThemeRead,
 )
@@ -34,6 +35,12 @@ def _get_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user_id
+
+
+def _is_admin(request: Request, session: Session) -> bool:
+    user_id = _get_user_id(request)
+    user = session.get(User, user_id)
+    return bool(user and user.is_admin)
 
 
 def _record_usage(
@@ -1120,6 +1127,106 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
 
+# ─── Model Catalog (admin-managed, shared across all users) ─────────────────
+#
+# Curated image/TTS/STT model lists shown in the relevant dropdowns. Global,
+# not per-user — distinct from each user's own custom_models/custom_tts_models,
+# which stay in UserSetting untouched. Seeded on first boot (see seed.py); an
+# admin can add/edit/deactivate/remove entries via /model-catalog without a
+# redeploy.
+
+def _load_catalog(session: Session, kind: str) -> List[ModelCatalogEntry]:
+    """Active catalog entries for a kind, in display order. Small dataset
+    (well under 100 rows total across all kinds) — queried per-request."""
+    return session.exec(
+        select(ModelCatalogEntry)
+        .where(ModelCatalogEntry.kind == kind, ModelCatalogEntry.is_active == True)
+        .order_by(ModelCatalogEntry.sort_order)
+    ).all()
+
+
+def _catalog_entry_to_read(entry: ModelCatalogEntry) -> ModelCatalogEntryRead:
+    return ModelCatalogEntryRead(
+        id=entry.id, kind=entry.kind, model_id=entry.model_id, label=entry.label,
+        maker_note=entry.maker_note, sort_order=entry.sort_order, is_active=entry.is_active,
+        voices=json.loads(entry.voices) if entry.voices else None,
+        text_field=entry.text_field, voice_field=entry.voice_field,
+        extra_params=json.loads(entry.extra_params) if entry.extra_params else None,
+        created_at=entry.created_at,
+    )
+
+
+@router.get("/model-catalog", response_model=ListResponse[ModelCatalogEntryRead])
+def list_model_catalog(request: Request, kind: Optional[str] = None, session: Session = Depends(get_session)):
+    """Admin-only: full catalog (including inactive rows) for the editor UI."""
+    if not _is_admin(request, session):
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Admin access required"})
+    stmt = select(ModelCatalogEntry)
+    if kind:
+        stmt = stmt.where(ModelCatalogEntry.kind == kind)
+    entries = session.exec(stmt.order_by(ModelCatalogEntry.kind, ModelCatalogEntry.sort_order)).all()
+    return ListResponse(
+        data=[_catalog_entry_to_read(e) for e in entries],
+        total=len(entries), limit=len(entries), offset=0,
+    )
+
+
+@router.post("/model-catalog", response_model=DataResponse[ModelCatalogEntryRead], status_code=201)
+def create_model_catalog_entry(payload: ModelCatalogEntryCreate, request: Request, session: Session = Depends(get_session)):
+    if not _is_admin(request, session):
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Admin access required"})
+    dup = session.exec(
+        select(ModelCatalogEntry).where(
+            ModelCatalogEntry.kind == payload.kind, ModelCatalogEntry.model_id == payload.model_id
+        )
+    ).first()
+    if dup:
+        raise HTTPException(status_code=400, detail={"code": "duplicate_model", "message": "This model id is already in the catalog for this kind"})
+    entry = ModelCatalogEntry(
+        id=str(uuid.uuid4()), kind=payload.kind, model_id=payload.model_id, label=payload.label,
+        maker_note=payload.maker_note, sort_order=payload.sort_order, is_active=payload.is_active,
+        voices=json.dumps(payload.voices) if payload.voices else None,
+        text_field=payload.text_field, voice_field=payload.voice_field,
+        extra_params=json.dumps(payload.extra_params) if payload.extra_params else None,
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return DataResponse(data=_catalog_entry_to_read(entry))
+
+
+@router.put("/model-catalog/{entry_id}", response_model=DataResponse[ModelCatalogEntryRead])
+def update_model_catalog_entry(entry_id: str, payload: ModelCatalogEntryUpdate, request: Request, session: Session = Depends(get_session)):
+    if not _is_admin(request, session):
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Admin access required"})
+    entry = session.get(ModelCatalogEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Catalog entry not found"})
+    for field in ("label", "maker_note", "sort_order", "is_active", "text_field", "voice_field"):
+        val = getattr(payload, field, None)
+        if val is not None:
+            setattr(entry, field, val)
+    if payload.voices is not None:
+        entry.voices = json.dumps(payload.voices)
+    if payload.extra_params is not None:
+        entry.extra_params = json.dumps(payload.extra_params)
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return DataResponse(data=_catalog_entry_to_read(entry))
+
+
+@router.delete("/model-catalog/{entry_id}", status_code=204)
+def delete_model_catalog_entry(entry_id: str, request: Request, session: Session = Depends(get_session)):
+    if not _is_admin(request, session):
+        raise HTTPException(status_code=403, detail={"code": "forbidden", "message": "Admin access required"})
+    entry = session.get(ModelCatalogEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Catalog entry not found"})
+    session.delete(entry)
+    session.commit()
+
+
 # ─── Speech (fal.ai) ──────────────────────────────────────────────────────────
 #
 # Speech runs on fal.ai and shares the single fal API key configured for image
@@ -1145,54 +1252,10 @@ FAL_TTS_VOICES = [
     "Brian", "Daniel", "Lily", "Bill",
 ]
 
-# TTS models available via fal.ai with their supported voices
-FAL_TTS_MODELS = [
-    {
-        "id": "fal-ai/elevenlabs/tts/eleven-v3",
-        "label": "ElevenLabs v3",
-        "voices": FAL_TTS_VOICES,
-    },
-    {
-        "id": "fal-ai/elevenlabs/tts/turbo-v2.5",
-        "label": "ElevenLabs Turbo v2.5 (faster)",
-        "voices": FAL_TTS_VOICES,
-    },
-    {
-        "id": "fal-ai/kokoro/american-english",
-        "label": "Kokoro TTS (American English)",
-        "voices": [
-            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore",
-            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam",
-            "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
-            "am_puck", "am_santa",
-        ],
-        # Kokoro's fal endpoint takes the text under `prompt`, not `text`.
-        "text_field": "prompt",
-    },
-    {
-        "id": "fal-ai/gemini-tts",
-        "label": "Gemini TTS",
-        "voices": [
-            "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
-            "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir",
-            "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Pulcherrima",
-            "Puck", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat",
-            "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
-        ],
-        # Gemini's fal endpoint takes the text under `prompt`, not `text`.
-        "text_field": "prompt",
-    },
-    {
-        "id": "xai/tts/v1",
-        "label": "xAI TTS",
-        "voices": ["eve", "ara", "rex", "sal", "leo"],
-        # xAI's fal endpoint uses `voice_id` (not `voice`) and requires a `language`.
-        "voice_field": "voice_id",
-        "extra_params": {"language": "auto"},
-    },
-]
+# Curated TTS/STT model lists now live in ModelCatalogEntry (admin-editable via
+# /model-catalog, seeded in seed.py) — see _load_catalog() above.
 
-_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models}
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model}
 
 _TTS_MAX_CHARS = 2000
 # Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
@@ -1214,15 +1277,19 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
     return {
         "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
         "custom_tts_models": custom,
+        "stt_model": cfg.get("stt_model") or DEFAULT_STT_MODEL,
     }
 
 
-def get_voices_for_model(model_id: str, custom_models: List[Dict[str, Any]]) -> List[str]:
+def get_voices_for_model(session: Session, model_id: str, custom_models: List[Dict[str, Any]]) -> List[str]:
     """Get available voices for a given TTS model."""
     # Check curated models
-    for model in FAL_TTS_MODELS:
-        if model["id"] == model_id:
-            return model.get("voices", [])
+    for entry in _load_catalog(session, "tts"):
+        if entry.model_id == model_id:
+            try:
+                return json.loads(entry.voices) if entry.voices else []
+            except (ValueError, TypeError):
+                return []
     # Check custom models
     for model in custom_models:
         if model.get("id") == model_id:
@@ -1231,18 +1298,22 @@ def get_voices_for_model(model_id: str, custom_models: List[Dict[str, Any]]) -> 
     return FAL_TTS_VOICES
 
 
-def build_tts_request_body(model_id: str, text: str, voice: str) -> Dict[str, Any]:
+def build_tts_request_body(session: Session, model_id: str, text: str, voice: str) -> Dict[str, Any]:
     """Build the fal.run request body for a TTS model. Different fal.ai TTS
     endpoints use different input schemas (e.g. `text` vs `prompt`, `voice` vs
     `voice_id`, extra required fields) even though they're all curated here as
     one unified interface. Curated models declare `text_field`/`voice_field`/
     `extra_params` overrides; anything unlisted — including custom models,
     whose schema we don't know — uses the common `text`/`voice` shape."""
-    model = next((m for m in FAL_TTS_MODELS if m["id"] == model_id), {})
-    text_field = model.get("text_field", "text")
-    voice_field = model.get("voice_field", "voice")
+    entry = next((e for e in _load_catalog(session, "tts") if e.model_id == model_id), None)
+    text_field = (entry.text_field if entry else None) or "text"
+    voice_field = (entry.voice_field if entry else None) or "voice"
     body = {text_field: text, voice_field: voice}
-    body.update(model.get("extra_params") or {})
+    if entry and entry.extra_params:
+        try:
+            body.update(json.loads(entry.extra_params))
+        except (ValueError, TypeError):
+            pass
     return body
 
 
@@ -1251,21 +1322,32 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
     """Speech uses the shared fal.ai key; report models, config, and available voices."""
     user_id = _get_user_id(request)
     cfg = load_speech_config(session, user_id)
-    available_voices = get_voices_for_model(cfg["tts_model"], cfg["custom_tts_models"])
+    available_voices = get_voices_for_model(session, cfg["tts_model"], cfg["custom_tts_models"])
+    tts_models = [
+        {"id": e.model_id, "label": e.label, "maker_note": e.maker_note,
+         "voices": json.loads(e.voices) if e.voices else []}
+        for e in _load_catalog(session, "tts")
+    ]
+    stt_models = [
+        {"id": e.model_id, "label": e.label, "maker_note": e.maker_note}
+        for e in _load_catalog(session, "stt")
+    ]
 
     return {
         "has_fal_key": bool(load_fal_api_key(session, user_id)),
-        "tts_models": FAL_TTS_MODELS,
+        "tts_models": tts_models,
         "custom_tts_models": cfg["custom_tts_models"],
         "tts_model": cfg["tts_model"],
         "voices": available_voices,
         "default_voice": DEFAULT_TTS_VOICE,
+        "stt_models": stt_models,
+        "stt_model": cfg["stt_model"],
     }
 
 
-async def _fal_wizper_transcribe(api_key: str, audio_bytes: bytes, content_type: str, filename: str) -> httpx.Response:
+async def _fal_stt_transcribe(api_key: str, model: str, audio_bytes: bytes, content_type: str, filename: str) -> httpx.Response:
     """Upload audio to fal's storage via the official fal_client SDK, then POST directly to
-    fal's synchronous Wizper endpoint (rather than fal_client.run()) so the caller can read
+    fal's synchronous STT endpoint (rather than fal_client.run()) so the caller can read
     fal's billing headers (x-fal-request-id / x-fal-billable-units) off the response — same
     approach as the image-generation and TTS integrations. Raises HTTPException with the real
     upstream message if the upload step fails; HTTP-level failures from the transcription POST
@@ -1279,7 +1361,7 @@ async def _fal_wizper_transcribe(api_key: str, audio_bytes: bytes, content_type:
         raise HTTPException(status_code=502, detail={"code": "fal_error", "message": f"fal.ai upload failed: {type(e).__name__}: {e}"[:500]})
 
     return await _post_upstream(
-        f"https://fal.run/{DEFAULT_STT_MODEL}",
+        f"https://fal.run/{model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
         json_body={"audio_url": audio_url, "task": "transcribe"},
         timeout=120.0,
@@ -1298,10 +1380,11 @@ async def transcribe_speech(
     if not api_key:
         raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
 
+    stt_model = load_speech_config(session, user_id)["stt_model"]
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/webm"
 
-    resp = await _fal_wizper_transcribe(api_key, audio_bytes, content_type, file.filename or "recording.webm")
+    resp = await _fal_stt_transcribe(api_key, stt_model, audio_bytes, content_type, file.filename or "recording.webm")
     if not resp.is_success:
         raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
     try:
@@ -1310,7 +1393,7 @@ async def transcribe_speech(
         raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
     transcript = (body.get("text") or "").strip()
 
-    cost, currency, request_id = compute_fal_cost(session, user_id, DEFAULT_STT_MODEL, resp)
+    cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, stt_model, resp)
 
     # Record STT usage in audio seconds when Wizper returns chunk timestamps, else chars.
     try:
@@ -1322,9 +1405,9 @@ async def transcribe_speech(
                 seconds = round(float(ts[1]))
         units, unit_type = (seconds, "seconds") if seconds else (len(transcript), "chars")
         _record_usage(
-            session, user_id, "stt", DEFAULT_STT_MODEL, units, unit_type,
+            session, user_id, "stt", stt_model, units, unit_type,
             provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
-            cost_estimated=False if cost is not None else None,
+            cost_estimated=cost_estimated,
         )
     except Exception:
         pass
@@ -1348,6 +1431,7 @@ def list_tts_voices():
 class SpeechConfigUpdate(BaseModel):
     tts_model: Optional[str] = None
     custom_tts_models: Optional[List[Dict[str, Any]]] = None
+    stt_model: Optional[str] = None
 
 
 @router.put("/speech/config")
@@ -1356,7 +1440,7 @@ def update_speech_config(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Update user's speech configuration (TTS model selection and custom models)."""
+    """Update user's speech configuration (TTS/STT model selection and custom models)."""
     user_id = _get_user_id(request)
 
     # Load existing config
@@ -1367,6 +1451,8 @@ def update_speech_config(
         cfg["tts_model"] = payload.tts_model
     if payload.custom_tts_models is not None:
         cfg["custom_tts_models"] = payload.custom_tts_models
+    if payload.stt_model is not None:
+        cfg["stt_model"] = payload.stt_model
 
     # Persist to database
     _upsert_user_setting(session, user_id, _SPEECH_CONFIG, json.dumps(cfg))
@@ -1375,6 +1461,7 @@ def update_speech_config(
     return {
         "tts_model": cfg["tts_model"],
         "custom_tts_models": cfg["custom_tts_models"],
+        "stt_model": cfg["stt_model"],
     }
 
 
@@ -1398,7 +1485,7 @@ async def synthesize_speech(
     # Load user's selected TTS model and its available voices
     speech_cfg = load_speech_config(session, user_id)
     tts_model = speech_cfg["tts_model"]
-    available_voices = get_voices_for_model(tts_model, speech_cfg["custom_tts_models"])
+    available_voices = get_voices_for_model(session, tts_model, speech_cfg["custom_tts_models"])
 
     # Coerce unknown/legacy voices (e.g. a stale value persisted for a different
     # model) to one this model actually supports, so fal never rejects the voice.
@@ -1410,7 +1497,7 @@ async def synthesize_speech(
     resp = await _post_upstream(
         f"https://fal.run/{tts_model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body=build_tts_request_body(tts_model, text, voice),
+        json_body=build_tts_request_body(session, tts_model, text, voice),
         timeout=120.0,
         provider_label="fal.ai",
     )
@@ -1436,11 +1523,11 @@ async def synthesize_speech(
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
 
-    cost, currency, request_id = compute_fal_cost(session, user_id, tts_model, resp)
+    cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, tts_model, resp)
     _record_usage(
         session, user_id, "tts", tts_model, len(text), "chars",
         provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
-        cost_estimated=False if cost is not None else None,
+        cost_estimated=cost_estimated,
     )
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
     return Response(content=data, media_type=media_type)
@@ -1542,17 +1629,9 @@ _FAL_PRICE_TTL_SECONDS = 6 * 3600
 DEFAULT_FAL_MODEL = "fal-ai/flux/dev"
 DEFAULT_IMAGE_SIZE = "landscape_4_3"
 
-# Curated fal.ai text-to-image endpoints surfaced in the UI. Users may add their own
-# model ids on top of these (stored in the per-user config). The frontend uses the
-# labels; the backend uses the ids as the allow-list for the generate endpoint.
-FAL_CURATED_MODELS = [
-    {"id": "fal-ai/flux/schnell", "label": "FLUX.1 [schnell] — fastest, low cost"},
-    {"id": "fal-ai/flux/dev", "label": "FLUX.1 [dev] — high quality"},
-    {"id": "fal-ai/flux-pro/v1.1", "label": "FLUX1.1 [pro] — top quality"},
-    {"id": "fal-ai/recraft-v3", "label": "Recraft V3 — styles, text, vectors"},
-    {"id": "fal-ai/stable-diffusion-v35-large", "label": "Stable Diffusion 3.5 Large"},
-]
-FAL_CURATED_MODEL_IDS = frozenset(m["id"] for m in FAL_CURATED_MODELS)
+# Curated fal.ai text-to-image endpoints now live in ModelCatalogEntry (admin-editable
+# via /model-catalog, seeded in seed.py) — see _load_catalog() above. Users may still
+# add their own model ids on top of these (stored in the per-user image_gen_config).
 
 # fal image_size presets (the models also accept a {width,height} object, but the app
 # only exposes the named presets to keep the UI simple).
@@ -1656,23 +1735,44 @@ def get_cached_fal_price(session: Session, user_id: str, model: str) -> Optional
 
 def compute_fal_cost(
     session: Session, user_id: str, model: str, resp: httpx.Response
-) -> Tuple[Optional[float], Optional[str], Optional[str]]:
-    """Exact-cost attribution for a fal.ai synchronous-endpoint response: multiplies the
-    billed quantity fal reports (`x-fal-billable-units`) by the endpoint's cached per-unit
-    price. Returns (cost, currency, request_id); cost/currency are None when the price isn't
-    cached yet or fal omitted the billing header (never raises)."""
+) -> Tuple[Optional[float], Optional[str], Optional[str], Optional[bool]]:
+    """Exact-cost attribution for a fal.ai synchronous-endpoint response.
+
+    Primary path: multiplies fal's reported billed quantity (`x-fal-billable-units`) by
+    the endpoint's cached per-unit price. This is fal's explicitly-named billing field,
+    so cost_estimated=False.
+
+    Fallback path: endpoints billed by "compute seconds" (confirmed live against
+    fal-ai/wizper) don't send `x-fal-billable-units` on a successful response — only
+    `x-fal-raw-time` (job wall-clock seconds). When the cached price's `unit` mentions
+    "compute second", that's used as the billable quantity instead. This is inferred
+    (not fal's named billing field), so cost_estimated=True.
+
+    Returns (cost, currency, request_id, cost_estimated); all None when nothing can be
+    computed — price not cached yet, or fal sent neither header (never raises)."""
     request_id = resp.headers.get("x-fal-request-id")
     billable_raw = resp.headers.get("x-fal-billable-units")
     cost: Optional[float] = None
     currency: Optional[str] = None
+    cost_estimated: Optional[bool] = None
     price = get_cached_fal_price(session, user_id, model)
-    if price and billable_raw is not None:
-        try:
-            cost = round(float(billable_raw) * float(price["unit_price"]), 6)
-            currency = price.get("currency")
-        except (ValueError, TypeError, KeyError):
-            cost = None
-    return cost, currency, request_id
+    if price:
+        quantity_raw: Optional[str] = None
+        if billable_raw is not None:
+            quantity_raw = billable_raw
+            cost_estimated = False
+        elif "compute second" in (price.get("unit") or "").lower():
+            quantity_raw = resp.headers.get("x-fal-raw-time")
+            if quantity_raw is not None:
+                cost_estimated = True
+        if quantity_raw is not None:
+            try:
+                cost = round(float(quantity_raw) * float(price["unit_price"]), 6)
+                currency = price.get("currency")
+            except (ValueError, TypeError, KeyError):
+                cost = None
+                cost_estimated = None
+    return cost, currency, request_id, cost_estimated
 
 
 async def _fetch_fal_usage_summary(billing_key: str, days: int) -> Optional[Dict[str, Any]]:
@@ -1729,9 +1829,10 @@ def load_fal_config(session: Session, user_id: str) -> Dict[str, Any]:
     }
 
 
-def allowed_fal_models(config: Dict[str, Any]) -> set:
+def allowed_fal_models(session: Session, config: Dict[str, Any]) -> set:
     """The set of model ids a user is allowed to generate with (curated + their custom ids)."""
-    return set(FAL_CURATED_MODEL_IDS) | set(config.get("custom_models") or [])
+    curated_ids = {e.model_id for e in _load_catalog(session, "image")}
+    return curated_ids | set(config.get("custom_models") or [])
 
 
 @router.get("/images")
@@ -1740,10 +1841,14 @@ def get_image_settings(request: Request, session: Session = Depends(get_session)
     api_key = load_fal_api_key(session, user_id)
     admin_key = load_fal_admin_key(session, user_id)
     cfg = load_fal_config(session, user_id)
+    curated_models = [
+        {"id": e.model_id, "label": e.label, "maker_note": e.maker_note}
+        for e in _load_catalog(session, "image")
+    ]
     return {
         "has_api_key": bool(api_key),
         "has_admin_key": bool(admin_key),
-        "curated_models": FAL_CURATED_MODELS,
+        "curated_models": curated_models,
         "image_sizes": FAL_IMAGE_SIZES,
         "custom_models": cfg["custom_models"],
         "default_model": cfg["default_model"],
@@ -1904,11 +2009,6 @@ async def get_image_pricing(request: Request, session: Session = Depends(get_ses
 
 
 # ─── Themes ───────────────────────────────────────────────────────────────────
-
-def _is_admin(request: Request, session: Session) -> bool:
-    user_id = _get_user_id(request)
-    user = session.get(User, user_id)
-    return bool(user and user.is_admin)
 
 
 @router.get("/themes", response_model=ListResponse[ThemeRead])
