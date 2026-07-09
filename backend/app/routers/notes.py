@@ -220,16 +220,29 @@ def note_to_read(note: Note) -> NoteRead:
     )
 
 
+def _thumbnail_url_for(first_image_url: Optional[str]) -> Optional[str]:
+    """Derive the `.thumb.` sibling URL for a note's first image. Purely a
+    filename transform — the frontend falls back to first_image_url via
+    onError if the thumbnail isn't actually on disk yet (or never will be,
+    e.g. HEIC/AVIF), so no filesystem check is needed here."""
+    if not first_image_url:
+        return None
+    base, ext = os.path.splitext(first_image_url)
+    return f"{base}.thumb{ext}"
+
+
 def note_to_list_item(note: Note) -> NoteListItem:
     try:
         tags = json.loads(note.tags)
     except Exception:
         tags = []
+    first_image_url = extract_first_image(note.content)
     return NoteListItem(
         id=note.id,
         title=note.title,
         content_preview=extract_plain_text(note.content, 240),
-        first_image_url=extract_first_image(note.content),
+        first_image_url=first_image_url,
+        thumbnail_url=_thumbnail_url_for(first_image_url),
         category_id=note.category_id,
         folder_id=note.folder_id,
         parent_note_id=note.parent_note_id,

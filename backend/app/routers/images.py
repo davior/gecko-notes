@@ -10,15 +10,17 @@ into a BlockNote `image` block. Usage is recorded as a `kind="image"` UsageEvent
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
 from app.routers.media import get_user_media_dir
+from app.thumbnails import generate_thumbnail
 from app.routers.settings import (
     DEFAULT_IMAGE_SIZE,
     _post_upstream,
@@ -76,6 +78,7 @@ class ImageGenerateResponse(BaseModel):
 async def generate_image(
     payload: ImageGenerateRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
@@ -141,8 +144,11 @@ async def generate_image(
 
     user_dir = get_user_media_dir(user_id)
     filename = f"{uuid.uuid4()}{ext}"
-    with open(os.path.join(user_dir, filename), "wb") as f:
+    file_path = os.path.join(user_dir, filename)
+    with open(file_path, "wb") as f:
         f.write(data)
+
+    background_tasks.add_task(generate_thumbnail, Path(file_path))
 
     # 3) Attribute the actual cost: fal returns the request id and billed quantity as
     #    response headers; multiplied by the endpoint's cached unit price this gives the

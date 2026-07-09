@@ -5,6 +5,7 @@ export interface NoteListItem {
   title: string
   content_preview: string
   first_image_url: string | null
+  thumbnail_url: string | null
   category_id: string
   folder_id: string | null
   parent_note_id: string | null

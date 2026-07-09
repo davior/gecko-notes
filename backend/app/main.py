@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
 from app.routers import notes, categories, media, settings, folders, annotations, transcription, images
+from app.thumbnails import backfill_thumbnails
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import data as data_router
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI):
         run_seed(session)
         _encrypt_legacy_api_keys(session)
     os.makedirs(MEDIA_DIR, exist_ok=True)
+    threading.Thread(target=backfill_thumbnails, daemon=True).start()
     yield
 
 

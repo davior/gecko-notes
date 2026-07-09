@@ -23,8 +23,10 @@ const KIND_HUE: Record<'light' | 'dark', Record<Kind, string>> = {
   dark: { tts: '#3987e5', stt: '#199e70', ai: '#c98500', image: '#008300' },
 }
 
-// Full 8-slot categorical ramp for the by-provider bars.
-const CATEGORICAL: Record<'light' | 'dark', string[]> = {
+// Full 8-slot categorical ramp for the by-provider bars (also reused by
+// UserMetricsPanel's storage-by-filetype donut, so keep this as the one
+// source of truth rather than redefining it there).
+export const CATEGORICAL: Record<'light' | 'dark', string[]> = {
   light: ['#2a78d6', '#1baf7a', '#eda100', '#008300', '#4a3aa7', '#e34948', '#e87ba4', '#eb6834'],
   dark: ['#3987e5', '#199e70', '#c98500', '#008300', '#9085e9', '#e66767', '#d55181', '#d95926'],
 }

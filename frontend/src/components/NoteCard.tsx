@@ -21,6 +21,14 @@ function relativeDate(dateStr: string): string {
 
 const textShadow = '0 1px 4px rgba(0,0,0,0.6), 0 0 2px rgba(0,0,0,0.4)'
 
+// Thumbnails are derived by filename convention and may not exist yet (still
+// generating, or a format like HEIC/AVIF that never gets one) — fall back to
+// the full-res original rather than showing a broken image.
+function handleImgError(e: React.SyntheticEvent<HTMLImageElement>, fallback: string) {
+  const img = e.currentTarget
+  if (img.src !== fallback) img.src = fallback
+}
+
 interface Props {
   note: NoteListItem
   category?: Category
@@ -56,9 +64,13 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
       >
         {/* Background image — fixed blur independent of any active theme */}
         {hasImage && (
-          <div
-            className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${note.first_image_url})`, filter: 'blur(3px)', transform: 'scale(1.05)' }}
+          <img
+            loading="lazy"
+            src={note.thumbnail_url ?? note.first_image_url!}
+            onError={(e) => handleImgError(e, note.first_image_url!)}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: 'blur(3px)', transform: 'scale(1.05)' }}
           />
         )}
         {/* Wash overlay for image cards only — note-card-img-wash suppresses
@@ -168,12 +180,24 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
   }
 
   // List view
+  const hasImage = Boolean(note.first_image_url)
   return (
     <div
       className={`card cursor-pointer flex overflow-hidden dark:bg-gray-800 dark:border-gray-700 ${selected ? 'outline outline-3 outline-green-500' : ''}`}
       onClick={() => onClick(note.id)}
     >
       <div className="w-1 shrink-0 rounded-l-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
+      {hasImage && (
+        <div className="w-20 shrink-0 self-stretch">
+          <img
+            loading="lazy"
+            src={note.thumbnail_url ?? note.first_image_url!}
+            onError={(e) => handleImgError(e, note.first_image_url!)}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+        </div>
+      )}
       <div className="flex-1 p-4 min-w-0">
         <div className="flex items-center justify-between mb-2 gap-2">
           {category ? <CategoryBadge category={category} /> : <span className="text-xs text-gray-400">Uncategorised</span>}

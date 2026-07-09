@@ -10,9 +10,19 @@ export interface UserMetrics {
   created_at: string
 }
 
+export interface FileTypeBreakdown {
+  category: string
+  file_count: number
+  total_bytes: number
+}
+
 export interface UserStorage {
   total_bytes: number
   file_count: number
+  by_type: FileTypeBreakdown[]
+  thumbnail_count: number
+  thumbnail_bytes: number
+  images_without_thumbnail: number
 }
 
 export const usersApi = {

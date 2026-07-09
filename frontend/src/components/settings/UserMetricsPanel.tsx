@@ -1,6 +1,13 @@
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { Loader2, FileText, FolderTree, Share2, Heart, Clock, CalendarDays, HardDrive } from 'lucide-react'
 import type { UserMetrics, UserStorage } from '@/api/users'
 import { formatBytes } from '@/utils/format'
+import { useSettingsStore } from '@/stores/settings'
+import { CATEGORICAL } from './UsageDashboard'
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
 
 function formatDateTime(dateStr: string | null): string {
   if (!dateStr) return 'Never'
@@ -33,6 +40,11 @@ interface Props {
 // Presentational grid of a single account's metrics, shared by the admin
 // UserManager (per-user) and the self-serve Stats settings tab.
 export default function UserMetricsPanel({ metrics, loading, storage, storageLoading, onCalculateStorage }: Props) {
+  const isDark = useSettingsStore((s) => s.theme) === 'dark'
+  const chrome = isDark
+    ? { surface: '#1a1a19', ring: 'rgba(255,255,255,0.10)', text: '#c3c2b7' }
+    : { surface: '#fcfcfb', ring: 'rgba(11,11,11,0.10)', text: '#52514e' }
+
   if (loading && !metrics) {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-400">
@@ -72,6 +84,59 @@ export default function UserMetricsPanel({ metrics, loading, storage, storageLoa
           </button>
         )}
       </div>
+
+      {storage && storage.by_type.length > 0 && (
+        <div className="mt-2">
+          <div className="flex items-center gap-3">
+            <div className="w-[100px] h-[100px] shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={storage.by_type} dataKey="total_bytes" nameKey="category" cx="50%" cy="50%" innerRadius={28} outerRadius={48} stroke="none">
+                    {storage.by_type.map((t, i) => (
+                      <Cell key={t.category} fill={CATEGORICAL[isDark ? 'dark' : 'light'][i % 8]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: chrome.surface, border: `1px solid ${chrome.ring}`, borderRadius: 8, fontSize: 12, color: chrome.text }}
+                    itemStyle={{ color: chrome.text }}
+                    formatter={(value, name) => {
+                      const total = storage.by_type.reduce((sum, t) => sum + t.total_bytes, 0)
+                      const v = Number(value)
+                      const pct = total > 0 ? (v / total) * 100 : 0
+                      return [`${formatBytes(v)} · ${pct.toFixed(1)}%`, cap(String(name))]
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex-1 min-w-0 space-y-1">
+              {storage.by_type.map((t, i) => (
+                <div key={t.category} className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                  <span className="flex items-center gap-1.5 capitalize">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: CATEGORICAL[isDark ? 'dark' : 'light'][i % 8] }} />
+                    {t.category}
+                  </span>
+                  <span>
+                    {formatBytes(t.total_bytes)}
+                    <span className="text-gray-400 dark:text-gray-500"> · {t.file_count.toLocaleString()} file{t.file_count === 1 ? '' : 's'}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {storage.thumbnail_count > 0 && (
+            <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500 italic mt-1.5">
+              <span>Thumbnails</span>
+              <span>{formatBytes(storage.thumbnail_bytes)} · {storage.thumbnail_count.toLocaleString()} generated</span>
+            </div>
+          )}
+          {storage.images_without_thumbnail > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5">
+              {storage.images_without_thumbnail.toLocaleString()} image{storage.images_without_thumbnail === 1 ? '' : 's'} pending thumbnails
+            </p>
+          )}
+        </div>
+      )}
     </>
   )
 }
