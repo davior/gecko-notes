@@ -203,7 +203,7 @@ DEFAULT_TTS_CATALOG = [
      "text_field": "prompt"},
     {"model_id": "xai/tts/v1", "label": "xAI TTS", "maker_note": None,
      "voices": ["eve", "ara", "rex", "sal", "leo"],
-     "voice_field": "voice_id", "extra_params": {"language": "auto"}},
+     "extra_params": {"language": "auto"}},
 ]
 
 DEFAULT_STT_CATALOG = [

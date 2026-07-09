@@ -434,6 +434,19 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Fix a bad seed value: xai/tts/v1's fal.run endpoint actually expects the
+        # voice under `voice` (the shape every other curated TTS model already uses),
+        # not `voice_id` — the seeded voice_field override was wrong, so any DB
+        # already seeded before this fix landed has it baked in. Clear the override
+        # so build_tts_request_body() falls back to the correct default.
+        try:
+            conn.execute(text(
+                "UPDATE modelcatalogentry SET voice_field = NULL "
+                "WHERE kind = 'tts' AND model_id = 'xai/tts/v1' AND voice_field = 'voice_id'"
+            ))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():
