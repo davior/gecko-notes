@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Folder as FolderIcon, Home } from 'lucide-react'
+import { Home } from 'lucide-react'
 import { foldersApi, type Folder } from '@/api/folders'
+import { resolveFolderIcon } from '@/utils/folderIcons'
 
 interface Props {
   title?: string
@@ -69,6 +70,7 @@ export default function FolderPickerModal({ title = 'Move to folder', disabledId
           ) : (
             tree.map((f) => {
               const disabled = disabledIds?.has(f.id)
+              const resolved = resolveFolderIcon(f)
               return (
                 <button
                   key={f.id}
@@ -81,7 +83,15 @@ export default function FolderPickerModal({ title = 'Move to folder', disabledId
                   style={{ paddingLeft: `${0.75 + f.depth * 1.1}rem` }}
                   onClick={() => onSelect(f.id)}
                 >
-                  <FolderIcon className="w-4 h-4 text-blue-500 shrink-0" /> <span className="truncate">{f.name}</span>
+                  {resolved.kind === 'emoji' ? (
+                    <span className="text-sm leading-none shrink-0">{resolved.emoji}</span>
+                  ) : (
+                    <resolved.Icon
+                      className={`w-4 h-4 shrink-0 ${f.color || disabled ? '' : 'text-blue-500'}`}
+                      style={{ color: disabled ? undefined : f.color ?? undefined }}
+                    />
+                  )}
+                  <span className="truncate">{f.name}</span>
                 </button>
               )
             })

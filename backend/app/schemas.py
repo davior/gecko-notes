@@ -1,6 +1,15 @@
+import re
 from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
 from datetime import datetime, timezone, date
 from pydantic import BaseModel, Field, field_validator, PlainSerializer
+
+_HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def _validate_hex_color(v: Optional[str]) -> Optional[str]:
+    if v is not None and not _HEX_COLOR_RE.fullmatch(v):
+        raise ValueError("color must be a hex string like #3B82F6")
+    return v
 
 T = TypeVar("T")
 
@@ -74,12 +83,22 @@ class FolderCreate(BaseModel):
     name: str
     parent_folder_id: Optional[str] = None
     sort_order: int = 0
+    icon_type: Optional[Literal["emoji", "lucide"]] = None
+    icon_value: Optional[str] = Field(default=None, max_length=64)
+    color: Optional[str] = None
+
+    _validate_color = field_validator("color")(_validate_hex_color)
 
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
     parent_folder_id: Optional[str] = None  # set to move the folder
     sort_order: Optional[int] = None
+    icon_type: Optional[Literal["emoji", "lucide"]] = None
+    icon_value: Optional[str] = Field(default=None, max_length=64)
+    color: Optional[str] = None
+
+    _validate_color = field_validator("color")(_validate_hex_color)
 
 
 class FolderRead(BaseModel):
@@ -87,6 +106,9 @@ class FolderRead(BaseModel):
     name: str
     parent_folder_id: Optional[str] = None
     sort_order: int
+    icon_type: Optional[str] = None
+    icon_value: Optional[str] = None
+    color: Optional[str] = None
     created_at: UTCDatetime
     modified_at: UTCDatetime
 

@@ -1,10 +1,15 @@
 import client from './client'
 
+export type FolderIconType = 'emoji' | 'lucide'
+
 export interface Folder {
   id: string
   name: string
   parent_folder_id: string | null
   sort_order: number
+  icon_type: FolderIconType | null
+  icon_value: string | null
+  color: string | null
   created_at: string
   modified_at: string
 }
@@ -19,12 +24,18 @@ export interface FolderCreate {
   name: string
   parent_folder_id?: string | null
   sort_order?: number
+  icon_type?: FolderIconType | null
+  icon_value?: string | null
+  color?: string | null
 }
 
 export interface FolderUpdate {
   name?: string
   parent_folder_id?: string | null
   sort_order?: number
+  icon_type?: FolderIconType | null
+  icon_value?: string | null
+  color?: string | null
 }
 
 export const foldersApi = {

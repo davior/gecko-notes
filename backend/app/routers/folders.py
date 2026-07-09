@@ -122,6 +122,9 @@ def create_folder(payload: FolderCreate, request: Request, session: Session = De
         parent_folder_id=payload.parent_folder_id,
         user_id=user_id,
         sort_order=payload.sort_order,
+        icon_type=payload.icon_type,
+        icon_value=payload.icon_value,
+        color=payload.color,
         created_at=now,
         modified_at=now,
     )
@@ -140,6 +143,12 @@ def update_folder(folder_id: str, payload: FolderUpdate, request: Request, sessi
         folder.name = payload.name
     if payload.sort_order is not None:
         folder.sort_order = payload.sort_order
+    if payload.icon_type is not None:
+        folder.icon_type = payload.icon_type
+    if payload.icon_value is not None:
+        folder.icon_value = payload.icon_value
+    if payload.color is not None:
+        folder.color = payload.color
     # Move: re-parent, guarding against cycles.
     if "parent_folder_id" in payload.model_fields_set:
         new_parent = payload.parent_folder_id or None
