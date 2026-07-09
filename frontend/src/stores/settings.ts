@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type CustomTTSModel, type SpeechConfigUpdate } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -22,6 +22,11 @@ interface SettingsState {
   // Providers tab (Media Provider); this flag reflects whether that key is present.
   falKeyConfigured: boolean
   ttsModel: string
+  ttsModels: TTSModel[]
+  voice: string
+  availableVoices: string[]
+  customTtsModels: CustomTTSModel[]
+  updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -51,11 +56,12 @@ function deriveActiveProvider(providers: AIProvider[]): AIProvider | null {
   return providers.find((p) => p.is_active && p.enabled) ?? null
 }
 
-// Fall back to the default when the stored voice isn't a known fal voice — e.g. a
-// legacy Deepgram Aura id persisted before the fal.ai speech migration.
-function normalizeVoice(value: unknown): string {
+// Fall back to the first voice supported by the current model when the stored
+// voice isn't valid for it — e.g. a legacy voice persisted under a different
+// model, or a stale/unknown id.
+function normalizeVoice(value: unknown, voices: string[]): string {
   const v = typeof value === 'string' ? value : ''
-  return TTS_VOICES.some((x) => x.id === v) ? v : DEFAULT_TTS_VOICE
+  return voices.includes(v) ? v : (voices[0] ?? DEFAULT_TTS_VOICE)
 }
 
 function deriveActiveSystemPrompt(prompts: SystemPrompt[]): SystemPrompt | null {
@@ -126,7 +132,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeThemeId: null,
   sharedThemeId: null,
   falKeyConfigured: false,
-  ttsModel: DEFAULT_TTS_VOICE,
+  ttsModel: DEFAULT_TTS_MODEL,
+  ttsModels: [],
+  voice: DEFAULT_TTS_VOICE,
+  availableVoices: [],
+  customTtsModels: [],
 
   async loadSettings() {
     set({ loading: true })
@@ -152,7 +162,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
-        ttsModel: normalizeVoice(settings['tts_model']),
         themes: themesResp.data,
         activeThemeId,
         sharedThemeId,
@@ -162,22 +171,63 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     // Speech settings are loaded separately so a missing endpoint never
     // breaks the rest of the settings load (e.g. old backend in dev).
+    const rawVoice = (get().appSettings['tts_model'] as string) ?? ''
     try {
       const speechSettings = await settingsApi.getSpeechSettings()
-      set({ falKeyConfigured: speechSettings.has_fal_key })
-    } catch { /* no speech endpoint — falKeyConfigured stays false */ }
+      set({
+        falKeyConfigured: speechSettings.has_fal_key,
+        ttsModels: speechSettings.tts_models,
+        ttsModel: speechSettings.tts_model,
+        customTtsModels: speechSettings.custom_tts_models,
+        availableVoices: speechSettings.voices,
+        voice: normalizeVoice(rawVoice, speechSettings.voices),
+      })
+    } catch {
+      // no speech endpoint — falKeyConfigured stays false, fall back to the
+      // curated ElevenLabs voice list so the read-aloud picker still works.
+      set({ voice: normalizeVoice(rawVoice, TTS_VOICES.map((v) => v.id)) })
+    }
   },
 
   async updateAppSettings(settings) {
     const updated = await settingsApi.update(settings)
-    set({
-      appSettings: updated,
-      defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
-      aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
-      aiPrefill: (updated['ai_prefill'] as string) ?? '',
-      summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
-      ttsModel: normalizeVoice(updated['tts_model']),
+    set((s) => {
+      const rawVoice = updated['tts_model'] as string | undefined
+      return {
+        appSettings: updated,
+        defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
+        aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
+        aiPrefill: (updated['ai_prefill'] as string) ?? '',
+        summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
+        voice: rawVoice && s.availableVoices.includes(rawVoice) ? rawVoice : s.voice,
+      }
     })
+  },
+
+  async updateSpeechConfig(config) {
+    const updated = await settingsApi.updateSpeechConfig(config)
+    const state = get()
+    // Find voices for the potentially new model, and re-pick a valid voice if
+    // the current one isn't supported by it.
+    let voices = state.availableVoices
+    let voice = state.voice
+    if (config.tts_model) {
+      const allModels: Array<{ id: string; voices: string[] }> = [...state.ttsModels, ...state.customTtsModels]
+      const model = allModels.find((m) => m.id === config.tts_model)
+      voices = model?.voices ?? []
+      if (!voices.includes(voice)) {
+        voice = voices[0] ?? DEFAULT_TTS_VOICE
+      }
+    }
+    set({
+      ttsModel: updated.tts_model,
+      customTtsModels: updated.custom_tts_models,
+      availableVoices: voices,
+      voice,
+    })
+    if (config.tts_model && voice !== state.voice) {
+      await get().updateAppSettings({ tts_model: voice })
+    }
   },
 
   async loadAIProviders() {
@@ -342,7 +392,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       activeThemeId: null,
       sharedThemeId: null,
       falKeyConfigured: false,
-      ttsModel: DEFAULT_TTS_VOICE,
+      ttsModel: DEFAULT_TTS_MODEL,
+      voice: DEFAULT_TTS_VOICE,
+      ttsModels: [],
+      availableVoices: [],
+      customTtsModels: [],
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

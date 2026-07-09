@@ -7,11 +7,38 @@ export interface TTSVoice {
 
 // Curated fal.ai (ElevenLabs) TTS voices (mirrors backend `FAL_TTS_VOICES`).
 export const DEFAULT_TTS_VOICE = 'Aria'
+// Mirrors backend `DEFAULT_TTS_MODEL` — used before speech settings finish loading.
+export const DEFAULT_TTS_MODEL = 'fal-ai/elevenlabs/tts/eleven-v3'
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
   'Brian', 'Daniel', 'Lily', 'Bill',
 ].map((name) => ({ id: name, label: name }))
+
+export interface TTSModel {
+  id: string
+  label: string
+  voices: string[]
+}
+
+export interface CustomTTSModel {
+  id: string
+  voices: string[]
+}
+
+export interface SpeechSettings {
+  has_fal_key: boolean
+  tts_models: TTSModel[]
+  custom_tts_models: CustomTTSModel[]
+  tts_model: string
+  voices: string[]
+  default_voice: string
+}
+
+export interface SpeechConfigUpdate {
+  tts_model?: string
+  custom_tts_models?: CustomTTSModel[]
+}
 
 export interface UsageTotal {
   kind: string
@@ -317,8 +344,12 @@ export const settingsApi = {
   // Speech uses the shared fal.ai key (configured on the Providers tab, under
   // Media Provider); this reports whether that key is present so the UI can gate
   // read-aloud / dictation.
-  getSpeechSettings(): Promise<{ has_fal_key: boolean; voices: string[]; default_voice: string }> {
+  getSpeechSettings(): Promise<SpeechSettings> {
     return client.get('/settings/speech').then((r) => r.data)
+  },
+
+  updateSpeechConfig(payload: SpeechConfigUpdate): Promise<{ tts_model: string; custom_tts_models: CustomTTSModel[] }> {
+    return client.put('/settings/speech/config', payload).then((r) => r.data)
   },
 
   transcribeAudio(blob: Blob): Promise<string> {

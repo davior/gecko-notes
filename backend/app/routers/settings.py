@@ -1129,18 +1129,120 @@ FAL_TTS_VOICES = [
     "Brian", "Daniel", "Lily", "Bill",
 ]
 
+# TTS models available via fal.ai with their supported voices
+FAL_TTS_MODELS = [
+    {
+        "id": "fal-ai/elevenlabs/tts/eleven-v3",
+        "label": "ElevenLabs v3",
+        "voices": FAL_TTS_VOICES,
+    },
+    {
+        "id": "fal-ai/elevenlabs/tts/turbo-v2.5",
+        "label": "ElevenLabs Turbo v2.5 (faster)",
+        "voices": FAL_TTS_VOICES,
+    },
+    {
+        "id": "fal-ai/kokoro/american-english",
+        "label": "Kokoro TTS (American English)",
+        "voices": [
+            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore",
+            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam",
+            "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
+            "am_puck", "am_santa",
+        ],
+        # Kokoro's fal endpoint takes the text under `prompt`, not `text`.
+        "text_field": "prompt",
+    },
+    {
+        "id": "fal-ai/gemini-tts",
+        "label": "Gemini TTS",
+        "voices": [
+            "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+            "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir",
+            "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Pulcherrima",
+            "Puck", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat",
+            "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+        ],
+        # Gemini's fal endpoint takes the text under `prompt`, not `text`.
+        "text_field": "prompt",
+    },
+    {
+        "id": "xai/tts/v1",
+        "label": "xAI TTS",
+        "voices": ["eve", "ara", "rex", "sal", "leo"],
+        # xAI's fal endpoint uses `voice_id` (not `voice`) and requires a `language`.
+        "voice_field": "voice_id",
+        "extra_params": {"language": "auto"},
+    },
+]
+
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models}
+
 _TTS_MAX_CHARS = 2000
 # Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
+def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
+    """Per-user speech config with defaults. Returns tts_model and custom_tts_models."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _SPEECH_CONFIG)
+    ).first()
+    cfg: Dict[str, Any] = {}
+    if row and row.value:
+        try:
+            cfg = json.loads(row.value) or {}
+        except (ValueError, TypeError):
+            cfg = {}
+    custom = [m for m in (cfg.get("custom_tts_models") or []) if isinstance(m, dict) and m.get("id")]
+    return {
+        "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
+        "custom_tts_models": custom,
+    }
+
+
+def get_voices_for_model(model_id: str, custom_models: List[Dict[str, Any]]) -> List[str]:
+    """Get available voices for a given TTS model."""
+    # Check curated models
+    for model in FAL_TTS_MODELS:
+        if model["id"] == model_id:
+            return model.get("voices", [])
+    # Check custom models
+    for model in custom_models:
+        if model.get("id") == model_id:
+            return model.get("voices", [])
+    # Fallback to default voices if model not found
+    return FAL_TTS_VOICES
+
+
+def build_tts_request_body(model_id: str, text: str, voice: str) -> Dict[str, Any]:
+    """Build the fal.run request body for a TTS model. Different fal.ai TTS
+    endpoints use different input schemas (e.g. `text` vs `prompt`, `voice` vs
+    `voice_id`, extra required fields) even though they're all curated here as
+    one unified interface. Curated models declare `text_field`/`voice_field`/
+    `extra_params` overrides; anything unlisted — including custom models,
+    whose schema we don't know — uses the common `text`/`voice` shape."""
+    model = next((m for m in FAL_TTS_MODELS if m["id"] == model_id), {})
+    text_field = model.get("text_field", "text")
+    voice_field = model.get("voice_field", "voice")
+    body = {text_field: text, voice_field: voice}
+    body.update(model.get("extra_params") or {})
+    return body
+
+
 @router.get("/speech")
 def get_speech_settings(request: Request, session: Session = Depends(get_session)):
-    """Speech uses the shared fal.ai key; report whether it's configured + the voices."""
+    """Speech uses the shared fal.ai key; report models, config, and available voices."""
     user_id = _get_user_id(request)
+    cfg = load_speech_config(session, user_id)
+    available_voices = get_voices_for_model(cfg["tts_model"], cfg["custom_tts_models"])
+
     return {
         "has_fal_key": bool(load_fal_api_key(session, user_id)),
-        "voices": FAL_TTS_VOICES,
+        "tts_models": FAL_TTS_MODELS,
+        "custom_tts_models": cfg["custom_tts_models"],
+        "tts_model": cfg["tts_model"],
+        "voices": available_voices,
         "default_voice": DEFAULT_TTS_VOICE,
     }
 
@@ -1207,6 +1309,39 @@ def list_tts_voices():
     return {"voices": FAL_TTS_VOICES}
 
 
+class SpeechConfigUpdate(BaseModel):
+    tts_model: Optional[str] = None
+    custom_tts_models: Optional[List[Dict[str, Any]]] = None
+
+
+@router.put("/speech/config")
+def update_speech_config(
+    payload: SpeechConfigUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Update user's speech configuration (TTS model selection and custom models)."""
+    user_id = _get_user_id(request)
+
+    # Load existing config
+    cfg = load_speech_config(session, user_id)
+
+    # Update with provided values
+    if payload.tts_model is not None:
+        cfg["tts_model"] = payload.tts_model
+    if payload.custom_tts_models is not None:
+        cfg["custom_tts_models"] = payload.custom_tts_models
+
+    # Persist to database
+    _upsert_user_setting(session, user_id, _SPEECH_CONFIG, json.dumps(cfg))
+    session.commit()
+
+    return {
+        "tts_model": cfg["tts_model"],
+        "custom_tts_models": cfg["custom_tts_models"],
+    }
+
+
 @router.post("/speech/tts")
 async def synthesize_speech(
     payload: TTSRequest,
@@ -1223,17 +1358,23 @@ async def synthesize_speech(
         raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
     if len(text) > _TTS_MAX_CHARS:
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
-    # Coerce unknown/legacy voices (e.g. a stale Deepgram value persisted before the
-    # fal migration) to the default so fal never rejects an invalid voice id.
+
+    # Load user's selected TTS model and its available voices
+    speech_cfg = load_speech_config(session, user_id)
+    tts_model = speech_cfg["tts_model"]
+    available_voices = get_voices_for_model(tts_model, speech_cfg["custom_tts_models"])
+
+    # Coerce unknown/legacy voices (e.g. a stale value persisted for a different
+    # model) to one this model actually supports, so fal never rejects the voice.
     voice = (payload.model or "").strip()
-    if voice not in FAL_TTS_VOICES:
-        voice = DEFAULT_TTS_VOICE
+    if voice not in available_voices:
+        voice = available_voices[0] if available_voices else DEFAULT_TTS_VOICE
 
     # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
     resp = await _post_upstream(
-        f"https://fal.run/{DEFAULT_TTS_MODEL}",
+        f"https://fal.run/{tts_model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body={"text": text, "voice": voice},
+        json_body=build_tts_request_body(tts_model, text, voice),
         timeout=120.0,
         provider_label="fal.ai",
     )
@@ -1259,7 +1400,7 @@ async def synthesize_speech(
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
 
-    _record_usage(session, user_id, "tts", DEFAULT_TTS_MODEL, len(text), "chars", provider="fal.ai")
+    _record_usage(session, user_id, "tts", tts_model, len(text), "chars", provider="fal.ai")
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
     return Response(content=data, media_type=media_type)
 

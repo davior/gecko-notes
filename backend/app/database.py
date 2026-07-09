@@ -382,6 +382,28 @@ def _run_migrations():
                 conn.commit()
         except Exception:
             pass
+        # Initialize speech_gen_config for existing users
+        try:
+            import json as _json
+            users = conn.execute(text('SELECT id FROM "user"')).fetchall()
+            for user_row in users:
+                uid = user_row[0]
+                # Check if speech_gen_config already exists
+                existing = conn.execute(text(
+                    "SELECT 1 FROM usersetting WHERE user_id = :uid AND key = 'speech_gen_config'"
+                ), {"uid": uid}).fetchone()
+                if not existing:
+                    # Create default speech config
+                    cfg = {
+                        "tts_model": "fal-ai/elevenlabs/tts/eleven-v3",
+                        "custom_tts_models": []
+                    }
+                    conn.execute(text(
+                        "INSERT INTO usersetting (user_id, key, value) VALUES (:uid, :key, :value)"
+                    ), {"uid": uid, "key": "speech_gen_config", "value": _json.dumps(cfg)})
+            conn.commit()
+        except Exception:
+            pass
         # Folder customization: emoji/icon + color
         for col, coltype in [("icon_type", "TEXT"), ("icon_value", "TEXT"), ("color", "TEXT")]:
             try:
