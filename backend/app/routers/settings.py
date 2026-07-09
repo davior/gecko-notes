@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import json
 import logging
@@ -431,6 +432,11 @@ def activate_system_prompt(prompt_id: str, request: Request, session: Session = 
 
 # ─── AI Provider Proxies ─────────────────────────────────────────────────────
 
+_RETRY_STATUS_CODES = {429, 503}
+_MAX_UPSTREAM_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 0.5
+
+
 async def _post_upstream(
     url: str,
     *,
@@ -449,10 +455,20 @@ async def _post_upstream(
     in its error panel) while still logging the full traceback server-side. A
     real HTTP error response from the provider is NOT handled here; the caller
     forwards that (with the upstream body) via ``response.is_success``.
+
+    A 429/503 response is retried a couple of times with a short backoff before
+    being handed back — the upstream explicitly asked us to back off, so retrying
+    a fresh request is safe (nothing was billed/produced on that attempt). Any
+    other status is returned immediately, same as before.
     """
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            return await client.post(url, headers=headers, json=json_body)
+            for attempt in range(_MAX_UPSTREAM_ATTEMPTS):
+                response = await client.post(url, headers=headers, json=json_body)
+                if response.status_code not in _RETRY_STATUS_CODES or attempt == _MAX_UPSTREAM_ATTEMPTS - 1:
+                    return response
+                await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
+            return response
     except httpx.TimeoutException as e:
         logger.exception("Timed out contacting %s", provider_label)
         raise HTTPException(
@@ -1247,18 +1263,28 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
     }
 
 
-async def _fal_wizper_transcribe(api_key: str, audio_bytes: bytes, content_type: str, filename: str) -> Dict[str, Any]:
-    """Upload audio to fal's storage and run Wizper transcription on it, via the
-    official fal_client SDK. Raises HTTPException with the real upstream message
-    on any failure instead of a generic/opaque error."""
+async def _fal_wizper_transcribe(api_key: str, audio_bytes: bytes, content_type: str, filename: str) -> httpx.Response:
+    """Upload audio to fal's storage via the official fal_client SDK, then POST directly to
+    fal's synchronous Wizper endpoint (rather than fal_client.run()) so the caller can read
+    fal's billing headers (x-fal-request-id / x-fal-billable-units) off the response — same
+    approach as the image-generation and TTS integrations. Raises HTTPException with the real
+    upstream message if the upload step fails; HTTP-level failures from the transcription POST
+    are surfaced via the returned response (`.is_success`/`.text`) for the caller to handle."""
     client = fal_client.AsyncClient(key=api_key)
     try:
         audio_url = await client.upload(audio_bytes, content_type, filename)
-        return await client.run(DEFAULT_STT_MODEL, arguments={"audio_url": audio_url, "task": "transcribe"})
     except fal_client.FalClientHTTPError as e:
         raise HTTPException(status_code=502, detail={"code": "fal_error", "message": str(e)[:500]})
     except Exception as e:
-        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": f"fal.ai request failed: {type(e).__name__}: {e}"[:500]})
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": f"fal.ai upload failed: {type(e).__name__}: {e}"[:500]})
+
+    return await _post_upstream(
+        f"https://fal.run/{DEFAULT_STT_MODEL}",
+        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+        json_body={"audio_url": audio_url, "task": "transcribe"},
+        timeout=120.0,
+        provider_label="fal.ai",
+    )
 
 
 @router.post("/speech/transcribe")
@@ -1275,8 +1301,16 @@ async def transcribe_speech(
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/webm"
 
-    body = await _fal_wizper_transcribe(api_key, audio_bytes, content_type, file.filename or "recording.webm")
+    resp = await _fal_wizper_transcribe(api_key, audio_bytes, content_type, file.filename or "recording.webm")
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
+    try:
+        body = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
     transcript = (body.get("text") or "").strip()
+
+    cost, currency, request_id = compute_fal_cost(session, user_id, DEFAULT_STT_MODEL, resp)
 
     # Record STT usage in audio seconds when Wizper returns chunk timestamps, else chars.
     try:
@@ -1286,10 +1320,12 @@ async def transcribe_speech(
             ts = chunks[-1].get("timestamp")
             if isinstance(ts, (list, tuple)) and len(ts) == 2 and ts[1] is not None:
                 seconds = round(float(ts[1]))
-        if seconds:
-            _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, seconds, "seconds", provider="fal.ai")
-        else:
-            _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, len(transcript), "chars", provider="fal.ai")
+        units, unit_type = (seconds, "seconds") if seconds else (len(transcript), "chars")
+        _record_usage(
+            session, user_id, "stt", DEFAULT_STT_MODEL, units, unit_type,
+            provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
+            cost_estimated=False if cost is not None else None,
+        )
     except Exception:
         pass
 
@@ -1400,7 +1436,12 @@ async def synthesize_speech(
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
 
-    _record_usage(session, user_id, "tts", tts_model, len(text), "chars", provider="fal.ai")
+    cost, currency, request_id = compute_fal_cost(session, user_id, tts_model, resp)
+    _record_usage(
+        session, user_id, "tts", tts_model, len(text), "chars",
+        provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
+        cost_estimated=False if cost is not None else None,
+    )
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
     return Response(content=data, media_type=media_type)
 
@@ -1611,6 +1652,27 @@ def get_cached_fal_price(session: Session, user_id: str, model: str) -> Optional
     """Cached {unit, unit_price, currency} for a model endpoint, or None if not cached yet."""
     prices = _read_fal_price_cache(session, user_id).get("prices") or {}
     return prices.get(model)
+
+
+def compute_fal_cost(
+    session: Session, user_id: str, model: str, resp: httpx.Response
+) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+    """Exact-cost attribution for a fal.ai synchronous-endpoint response: multiplies the
+    billed quantity fal reports (`x-fal-billable-units`) by the endpoint's cached per-unit
+    price. Returns (cost, currency, request_id); cost/currency are None when the price isn't
+    cached yet or fal omitted the billing header (never raises)."""
+    request_id = resp.headers.get("x-fal-request-id")
+    billable_raw = resp.headers.get("x-fal-billable-units")
+    cost: Optional[float] = None
+    currency: Optional[str] = None
+    price = get_cached_fal_price(session, user_id, model)
+    if price and billable_raw is not None:
+        try:
+            cost = round(float(billable_raw) * float(price["unit_price"]), 6)
+            currency = price.get("currency")
+        except (ValueError, TypeError, KeyError):
+            cost = None
+    return cost, currency, request_id
 
 
 async def _fetch_fal_usage_summary(billing_key: str, days: int) -> Optional[Dict[str, Any]]:

@@ -27,7 +27,7 @@ from app.routers.settings import (
     _record_usage,
     _require_safe_external_url,
     allowed_fal_models,
-    get_cached_fal_price,
+    compute_fal_cost,
     load_fal_api_key,
     load_fal_config,
 )
@@ -153,17 +153,7 @@ async def generate_image(
     # 3) Attribute the actual cost: fal returns the request id and billed quantity as
     #    response headers; multiplied by the endpoint's cached unit price this gives the
     #    exact charge for this image (null when the price isn't cached yet).
-    request_id = resp.headers.get("x-fal-request-id")
-    billable_raw = resp.headers.get("x-fal-billable-units")
-    cost: Optional[float] = None
-    currency: Optional[str] = None
-    price = get_cached_fal_price(session, user_id, model)
-    if price and billable_raw is not None:
-        try:
-            cost = round(float(billable_raw) * float(price["unit_price"]), 6)
-            currency = price.get("currency")
-        except (ValueError, TypeError, KeyError):
-            cost = None
+    cost, currency, request_id = compute_fal_cost(session, user_id, model, resp)
 
     # 4) Record usage (surfaced in Settings → Usage as kind "image"). cost is the
     #    exact fal-billed amount (not an estimate), so cost_estimated stays False.
