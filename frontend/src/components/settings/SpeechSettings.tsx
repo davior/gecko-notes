@@ -77,9 +77,9 @@ export default function SpeechSettings() {
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">TTS Model</h3>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">TTS Model &amp; Voice</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Choose the TTS model used when reading notes aloud.
+          Choose the TTS model and voice used when reading notes aloud.
         </p>
         <div className="card p-4 space-y-4">
           <div>
@@ -93,6 +93,41 @@ export default function SpeechSettings() {
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="label">Voice</label>
+            <select
+              className="input"
+              value={voice}
+              onChange={(e) => void updateAppSettings({ tts_model: e.target.value })}
+            >
+              {availableVoices.map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              className="btn-primary text-sm flex items-center gap-1.5"
+              disabled={!falKeyConfigured}
+              onClick={() => {
+                if (tts.isSpeaking) tts.stop()
+                else tts.play('Hello, this is a preview of the selected voice.')
+              }}
+            >
+              {tts.status === 'loading' ? (
+                'Loading…'
+              ) : tts.isSpeaking ? (
+                <><Square className="w-4 h-4" /> Stop</>
+              ) : (
+                <><Volume2 className="w-4 h-4" /> Preview voice</>
+              )}
+            </button>
+            {tts.status === 'error' && tts.errorMessage && (
+              <span className="text-xs text-red-500">{tts.errorMessage}</span>
+            )}
           </div>
 
           <div>
@@ -141,49 +176,6 @@ export default function SpeechSettings() {
                 <Plus className="w-4 h-4" /> Add Custom Model
               </button>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Voice</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Choose the voice for the selected TTS model.
-        </p>
-        <div className="card p-4 space-y-4">
-          <div>
-            <label className="label">Voice</label>
-            <select
-              className="input"
-              value={voice}
-              onChange={(e) => void updateAppSettings({ tts_model: e.target.value })}
-            >
-              {availableVoices.map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              className="btn-primary text-sm flex items-center gap-1.5"
-              disabled={!falKeyConfigured}
-              onClick={() => {
-                if (tts.isSpeaking) tts.stop()
-                else tts.play('Hello, this is a preview of the selected voice.')
-              }}
-            >
-              {tts.status === 'loading' ? (
-                'Loading…'
-              ) : tts.isSpeaking ? (
-                <><Square className="w-4 h-4" /> Stop</>
-              ) : (
-                <><Volume2 className="w-4 h-4" /> Preview voice</>
-              )}
-            </button>
-            {tts.status === 'error' && tts.errorMessage && (
-              <span className="text-xs text-red-500">{tts.errorMessage}</span>
-            )}
           </div>
         </div>
       </div>
