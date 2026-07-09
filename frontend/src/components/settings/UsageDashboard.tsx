@@ -222,7 +222,7 @@ export default function UsageDashboard() {
             <div className="card p-4">
               {providerData.length === 0 ? (
                 <div className="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
-                  No cost recorded yet. LLM costs are list-price estimates; fal.ai (image) cost is billed exactly.
+                  No cost recorded yet. LLM costs are list-price estimates; fal.ai cost is billed exactly.
                 </div>
               ) : (
                 <>
@@ -246,7 +246,7 @@ export default function UsageDashboard() {
                   </ResponsiveContainer>
                   {anyEstimated && (
                     <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-                      Costs marked for LLM providers are list-price estimates; fal.ai image cost is billed exactly.
+                      Costs marked for LLM providers are list-price estimates; fal.ai cost is billed exactly.
                     </p>
                   )}
                 </>

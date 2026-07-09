@@ -79,7 +79,7 @@ function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: s
 }
 
 export default function SpeechSettings() {
-  const { falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
+  const { falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels, sttModel, sttModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
   const [error, setError] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const tts = useTextToSpeech({ model: voice })
@@ -92,6 +92,15 @@ export default function SpeechSettings() {
       await updateSpeechConfig({ tts_model: model })
     } catch {
       setError('Failed to save model selection')
+    }
+  }
+
+  async function updateSttModel(model: string) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ stt_model: model })
+    } catch {
+      setError('Failed to save STT model selection')
     }
   }
 
@@ -224,6 +233,25 @@ export default function SpeechSettings() {
               </p>
             )}
           </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech-to-Text Model</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          Choose the model used for dictation and video transcription.
+        </p>
+        <div className="card p-4">
+          <label className="label">Model</label>
+          <select
+            className="input"
+            value={sttModel}
+            onChange={(e) => void updateSttModel(e.target.value)}
+          >
+            {sttModels.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 

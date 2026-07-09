@@ -5,15 +5,17 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import fal_client
+import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import engine
 from app.models import TranscriptionJob
-from app.routers.settings import DEFAULT_STT_MODEL, _record_usage, load_fal_api_key
+from app.routers.settings import _record_usage, compute_fal_cost, load_fal_api_key, load_speech_config
 from app.schemas import DataResponse, TranscriptionJobRead
 
 router = APIRouter()
@@ -42,7 +44,7 @@ def _safe_source_path(user_id: str, filename: str) -> str:
 
 class TranscribeRequest(BaseModel):
     filename: str
-    model: str = DEFAULT_STT_MODEL
+    model: Optional[str] = None  # None = use the caller's configured STT model
 
 
 def _job_to_read(job: TranscriptionJob) -> TranscriptionJobRead:
@@ -104,11 +106,31 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             try:
                 fal = fal_client.SyncClient(key=api_key)
                 audio_url = fal.upload(audio_bytes, "audio/wav", "recording.wav")
-                body = fal.run(DEFAULT_STT_MODEL, arguments={"audio_url": audio_url, "task": "transcribe"})
             except fal_client.FalClientHTTPError as e:
                 raise RuntimeError(f"fal.ai error: {str(e)[:500]}")
             except Exception as e:
-                raise RuntimeError(f"fal.ai request failed: {type(e).__name__}: {e}")
+                raise RuntimeError(f"fal.ai upload failed: {type(e).__name__}: {e}")
+
+            # POST directly to fal's synchronous Wizper endpoint (rather than
+            # fal_client.run()) so we can read fal's billing headers off the response,
+            # same approach as the live-transcription and TTS integrations.
+            try:
+                with httpx.Client(timeout=120.0) as http:
+                    resp = http.post(
+                        f"https://fal.run/{model}",
+                        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+                        json={"audio_url": audio_url, "task": "transcribe"},
+                    )
+            except httpx.TimeoutException as e:
+                raise RuntimeError(f"Timed out contacting fal.ai: {type(e).__name__}: {e}")
+            except httpx.RequestError as e:
+                raise RuntimeError(f"Could not reach fal.ai: {type(e).__name__}: {e}")
+            if not resp.is_success:
+                raise RuntimeError(f"fal.ai error: {resp.text[:500]}")
+            try:
+                body = resp.json()
+            except ValueError:
+                raise RuntimeError("Unexpected fal.ai response")
 
             transcript = (body.get("text") or "").strip()
 
@@ -124,6 +146,7 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
             session.add(job)
             session.commit()
 
+            cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
             try:
                 seconds = None
                 chunks = body.get("chunks") or []
@@ -131,10 +154,12 @@ def _run_job(job_id: str, user_id: str, video_path: str, model: str) -> None:
                     ts = chunks[-1].get("timestamp")
                     if isinstance(ts, (list, tuple)) and len(ts) == 2 and ts[1] is not None:
                         seconds = round(float(ts[1]))
-                if seconds:
-                    _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, seconds, "seconds", provider="fal.ai")
-                else:
-                    _record_usage(session, user_id, "stt", DEFAULT_STT_MODEL, len(transcript), "chars", provider="fal.ai")
+                units, unit_type = (seconds, "seconds") if seconds else (len(transcript), "chars")
+                _record_usage(
+                    session, user_id, "stt", model, units, unit_type,
+                    provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
+                    cost_estimated=cost_estimated,
+                )
             except Exception:
                 pass
 
@@ -163,12 +188,13 @@ def create_job(payload: TranscribeRequest, request: Request, background_tasks: B
         updated_at=datetime.utcnow(),
     )
     with Session(engine) as session:
+        model = payload.model or load_speech_config(session, user_id)["stt_model"]
         session.add(job)
         session.commit()
         session.refresh(job)
         result = _job_to_read(job)
 
-    background_tasks.add_task(_run_job, job.id, user_id, video_path, payload.model)
+    background_tasks.add_task(_run_job, job.id, user_id, video_path, model)
 
     return DataResponse(data=result)
 
