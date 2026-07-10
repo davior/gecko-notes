@@ -1641,6 +1641,28 @@ FAL_IMAGE_SIZES = [
     "landscape_4_3", "landscape_16_9",
 ]
 
+# Most fal text-to-image endpoints accept the named presets above verbatim. OpenAI's
+# GPT Image models (also served via fal) instead proxy OpenAI's own `image_size`
+# enum — only "1024x1024", "1536x1024" or "1024x1536" — and 422 on anything else, so
+# their presets need translating down to the closest literal WxH match.
+_OPENAI_IMAGE_SIZE_MODELS = {"fal-ai/gpt-image-1.5", "fal-ai/gpt-image-2"}
+_OPENAI_IMAGE_SIZE_MAP = {
+    "square_hd": "1024x1024",
+    "square": "1024x1024",
+    "landscape_4_3": "1536x1024",
+    "landscape_16_9": "1536x1024",
+    "portrait_4_3": "1024x1536",
+    "portrait_16_9": "1024x1536",
+}
+
+
+def resolve_fal_image_size(model: str, image_size: str) -> str:
+    """Translate our named `image_size` preset to whatever the target fal endpoint
+    actually expects. Reused by the images router."""
+    if model in _OPENAI_IMAGE_SIZE_MODELS:
+        return _OPENAI_IMAGE_SIZE_MAP.get(image_size, "1024x1024")
+    return image_size
+
 
 def _upsert_user_setting(session: Session, user_id: str, key: str, serialised_value: str) -> None:
     """Insert or update a single per-user setting row. Caller commits."""
