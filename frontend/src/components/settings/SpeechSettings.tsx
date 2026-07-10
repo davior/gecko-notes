@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Volume2, Square, Plus, Trash2, X } from 'lucide-react'
+import { Volume2, Square, Plus, Trash2, X, Eye, EyeOff } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
+import type { SttProvider } from '@/api/settings'
 
 function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: string[]) => string | void; onClose: () => void }) {
   const [modelId, setModelId] = useState('')
@@ -79,9 +80,17 @@ function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: s
 }
 
 export default function SpeechSettings() {
-  const { falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels, sttModel, sttModels, updateAppSettings, updateSpeechConfig } = useSettingsStore()
+  const {
+    falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels,
+    sttModel, sttModels, sttProvider, deepgramModel, deepgramModels, deepgramKeyConfigured,
+    updateAppSettings, updateSpeechConfig,
+  } = useSettingsStore()
   const [error, setError] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [deepgramKeyInput, setDeepgramKeyInput] = useState('')
+  const [showDeepgramKey, setShowDeepgramKey] = useState(false)
+  const [savingDeepgramKey, setSavingDeepgramKey] = useState(false)
+  const [deepgramKeySaved, setDeepgramKeySaved] = useState(false)
   const tts = useTextToSpeech({ model: voice })
 
   const allModels = [...ttsModels, ...customTtsModels.map((m) => ({ ...m, label: m.id }))]
@@ -101,6 +110,39 @@ export default function SpeechSettings() {
       await updateSpeechConfig({ stt_model: model })
     } catch {
       setError('Failed to save STT model selection')
+    }
+  }
+
+  async function updateSttProvider(provider: SttProvider) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ stt_provider: provider })
+    } catch {
+      setError('Failed to save STT provider selection')
+    }
+  }
+
+  async function updateDeepgramModel(model: string) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ deepgram_model: model })
+    } catch {
+      setError('Failed to save Deepgram model selection')
+    }
+  }
+
+  async function saveDeepgramKey(value: string) {
+    setSavingDeepgramKey(true)
+    setError(null)
+    try {
+      await updateSpeechConfig({ deepgram_api_key: value })
+      setDeepgramKeyInput('')
+      setDeepgramKeySaved(true)
+      setTimeout(() => setDeepgramKeySaved(false), 3000)
+    } catch {
+      setError('Failed to save Deepgram API key')
+    } finally {
+      setSavingDeepgramKey(false)
     }
   }
 
@@ -128,10 +170,11 @@ export default function SpeechSettings() {
       <div>
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Voice dictation and read-aloud run on fal.ai and share the same API key as image
-          generation. Set that key on the <span className="font-medium">Providers</span> tab, under{' '}
-          <span className="font-medium">Media Provider</span>; once it's configured, dictation works
-          in all browsers and notes can be read aloud.
+          Read-aloud and the fal.ai speech-to-text provider run on fal.ai and share the same API key
+          as image generation. Set that key on the <span className="font-medium">Providers</span> tab,
+          under <span className="font-medium">Media Provider</span>; once it's configured, dictation
+          works in all browsers and notes can be read aloud. Deepgram realtime streaming dictation uses
+          its own separate API key, set directly below.
         </p>
       </div>
 
@@ -237,21 +280,108 @@ export default function SpeechSettings() {
       </div>
 
       <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech-to-Text Model</h3>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech-to-Text</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Choose the model used for dictation and video transcription.
+          Choose which engine transcribes dictation in the AI Assistant and Note Editor.
+          "Automatic" uses the browser's built-in dictation where available and falls back to
+          fal.ai otherwise; Deepgram and fal.ai can also be forced explicitly, even in browsers
+          that support built-in dictation.
         </p>
-        <div className="card p-4">
-          <label className="label">Model</label>
-          <select
-            className="input"
-            value={sttModel}
-            onChange={(e) => void updateSttModel(e.target.value)}
-          >
-            {sttModels.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+        <div className="card p-4 space-y-4">
+          <div>
+            <label className="label">Provider</label>
+            <select
+              className="input"
+              value={sttProvider}
+              onChange={(e) => void updateSttProvider(e.target.value as SttProvider)}
+            >
+              <option value="auto">Automatic (browser dictation, fal.ai fallback)</option>
+              <option value="deepgram">Deepgram (realtime streaming)</option>
+              <option value="fal">fal.ai (batch)</option>
+            </select>
+          </div>
+
+          {sttProvider === 'deepgram' && (
+            <div>
+              <label className="label">Deepgram model</label>
+              <select
+                className="input"
+                value={deepgramModel}
+                onChange={(e) => void updateDeepgramModel(e.target.value)}
+              >
+                {deepgramModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="label">fal.ai model</label>
+            <select
+              className="input"
+              value={sttModel}
+              onChange={(e) => void updateSttModel(e.target.value)}
+            >
+              {sttModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Used by the Automatic/fal.ai provider above, and by video transcription.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Deepgram API Key</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          Required to use Deepgram as the speech-to-text provider above. Stored encrypted; never
+          returned to the browser.{' '}
+          <a href="https://console.deepgram.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+            Get a Deepgram API key
+          </a>
+        </p>
+        <div className="card p-4 space-y-3">
+          {deepgramKeyConfigured && (
+            <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Deepgram key configured</p>
+          )}
+          <div className="relative">
+            <input
+              type={showDeepgramKey ? 'text' : 'password'}
+              className="input pr-10"
+              placeholder={deepgramKeyConfigured ? 'Enter new key to replace existing…' : 'Deepgram key…'}
+              value={deepgramKeyInput}
+              onChange={(e) => setDeepgramKeyInput(e.target.value)}
+            />
+            <button
+              type="button"
+              className="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              onClick={() => setShowDeepgramKey((v) => !v)}
+            >
+              {showDeepgramKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              className="btn-primary text-sm"
+              disabled={savingDeepgramKey || !deepgramKeyInput}
+              onClick={() => void saveDeepgramKey(deepgramKeyInput)}
+            >
+              {savingDeepgramKey ? 'Saving…' : 'Save Key'}
+            </button>
+            {deepgramKeyConfigured && (
+              <button
+                className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400"
+                disabled={savingDeepgramKey}
+                onClick={() => void saveDeepgramKey('')}
+              >
+                Remove key
+              </button>
+            )}
+            {deepgramKeySaved && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
+          </div>
         </div>
       </div>
 

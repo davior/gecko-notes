@@ -2,11 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, MicOff, Paperclip, Lock, LockOpen, ListChecks, FileText, History } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, History } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
+import DictationWaveIcon from '@/components/DictationWaveIcon'
 import { settingsApi } from '@/api/settings'
 import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
@@ -369,6 +370,7 @@ export default function AIConversationPanel({
   const sessionsEnabled = isList || !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
+  const sttProvider = useSettingsStore((s) => s.sttProvider)
   const categories = useCategoriesStore((s) => s.categories)
 
   // Conversation and session state (self-managed — not driven by props)
@@ -435,15 +437,15 @@ export default function AIConversationPanel({
   // Abort any in-flight stream on unmount so its reader/state updates don't leak.
   useEffect(() => () => { abortRef.current?.abort() }, [])
 
+  // Tracks whether the *current* dictation session has recognized any speech
+  // yet, so stopping the mic without having said anything never re-sends
+  // whatever text was already typed in the box.
+  const dictatedThisSessionRef = useRef(false)
+
   const handleDictationResult = useCallback((text: string) => {
-    const newInput = input.trim() ? `${input.trim()} ${text}` : text
-    setInput(newInput)
-    setTimeout(() => {
-      if (newInput.trim() && !loading && aiService) {
-        void handleSend(newInput, conversation)
-      }
-    }, 0)
-  }, [input, loading, aiService, conversation])
+    dictatedThisSessionRef.current = true
+    setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text))
+  }, [])
 
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
@@ -451,7 +453,38 @@ export default function AIConversationPanel({
   )
   const dictation = useDictation(handleDictationResult, {
     transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
+    sttProvider,
   })
+
+  // Send only once a dictation session ends (or Enter is pressed, below) —
+  // not after every recognized chunk. `latestSendCtxRef` must be kept fresh
+  // *before* the edge-detect effect below runs: for the fal.ai batch fallback
+  // path, the final chunk's setInput and the mode->null transition land in
+  // the same commit, so effects run in declaration order and this one needs
+  // to see this render's `input`, not a stale one.
+  const latestSendCtxRef = useRef({ input, loading, aiService, conversation })
+  useEffect(() => { latestSendCtxRef.current = { input, loading, aiService, conversation } })
+
+  const handleSendRef = useRef(handleSend)
+  useEffect(() => { handleSendRef.current = handleSend })
+
+  const prevDictationModeRef = useRef(dictation.mode)
+  useEffect(() => {
+    const prev = prevDictationModeRef.current
+    prevDictationModeRef.current = dictation.mode
+
+    if (dictation.mode === 'dictation' && prev !== 'dictation') {
+      dictatedThisSessionRef.current = false // fresh session, nothing dictated yet
+    }
+
+    if (prev === 'dictation' && dictation.mode === null && dictation.status !== 'error' && dictatedThisSessionRef.current) {
+      dictatedThisSessionRef.current = false
+      const { input: text, loading, aiService, conversation } = latestSendCtxRef.current
+      if (text.trim() && !loading && aiService) {
+        void handleSendRef.current(text, conversation)
+      }
+    }
+  }, [dictation.mode, dictation.status])
 
   // Reset step selection (all checked) whenever a new plan is ready to review.
   useEffect(() => {
@@ -1699,7 +1732,7 @@ export default function AIConversationPanel({
                   aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
                 >
                   {dictation.status === 'recording' ? (
-                    <MicOff className="w-4 h-4 text-red-500" />
+                    <DictationWaveIcon className="text-red-500" />
                   ) : (
                     <Mic className="w-4 h-4" />
                   )}
@@ -1712,6 +1745,10 @@ export default function AIConversationPanel({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
+                    if (dictation.mode === 'dictation') {
+                      dictatedThisSessionRef.current = false
+                      dictation.stopDictation()
+                    }
                     void handleSend(input, conversation)
                   }
                 }}

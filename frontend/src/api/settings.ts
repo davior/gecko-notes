@@ -11,6 +11,8 @@ export const DEFAULT_TTS_VOICE = 'Aria'
 export const DEFAULT_TTS_MODEL = 'fal-ai/elevenlabs/tts/eleven-v3'
 // Mirrors backend `DEFAULT_STT_MODEL` — used before speech settings finish loading.
 export const DEFAULT_STT_MODEL = 'fal-ai/wizper'
+// Mirrors backend `DEFAULT_DEEPGRAM_MODEL` — used before speech settings finish loading.
+export const DEFAULT_DEEPGRAM_MODEL = 'nova-3'
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
@@ -35,6 +37,8 @@ export interface CustomTTSModel {
   voices: string[]
 }
 
+export type SttProvider = 'auto' | 'deepgram' | 'fal'
+
 export interface SpeechSettings {
   has_fal_key: boolean
   tts_models: TTSModel[]
@@ -44,12 +48,21 @@ export interface SpeechSettings {
   default_voice: string
   stt_models: STTModel[]
   stt_model: string
+  has_deepgram_key: boolean
+  stt_provider: SttProvider
+  deepgram_model: string
+  deepgram_models: STTModel[]
 }
 
 export interface SpeechConfigUpdate {
   tts_model?: string
   custom_tts_models?: CustomTTSModel[]
   stt_model?: string
+  stt_provider?: SttProvider
+  deepgram_model?: string
+  // Tri-state, same convention as the fal.ai key elsewhere: omitted leaves the
+  // stored key untouched, "" clears it, a non-empty value replaces it.
+  deepgram_api_key?: string
 }
 
 export interface UsageTotal {
@@ -361,7 +374,14 @@ export const settingsApi = {
     return client.get('/settings/speech').then((r) => r.data)
   },
 
-  updateSpeechConfig(payload: SpeechConfigUpdate): Promise<{ tts_model: string; custom_tts_models: CustomTTSModel[]; stt_model: string }> {
+  updateSpeechConfig(payload: SpeechConfigUpdate): Promise<{
+    tts_model: string
+    custom_tts_models: CustomTTSModel[]
+    stt_model: string
+    stt_provider: SttProvider
+    deepgram_model: string
+    has_deepgram_key: boolean
+  }> {
     return client.put('/settings/speech/config', payload).then((r) => r.data)
   },
 

@@ -39,7 +39,7 @@ import { settingsApi } from '@/api/settings'
 import { transcriptionApi } from '@/api/transcription'
 import { notesApi, configApi, type Note } from '@/api/notes'
 import { annotationsApi, type Annotation } from '@/api/annotations'
-import { useDictation } from '@/hooks/useDictation'
+import { useDictation, type DictationMode } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
 
@@ -214,16 +214,16 @@ export default function EditorView() {
 
   // Insert blocks at the cursor when the editor is focused, otherwise append to
   // the end of the note (e.g. dictation started while focus was elsewhere).
+  // Returns the inserted blocks so callers (e.g. dictation) can track them.
   const insertBlocksAtCursor = useCallback((blocks: PartialBlock[]) => {
-    if (!editor || blocks.length === 0) return
+    if (!editor || blocks.length === 0) return []
     if (editor.isFocused()) {
       const cursorBlock = editor.getTextCursorPosition().block
-      editor.insertBlocks(blocks, cursorBlock, 'after')
-    } else {
-      const doc = editor.document
-      const lastBlock = doc[doc.length - 1]
-      if (lastBlock) editor.insertBlocks(blocks, lastBlock, 'after')
+      return editor.insertBlocks(blocks, cursorBlock, 'after')
     }
+    const doc = editor.document
+    const lastBlock = doc[doc.length - 1]
+    return lastBlock ? editor.insertBlocks(blocks, lastBlock, 'after') : []
   }, [editor])
 
   const insertBlocksAtTop = useCallback((blocks: PartialBlock[]) => {
@@ -232,10 +232,41 @@ export default function EditorView() {
     if (firstBlock) editor.insertBlocks(blocks, firstBlock, 'before')
   }, [editor])
 
+  // Tracks the paragraph block the *current* dictation session is appending
+  // to, so consecutive recognized chunks concatenate onto one line instead of
+  // each becoming its own new block (which, without a stable insertion point,
+  // ends up stacking in reverse order as the cursor never advances). Cleared
+  // whenever a dictation session isn't active — see the effect below.
+  const dictationModeRef = useRef<DictationMode>(null)
+  const dictationSessionBlockIdRef = useRef<string | null>(null)
+
   const insertDictatedText = useCallback((text: string) => {
-    if (!text.trim()) return
-    insertBlocksAtCursor([{ type: 'paragraph', content: [{ type: 'text', text: text.trim(), styles: {} }] }])
-  }, [insertBlocksAtCursor])
+    const trimmed = text.trim()
+    if (!trimmed || !editor) return
+
+    const inSession = dictationModeRef.current === 'dictation'
+    const targetId = inSession ? dictationSessionBlockIdRef.current : null
+
+    if (targetId) {
+      const existing = editor.getBlock(targetId)
+      if (existing) {
+        const priorText = extractPlainText([existing])
+        const merged = priorText ? `${priorText} ${trimmed}` : trimmed
+        editor.updateBlock(targetId, { content: [{ type: 'text', text: merged, styles: {} }] })
+        if (editor.isFocused()) editor.setTextCursorPosition(targetId, 'end')
+        return
+      }
+      // Target block was deleted mid-session (e.g. user backspaced it) — fall
+      // through and re-anchor to a freshly inserted one.
+    }
+
+    const inserted = insertBlocksAtCursor([{ type: 'paragraph', content: [{ type: 'text', text: trimmed, styles: {} }] }])
+    const newBlock = inserted[0]
+    if (newBlock) {
+      if (inSession) dictationSessionBlockIdRef.current = newBlock.id
+      if (editor.isFocused()) editor.setTextCursorPosition(newBlock.id, 'end')
+    }
+  }, [editor, insertBlocksAtCursor])
 
   // Upload an audio blob to /media and return its URL. The filename extension
   // must match the blob type so the backend accepts it (.webm/.ogg/.mp3 are allowed).
@@ -247,7 +278,7 @@ export default function EditorView() {
     return res.data.url
   }, [])
 
-  const { falKeyConfigured } = settingsStore
+  const { falKeyConfigured, sttProvider } = settingsStore
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
     [],
@@ -273,7 +304,16 @@ export default function EditorView() {
   const dictation = useDictation(insertDictatedText, {
     transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
     onRecordingComplete: handleRecordingComplete,
+    sttProvider,
   })
+
+  // Clear the dictation session's target block whenever a session isn't
+  // active, so the next session starts a fresh paragraph rather than
+  // continuing to append to a stale one.
+  useEffect(() => {
+    dictationModeRef.current = dictation.mode
+    if (dictation.mode !== 'dictation') dictationSessionBlockIdRef.current = null
+  }, [dictation.mode])
 
   // Upload a recorded video blob to /media and return its URL + stored filename
   // (the filename is what the async transcription job references).
