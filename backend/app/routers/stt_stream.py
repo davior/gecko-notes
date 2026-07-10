@@ -85,24 +85,40 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
             logger.info("Deepgram stream connected for user %s (model=%s)", user_id, model)
 
             async def pump_client_to_deepgram():
-                while True:
-                    message = await websocket.receive()
-                    if message["type"] == "websocket.disconnect":
-                        return
-                    data = message.get("bytes")
-                    if data is not None:
-                        await deepgram_ws.send(data)
-                        continue
-                    text = message.get("text")
-                    if text is None:
-                        continue
-                    try:
-                        control = json.loads(text)
-                    except (ValueError, TypeError):
-                        continue
-                    if control.get("type") == "stop":
-                        await deepgram_ws.send(json.dumps({"type": "CloseStream"}))
-                        return
+                chunks = 0
+                audio_bytes = 0
+                try:
+                    while True:
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            logger.info(
+                                "Client websocket disconnected for user %s (code=%s) after %d chunk(s)/%d byte(s)",
+                                user_id, message.get("code"), chunks, audio_bytes,
+                            )
+                            return
+                        data = message.get("bytes")
+                        if data is not None:
+                            chunks += 1
+                            audio_bytes += len(data)
+                            await deepgram_ws.send(data)
+                            continue
+                        text = message.get("text")
+                        if text is None:
+                            continue
+                        try:
+                            control = json.loads(text)
+                        except (ValueError, TypeError):
+                            continue
+                        if control.get("type") == "stop":
+                            logger.info(
+                                "Client requested stop for user %s after %d chunk(s)/%d byte(s)",
+                                user_id, chunks, audio_bytes,
+                            )
+                            await deepgram_ws.send(json.dumps({"type": "CloseStream"}))
+                            return
+                finally:
+                    if chunks == 0:
+                        logger.warning("No audio chunks were ever received from the client for user %s", user_id)
 
             async def pump_deepgram_to_client():
                 nonlocal seconds_sent
