@@ -40,6 +40,22 @@ export function connectDeepgramStream(
   const token = localStorage.getItem('auth_token') ?? ''
   const url = `${wsBaseURL()}/stt-stream/ws?token=${encodeURIComponent(token)}`
   const ws = new WebSocket(url)
+  const openedAt = performance.now()
+  let chunksSent = 0
+
+  // Temporary diagnostics for a production-only dictation drop — remove once
+  // root-caused. Backend-side logging alone couldn't explain a clean-looking
+  // disconnect with no exception, so this gives us the browser's own view of
+  // timing/close code to compare against the backend logs for the same session.
+  ws.onopen = () => {
+    // eslint-disable-next-line no-console
+    console.log('[deepgram] ws open')
+  }
+
+  ws.onerror = (event) => {
+    // eslint-disable-next-line no-console
+    console.warn('[deepgram] ws error', event, `after ${(performance.now() - openedAt).toFixed(0)}ms, ${chunksSent} chunk(s) sent`)
+  }
 
   ws.onmessage = (event) => {
     if (typeof event.data !== 'string') return
@@ -52,12 +68,21 @@ export function connectDeepgramStream(
   }
 
   ws.onclose = (event) => {
+    // eslint-disable-next-line no-console
+    console.log(
+      '[deepgram] ws closed',
+      { code: event.code, reason: event.reason, wasClean: event.wasClean },
+      `after ${(performance.now() - openedAt).toFixed(0)}ms, ${chunksSent} chunk(s) sent`,
+    )
     onClose(event.code, CLOSE_CODE_MESSAGES[event.code] ?? event.reason ?? '')
   }
 
   return {
     sendAudioChunk(chunk: Blob) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(chunk)
+      if (ws.readyState === WebSocket.OPEN) {
+        chunksSent += 1
+        ws.send(chunk)
+      }
     },
     stop() {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stop' }))
