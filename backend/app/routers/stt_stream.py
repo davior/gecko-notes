@@ -100,6 +100,16 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                         if data is not None:
                             chunks += 1
                             audio_bytes += len(data)
+                            if chunks == 1:
+                                # Temporary diagnostic for a prod-only decode failure:
+                                # Deepgram reports 0.0s of decoded audio despite bytes
+                                # arriving here — confirm the first chunk is actually a
+                                # valid Ogg container (magic bytes "OggS" = 4f 67 67 53)
+                                # by the time it leaves this process.
+                                logger.info(
+                                    "First audio chunk for user %s: %d byte(s), leading hex=%s",
+                                    user_id, len(data), data[:16].hex(),
+                                )
                             await deepgram_ws.send(data)
                             continue
                         text = message.get("text")
@@ -119,6 +129,11 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                 finally:
                     if chunks == 0:
                         logger.warning("No audio chunks were ever received from the client for user %s", user_id)
+                    else:
+                        logger.info(
+                            "Client-to-Deepgram relay ended for user %s: %d chunk(s), %d byte(s) total",
+                            user_id, chunks, audio_bytes,
+                        )
 
             async def pump_deepgram_to_client():
                 nonlocal seconds_sent
