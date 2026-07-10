@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { apiErrorMessage } from '@/utils/format'
+import { connectDeepgramStream, type DeepgramStreamHandle } from '@/api/deepgramStream'
 
 // Self-contained type declarations for the Web Speech API — not universally present
 // in all TypeScript DOM lib versions, so we declare them explicitly here.
@@ -99,13 +100,30 @@ export function useDictation(
     /** Called when a Record-button session finishes, with the transcription
      *  (possibly empty if transcription failed) and the recorded audio blob. */
     onRecordingComplete?: (text: string, blob: Blob) => void
+    /** Which dictation engine to use. 'auto' (default) keeps today's behavior:
+     *  native Web Speech API when available, else the fal.ai recorder fallback.
+     *  'deepgram'/'fal' are explicit overrides that force that engine even when
+     *  native Web Speech API support exists. */
+    sttProvider?: 'auto' | 'deepgram' | 'fal'
   },
 ): UseDictationReturn {
-  const useRecorderFallback = !hasSpeechRecognition && hasMediaRecorder && !!options?.transcribeAudio
-  const isSupported = hasSpeechRecognition || useRecorderFallback
+  const providerOverride = options?.sttProvider ?? 'auto'
+  // Deepgram forces its own streaming path when selected, regardless of native support.
+  const useDeepgramPath = providerOverride === 'deepgram' && hasMediaRecorder
+  // fal.ai forces the batch recorder path when explicitly selected; otherwise the
+  // recorder is only used as the 'auto' fallback for browsers without native support.
+  const useRecorderFallback =
+    !useDeepgramPath &&
+    hasMediaRecorder &&
+    !!options?.transcribeAudio &&
+    (providerOverride === 'fal' || (providerOverride === 'auto' && !hasSpeechRecognition))
+  // Native Web Speech is only used in 'auto' mode — an explicit 'deepgram'/'fal'
+  // choice always overrides it, even where native support exists.
+  const useNativeSpeech = providerOverride === 'auto' && hasSpeechRecognition
+  const isSupported = useNativeSpeech || useDeepgramPath || useRecorderFallback
   // The Record button always needs to capture the audio file, which only the
   // MediaRecorder path can do — so it's available whenever MediaRecorder and a
-  // transcribe backend exist, independent of Web Speech API support.
+  // transcribe backend exist, independent of Web Speech API support or sttProvider.
   const canRecord = hasMediaRecorder && !!options?.transcribeAudio
 
   const [status, setStatus] = useState<DictationStatus>(isSupported ? 'idle' : 'unsupported')
@@ -115,6 +133,7 @@ export function useDictation(
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const deepgramHandleRef = useRef<DeepgramStreamHandle | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const onFinalResultRef = useRef(onFinalResult)
   const transcribeAudioRef = useRef(options?.transcribeAudio)
@@ -139,6 +158,7 @@ export function useDictation(
     return () => {
       recognitionRef.current?.abort()
       mediaRecorderRef.current?.stop()
+      deepgramHandleRef.current?.close()
     }
   }, [])
 
@@ -243,16 +263,75 @@ export function useDictation(
     })
   }, [])
 
+  const startDeepgramStream = useCallback(() => {
+    userStoppedRef.current = false
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg'
+      const recorder = new MediaRecorder(stream, { mimeType })
+
+      const handle = connectDeepgramStream(
+        (event) => {
+          if (event.type === 'interim') {
+            setInterimText(event.text)
+          } else if (event.type === 'final') {
+            setInterimText('')
+            if (event.text.trim()) onFinalResultRef.current(event.text)
+          } else if (event.type === 'error') {
+            setErrorMessage(event.message)
+            setStatus('error')
+          }
+        },
+        (_code, reason) => {
+          deepgramHandleRef.current = null
+          if (userStoppedRef.current) {
+            setStatus((prev) => (prev === 'recording' || prev === 'transcribing' ? 'idle' : prev))
+          } else {
+            // The connection ended without the user asking to stop — surface it as
+            // an error rather than silently going idle (mirrors the native Web
+            // Speech API's onerror handling of a non-user-initiated 'aborted').
+            setErrorMessage(reason || 'Dictation connection was lost')
+            setStatus('error')
+          }
+          setMode(null)
+          setInterimText('')
+        },
+      )
+
+      deepgramHandleRef.current = handle
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) handle.sendAudioChunk(e.data)
+      }
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+      }
+
+      mediaRecorderRef.current = recorder
+      recorder.start(250)
+      setStatus('recording')
+      setErrorMessage('')
+      setInterimText('')
+    }).catch(() => {
+      setErrorMessage('Microphone access denied')
+      setStatus('error')
+      setMode(null)
+    })
+  }, [])
+
   const startDictation = useCallback(() => {
     if (!isSupported) { setStatus('unsupported'); return }
     setMode('dictation')
-    if (useRecorderFallback) startMediaRecorder(false)
+    if (useDeepgramPath) startDeepgramStream()
+    else if (useRecorderFallback) startMediaRecorder(false)
     else startSpeechRecognition()
-  }, [isSupported, useRecorderFallback, startMediaRecorder, startSpeechRecognition])
+  }, [isSupported, useDeepgramPath, useRecorderFallback, startDeepgramStream, startMediaRecorder, startSpeechRecognition])
 
   const stopDictation = useCallback(() => {
     userStoppedRef.current = true
-    if (useRecorderFallback) {
+    if (useDeepgramPath) {
+      setStatus('transcribing')
+      deepgramHandleRef.current?.stop()
+      mediaRecorderRef.current?.stop()
+    } else if (useRecorderFallback) {
       mediaRecorderRef.current?.stop()
     } else {
       recognitionRef.current?.stop()
@@ -260,7 +339,7 @@ export function useDictation(
       setMode(null)
       setInterimText('')
     }
-  }, [useRecorderFallback])
+  }, [useDeepgramPath, useRecorderFallback])
 
   const toggleDictation = useCallback(() => {
     if (status === 'recording' && mode === 'dictation') stopDictation()

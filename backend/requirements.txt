@@ -12,3 +12,4 @@ cryptography>=42.0.0
 python-dotenv>=1.0.0
 fal-client==1.0.0
 Pillow==10.4.0
+websockets==12.0

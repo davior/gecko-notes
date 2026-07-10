@@ -1244,6 +1244,17 @@ DEFAULT_TTS_MODEL = "fal-ai/elevenlabs/tts/eleven-v3"
 DEFAULT_STT_MODEL = "fal-ai/wizper"
 DEFAULT_TTS_VOICE = "Aria"
 
+# Deepgram realtime streaming STT — an alternative to the fal.ai/browser paths above,
+# selectable per-user via `stt_provider`. Uses its own API key (Deepgram is unrelated
+# to fal.ai/image gen) and a small hardcoded model list rather than the fal-only
+# ModelCatalogEntry catalog, since Deepgram model ids aren't fal.run endpoint paths.
+DEFAULT_DEEPGRAM_MODEL = "nova-3"
+DEEPGRAM_STT_MODELS = [
+    {"id": "nova-3", "label": "Nova 3 (recommended)"},
+    {"id": "nova-2", "label": "Nova 2"},
+]
+_STT_PROVIDERS = {"auto", "deepgram", "fal"}
+
 # Curated ElevenLabs voices offered in the read-aloud picker. Values are passed
 # straight to fal's `voice` field — edit this list to expose different voices.
 FAL_TTS_VOICES = [
@@ -1255,7 +1266,8 @@ FAL_TTS_VOICES = [
 # Curated TTS/STT model lists now live in ModelCatalogEntry (admin-editable via
 # /model-catalog, seeded in seed.py) — see _load_catalog() above.
 
-_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model}
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model}
+_DEEPGRAM_KEY = "deepgram_api_key"     # encrypted; separate from fal's key
 
 _TTS_MAX_CHARS = 2000
 # Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
@@ -1274,10 +1286,15 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
         except (ValueError, TypeError):
             cfg = {}
     custom = [m for m in (cfg.get("custom_tts_models") or []) if isinstance(m, dict) and m.get("id")]
+    stt_provider = cfg.get("stt_provider") or "auto"
+    if stt_provider not in _STT_PROVIDERS:
+        stt_provider = "auto"
     return {
         "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
         "custom_tts_models": custom,
         "stt_model": cfg.get("stt_model") or DEFAULT_STT_MODEL,
+        "stt_provider": stt_provider,
+        "deepgram_model": cfg.get("deepgram_model") or DEFAULT_DEEPGRAM_MODEL,
     }
 
 
@@ -1342,6 +1359,10 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
         "default_voice": DEFAULT_TTS_VOICE,
         "stt_models": stt_models,
         "stt_model": cfg["stt_model"],
+        "has_deepgram_key": bool(load_deepgram_api_key(session, user_id)),
+        "stt_provider": cfg["stt_provider"],
+        "deepgram_model": cfg["deepgram_model"],
+        "deepgram_models": DEEPGRAM_STT_MODELS,
     }
 
 
@@ -1432,6 +1453,11 @@ class SpeechConfigUpdate(BaseModel):
     tts_model: Optional[str] = None
     custom_tts_models: Optional[List[Dict[str, Any]]] = None
     stt_model: Optional[str] = None
+    stt_provider: Optional[str] = None  # "auto" | "deepgram" | "fal"
+    deepgram_model: Optional[str] = None
+    # Tri-state, same convention as ImageSettingsUpdate.api_key: omitted/None leaves
+    # the stored key untouched; "" removes it; a non-empty value replaces it.
+    deepgram_api_key: Optional[str] = None
 
 
 @router.put("/speech/config")
@@ -1443,6 +1469,10 @@ def update_speech_config(
     """Update user's speech configuration (TTS/STT model selection and custom models)."""
     user_id = _get_user_id(request)
 
+    if payload.deepgram_api_key is not None:
+        encrypted = encrypt_api_key(payload.deepgram_api_key) if payload.deepgram_api_key else ""
+        _upsert_user_setting(session, user_id, _DEEPGRAM_KEY, json.dumps(encrypted))
+
     # Load existing config
     cfg = load_speech_config(session, user_id)
 
@@ -1453,6 +1483,10 @@ def update_speech_config(
         cfg["custom_tts_models"] = payload.custom_tts_models
     if payload.stt_model is not None:
         cfg["stt_model"] = payload.stt_model
+    if payload.stt_provider is not None and payload.stt_provider in _STT_PROVIDERS:
+        cfg["stt_provider"] = payload.stt_provider
+    if payload.deepgram_model is not None:
+        cfg["deepgram_model"] = payload.deepgram_model
 
     # Persist to database
     _upsert_user_setting(session, user_id, _SPEECH_CONFIG, json.dumps(cfg))
@@ -1462,6 +1496,9 @@ def update_speech_config(
         "tts_model": cfg["tts_model"],
         "custom_tts_models": cfg["custom_tts_models"],
         "stt_model": cfg["stt_model"],
+        "stt_provider": cfg["stt_provider"],
+        "deepgram_model": cfg["deepgram_model"],
+        "has_deepgram_key": bool(load_deepgram_api_key(session, user_id)),
     }
 
 
@@ -1680,6 +1717,25 @@ def load_fal_api_key(session: Session, user_id: str) -> Optional[str]:
     """Decrypted fal.ai API key for a user, or None when unset. Reused by the images router."""
     row = session.exec(
         select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _FAL_KEY)
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        stored = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    if not stored:
+        return None
+    try:
+        return decrypt_api_key(stored)
+    except Exception:
+        return None
+
+
+def load_deepgram_api_key(session: Session, user_id: str) -> Optional[str]:
+    """Decrypted Deepgram API key for a user, or None when unset. Mirrors load_fal_api_key."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _DEEPGRAM_KEY)
     ).first()
     if not row or not row.value:
         return None

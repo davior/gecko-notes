@@ -247,7 +247,7 @@ export default function EditorView() {
     return res.data.url
   }, [])
 
-  const { falKeyConfigured } = settingsStore
+  const { falKeyConfigured, sttProvider } = settingsStore
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
     [],
@@ -273,6 +273,7 @@ export default function EditorView() {
   const dictation = useDictation(insertDictatedText, {
     transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
     onRecordingComplete: handleRecordingComplete,
+    sttProvider,
   })
 
   // Upload a recorded video blob to /media and return its URL + stored filename

@@ -369,6 +369,7 @@ export default function AIConversationPanel({
   const sessionsEnabled = isList || !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
+  const sttProvider = useSettingsStore((s) => s.sttProvider)
   const categories = useCategoriesStore((s) => s.categories)
 
   // Conversation and session state (self-managed — not driven by props)
@@ -451,6 +452,7 @@ export default function AIConversationPanel({
   )
   const dictation = useDictation(handleDictationResult, {
     transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
+    sttProvider,
   })
 
   // Reset step selection (all checked) whenever a new plan is ready to review.
