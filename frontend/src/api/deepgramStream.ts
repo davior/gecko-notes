@@ -40,21 +40,22 @@ export function connectDeepgramStream(
   const token = localStorage.getItem('auth_token') ?? ''
   const url = `${wsBaseURL()}/stt-stream/ws?token=${encodeURIComponent(token)}`
   const ws = new WebSocket(url)
-  const openedAt = performance.now()
-  let chunksSent = 0
 
-  // Temporary diagnostics for a production-only dictation drop — remove once
-  // root-caused. Backend-side logging alone couldn't explain a clean-looking
-  // disconnect with no exception, so this gives us the browser's own view of
-  // timing/close code to compare against the backend logs for the same session.
+  // MediaRecorder starts producing chunks immediately, but the WS handshake can
+  // take seconds over a real network (DNS + TLS + proxy hops) versus ~50ms on
+  // localhost. Dropping not-yet-open chunks silently discards the very first
+  // one — the only chunk carrying the WebM/Ogg container header — leaving
+  // Deepgram with an undecodable mid-stream fragment stream: it reports 0.0s
+  // of audio and closes after ~8s. (This was the production-only "Dictation
+  // connection was lost" bug.) Buffer while CONNECTING and flush on open so
+  // the header always arrives first.
+  const pendingChunks: Blob[] = []
+  let stopRequested = false
+
   ws.onopen = () => {
-    // eslint-disable-next-line no-console
-    console.log('[deepgram] ws open')
-  }
-
-  ws.onerror = (event) => {
-    // eslint-disable-next-line no-console
-    console.warn('[deepgram] ws error', event, `after ${(performance.now() - openedAt).toFixed(0)}ms, ${chunksSent} chunk(s) sent`)
+    for (const chunk of pendingChunks) ws.send(chunk)
+    pendingChunks.length = 0
+    if (stopRequested) ws.send(JSON.stringify({ type: 'stop' }))
   }
 
   ws.onmessage = (event) => {
@@ -68,24 +69,25 @@ export function connectDeepgramStream(
   }
 
   ws.onclose = (event) => {
-    // eslint-disable-next-line no-console
-    console.log(
-      '[deepgram] ws closed',
-      { code: event.code, reason: event.reason, wasClean: event.wasClean },
-      `after ${(performance.now() - openedAt).toFixed(0)}ms, ${chunksSent} chunk(s) sent`,
-    )
     onClose(event.code, CLOSE_CODE_MESSAGES[event.code] ?? event.reason ?? '')
   }
 
   return {
     sendAudioChunk(chunk: Blob) {
       if (ws.readyState === WebSocket.OPEN) {
-        chunksSent += 1
         ws.send(chunk)
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        pendingChunks.push(chunk)
       }
     },
     stop() {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stop' }))
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop' }))
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        // User released the mic before the handshake finished — flush the
+        // buffered audio on open, then stop, so short dictations still land.
+        stopRequested = true
+      }
     },
     close() {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
