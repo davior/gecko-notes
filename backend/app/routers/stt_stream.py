@@ -82,6 +82,7 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
             upstream_url,
             extra_headers={"Authorization": f"Token {api_key}"},
         ) as deepgram_ws:
+            logger.info("Deepgram stream connected for user %s (model=%s)", user_id, model)
 
             async def pump_client_to_deepgram():
                 while True:
@@ -124,31 +125,45 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                         if isinstance(duration, (int, float)):
                             seconds_sent = duration
                     elif event_type == "Error":
+                        logger.warning("Deepgram sent an Error event for user %s: %s", user_id, event)
                         await websocket.send_json({
                             "type": "error",
                             "message": event.get("message") or event.get("description") or "Deepgram error",
                         })
+                    else:
+                        logger.debug("Unhandled Deepgram event type %r for user %s: %s", event_type, user_id, event)
 
             recv_task = asyncio.create_task(pump_client_to_deepgram())
             send_task = asyncio.create_task(pump_deepgram_to_client())
-            done, pending = await asyncio.wait(
-                {recv_task, send_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if recv_task in done and send_task in pending:
-                # Client said stop / disconnected — give Deepgram a brief window to
-                # flush its trailing final Results before tearing the socket down.
-                try:
-                    await asyncio.wait_for(send_task, timeout=3.0)
-                except asyncio.TimeoutError:
-                    pass
-            for task in (recv_task, send_task):
-                if not task.done():
-                    task.cancel()
+            try:
+                done, pending = await asyncio.wait(
+                    {recv_task, send_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if recv_task in done and send_task in pending:
+                    # Client said stop / disconnected — give Deepgram a brief window
+                    # to flush its trailing final Results before tearing down.
+                    try:
+                        await asyncio.wait_for(send_task, timeout=3.0)
+                    except asyncio.TimeoutError:
+                        pass
+                # asyncio.wait() never raises a task's exception on our behalf — a
+                # failure in either relay direction (e.g. the client-facing leg
+                # breaking under a reverse proxy) would otherwise be silently
+                # discarded here instead of reaching the except block below.
+                for task in (recv_task, send_task):
+                    if task.done() and not task.cancelled():
+                        task_exc = task.exception()
+                        if task_exc is not None:
+                            raise task_exc
+            finally:
+                for task in (recv_task, send_task):
+                    if not task.done():
+                        task.cancel()
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        logger.warning("Deepgram stream error for user %s: %s", user_id, e)
+        logger.warning("Deepgram stream error for user %s: %s", user_id, e, exc_info=True)
         try:
             await websocket.send_json({"type": "error", "message": "Deepgram connection failed"})
         except Exception:
