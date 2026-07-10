@@ -162,6 +162,23 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                         await asyncio.wait_for(send_task, timeout=3.0)
                     except asyncio.TimeoutError:
                         pass
+                elif send_task in done and recv_task in pending:
+                    # Deepgram's side of the connection ended on its own (not because
+                    # the client stopped) — previously this fell straight through to a
+                    # silent, "successful-looking" 1000 close with zero logging, which
+                    # is exactly what made this case invisible in earlier diagnostics.
+                    logger.warning(
+                        "Deepgram closed its stream for user %s after %.1fs of audio "
+                        "(close_code=%s, close_reason=%r)",
+                        user_id, seconds_sent, deepgram_ws.close_code, deepgram_ws.close_reason,
+                    )
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Deepgram closed the connection unexpectedly",
+                        })
+                    except Exception:
+                        pass
                 # asyncio.wait() never raises a task's exception on our behalf — a
                 # failure in either relay direction (e.g. the client-facing leg
                 # breaking under a reverse proxy) would otherwise be silently
