@@ -30,6 +30,7 @@ from app.routers.settings import (
     compute_fal_cost,
     load_fal_api_key,
     load_fal_config,
+    resolve_fal_image_size,
 )
 
 router = APIRouter()
@@ -102,6 +103,7 @@ async def generate_image(
             detail={"code": "invalid_model", "message": f"Model '{model}' is not in the configured model list"},
         )
     image_size = payload.image_size or cfg["image_size"] or DEFAULT_IMAGE_SIZE
+    image_size = resolve_fal_image_size(model, image_size)
 
     # 1) Ask fal to generate the image (blocking synchronous endpoint).
     resp = await _post_upstream(
