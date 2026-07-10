@@ -180,8 +180,13 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                 # own `finally` (e.g. the chunk-count logging below) ever runs.
                 await asyncio.gather(recv_task, send_task, return_exceptions=True)
 
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as e:
+        # Starlette raises this (code 1006 = abnormal closure) when send() hits an
+        # OSError because the underlying transport is already dead — e.g. an
+        # intermediary killed the TCP connection without a clean WS close. This
+        # was previously swallowed with zero logging, hiding exactly the signal
+        # we need to tell a proxy-side drop apart from a real client close.
+        logger.warning("WebSocket disconnected for user %s (code=%s, reason=%r)", user_id, e.code, e.reason)
     except Exception as e:
         logger.warning("Deepgram stream error for user %s: %s", user_id, e, exc_info=True)
         try:
