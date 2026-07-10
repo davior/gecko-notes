@@ -175,6 +175,10 @@ async def stt_stream_ws(websocket: WebSocket, session: Session = Depends(get_ses
                 for task in (recv_task, send_task):
                     if not task.done():
                         task.cancel()
+                # cancel() only schedules the cancellation — without awaiting the
+                # tasks here, this function can return before a cancelled task's
+                # own `finally` (e.g. the chunk-count logging below) ever runs.
+                await asyncio.gather(recv_task, send_task, return_exceptions=True)
 
     except WebSocketDisconnect:
         pass
