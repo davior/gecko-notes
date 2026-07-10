@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, MicOff, Circle, PanelBottom, Maximize2 } from 'lucide-react'
+import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, Circle, PanelBottom, Maximize2 } from 'lucide-react'
 import type { UseTextToSpeechReturn } from '@/hooks/useTextToSpeech'
 import type { UseDictationReturn } from '@/hooks/useDictation'
+import DictationWaveIcon from '@/components/DictationWaveIcon'
 
 const POS_KEY = 'tts_controls_pos'
 const PANEL_FALLBACK_W = 280
@@ -212,7 +213,7 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
           aria-label={dictationActive ? 'Stop dictation' : 'Start dictation'}
         >
           {dictationActive ? (
-            <MicOff className="w-4 h-4 text-red-500" />
+            <DictationWaveIcon className="text-red-500" />
           ) : (
             <Mic className="w-4 h-4" />
           )}

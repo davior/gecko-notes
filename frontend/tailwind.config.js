@@ -24,6 +24,15 @@ export default {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
       },
+      keyframes: {
+        'dictation-wave': {
+          '0%, 100%': { transform: 'scaleY(0.25)' },
+          '50%': { transform: 'scaleY(var(--wave-peak, 1))' },
+        },
+      },
+      animation: {
+        'dictation-wave': 'dictation-wave 0.9s ease-in-out infinite',
+      },
     },
   },
   plugins: [],
