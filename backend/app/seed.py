@@ -169,7 +169,7 @@ DEFAULT_IMAGE_CATALOG = [
     {"model_id": "fal-ai/flux-2/dev", "label": "FLUX.2 [dev]", "maker_note": "Black Forest Labs — realism + native editing"},
     {"model_id": "fal-ai/flux-2/dev/turbo", "label": "FLUX.2 [dev] Turbo", "maker_note": "fal's distilled version — cheap, fast"},
     {"model_id": "fal-ai/flux-pro/v1.1-ultra", "label": "FLUX1.1 [pro] ultra", "maker_note": "Black Forest Labs — up to 2K, print-scale"},
-    {"model_id": "fal-ai/flux-pro/kontext", "label": "FLUX.1 Kontext [pro]", "maker_note": "Black Forest Labs — context-aware editing"},
+    {"model_id": "fal-ai/flux-pro/kontext/text-to-image", "label": "FLUX.1 Kontext [pro]", "maker_note": "Black Forest Labs — context-aware editing"},
     {"model_id": "fal-ai/nano-banana-2", "label": "Nano Banana 2", "maker_note": "Google (Gemini 3.1 Flash Image) — fast, vibrant, text-aware"},
     {"model_id": "fal-ai/nano-banana-pro", "label": "Nano Banana Pro", "maker_note": "Google (Gemini 3 Pro Image) — SOTA high-fidelity"},
     {"model_id": "fal-ai/bytedance/seedream/v4.5/text-to-image", "label": "Seedream V4.5", "maker_note": "ByteDance — photoreal, unified gen+edit"},
@@ -178,7 +178,7 @@ DEFAULT_IMAGE_CATALOG = [
     {"model_id": "fal-ai/gpt-image-2", "label": "GPT Image 2", "maker_note": "OpenAI — strong instruction-following, multilingual text"},
     {"model_id": "fal-ai/gpt-image-1.5", "label": "GPT Image 1.5", "maker_note": "OpenAI — high-fidelity, strong prompt adherence"},
     {"model_id": "fal-ai/ideogram/v3", "label": "Ideogram V3", "maker_note": "Ideogram — best-in-class typography, posters/logos"},
-    {"model_id": "fal-ai/krea-2", "label": "Krea 2 (Large)", "maker_note": "Krea — aesthetic-focused, stylized"},
+    {"model_id": "fal-ai/krea/v2/large/text-to-image", "label": "Krea 2 (Large)", "maker_note": "Krea — aesthetic-focused, stylized"},
     {"model_id": "fal-ai/z-image/turbo", "label": "Z-Image Turbo", "maker_note": "Tongyi-MAI — 6B, ultra-fast, bilingual EN/CN"},
     {"model_id": "fal-ai/fast-sdxl", "label": "Fast SDXL", "maker_note": "Stability (SDXL) — for existing SDXL prompts/LoRAs"},
 ]
