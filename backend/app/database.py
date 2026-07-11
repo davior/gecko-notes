@@ -447,6 +447,23 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Fix two bad seed values in the curated image catalog:
+        # `fal-ai/flux-pro/kontext` is fal's image-EDITING endpoint (requires an
+        # input image_url; a prompt-only call 422s) — text-to-image lives at the
+        # /text-to-image subpath. `fal-ai/krea-2` is not a valid fal endpoint id;
+        # Krea 2 Large is `fal-ai/krea/v2/large/text-to-image`.
+        try:
+            for _old, _new in (
+                ("fal-ai/flux-pro/kontext", "fal-ai/flux-pro/kontext/text-to-image"),
+                ("fal-ai/krea-2", "fal-ai/krea/v2/large/text-to-image"),
+            ):
+                conn.execute(text(
+                    "UPDATE modelcatalogentry SET model_id = :new "
+                    "WHERE kind = 'image' AND model_id = :old"
+                ), {"new": _new, "old": _old})
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

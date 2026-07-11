@@ -23,6 +23,8 @@ from app.routers.media import get_user_media_dir
 from app.thumbnails import generate_thumbnail
 from app.routers.settings import (
     DEFAULT_IMAGE_SIZE,
+    FAL_IMAGE_SIZES,
+    FAL_MODEL_ID_RENAMES,
     _post_upstream,
     _record_usage,
     _require_safe_external_url,
@@ -30,7 +32,7 @@ from app.routers.settings import (
     compute_fal_cost,
     load_fal_api_key,
     load_fal_config,
-    resolve_fal_image_size,
+    resolve_fal_size_params,
 )
 
 router = APIRouter()
@@ -97,19 +99,25 @@ async def generate_image(
 
     cfg = load_fal_config(session, user_id)
     model = (payload.model or cfg["default_model"]).strip()
+    model = FAL_MODEL_ID_RENAMES.get(model, model)
     if model not in allowed_fal_models(session, cfg):
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_model", "message": f"Model '{model}' is not in the configured model list"},
         )
     image_size = payload.image_size or cfg["image_size"] or DEFAULT_IMAGE_SIZE
-    image_size = resolve_fal_image_size(model, image_size)
+    if image_size not in FAL_IMAGE_SIZES:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_image_size", "message": f"image_size must be one of: {', '.join(FAL_IMAGE_SIZES)}"},
+        )
 
-    # 1) Ask fal to generate the image (blocking synchronous endpoint).
+    # 1) Ask fal to generate the image (blocking synchronous endpoint). The named
+    #    size preset is translated per endpoint (image_size / aspect_ratio / WxH).
     resp = await _post_upstream(
         f"https://fal.run/{model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body={"prompt": prompt, "image_size": image_size, "num_images": 1},
+        json_body={"prompt": prompt, "num_images": 1, **resolve_fal_size_params(model, image_size)},
         timeout=_GENERATE_TIMEOUT,
         provider_label="fal.ai",
     )

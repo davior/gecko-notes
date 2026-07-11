@@ -1678,11 +1678,16 @@ FAL_IMAGE_SIZES = [
     "landscape_4_3", "landscape_16_9",
 ]
 
-# Most fal text-to-image endpoints accept the named presets above verbatim. OpenAI's
-# GPT Image models (also served via fal) instead proxy OpenAI's own `image_size`
-# enum — only "1024x1024", "1536x1024" or "1024x1536" — and 422 on anything else, so
-# their presets need translating down to the closest literal WxH match.
-_OPENAI_IMAGE_SIZE_MODELS = {"fal-ai/gpt-image-1.5", "fal-ai/gpt-image-2"}
+# Most fal text-to-image endpoints accept the named presets above verbatim —
+# FLUX.1/.2, Recraft V3, SD 3.5, Fast SDXL, Qwen Image, Seedream, Ideogram V3,
+# Z-Image, and GPT Image 2 (whose schema is the standard preset union plus
+# "auto"). The exceptions below speak a different size dialect and 422 on the
+# presets, so their requests need translating.
+
+# GPT Image 1.x endpoints proxy OpenAI's own `image_size` enum — only
+# "1024x1024", "1536x1024" or "1024x1536". Matched by prefix so 1.5 / 1-mini /
+# subpath variants added as custom models get the same treatment.
+_OPENAI_IMAGE_SIZE_PREFIXES = ("fal-ai/gpt-image-1",)
 _OPENAI_IMAGE_SIZE_MAP = {
     "square_hd": "1024x1024",
     "square": "1024x1024",
@@ -1692,13 +1697,47 @@ _OPENAI_IMAGE_SIZE_MAP = {
     "portrait_16_9": "1024x1536",
 }
 
+# These endpoints have no `image_size` at all — they take an `aspect_ratio`
+# string instead (FLUX1.1 [pro] ultra, FLUX Kontext text-to-image, Google's
+# nano-banana / Gemini image models, Krea 2).
+_ASPECT_RATIO_MODEL_PREFIXES = (
+    "fal-ai/flux-pro/v1.1-ultra",
+    "fal-ai/flux-pro/kontext",
+)
+_ASPECT_RATIO_MAP = {
+    "square_hd": "1:1",
+    "square": "1:1",
+    "landscape_4_3": "4:3",
+    "landscape_16_9": "16:9",
+    "portrait_4_3": "3:4",
+    "portrait_16_9": "9:16",
+}
+# Krea 2 doesn't offer 3:4 — 4:5 is the nearest portrait step in its enum.
+_KREA_ASPECT_RATIO_MAP = {**_ASPECT_RATIO_MAP, "portrait_4_3": "4:5"}
 
-def resolve_fal_image_size(model: str, image_size: str) -> str:
-    """Translate our named `image_size` preset to whatever the target fal endpoint
-    actually expects. Reused by the images router."""
-    if model in _OPENAI_IMAGE_SIZE_MODELS:
-        return _OPENAI_IMAGE_SIZE_MAP.get(image_size, "1024x1024")
-    return image_size
+# Curated ids that were seeded pointing at the wrong fal endpoint. The catalog
+# rows are rewritten by a startup migration; this map additionally repairs the
+# per-user config blobs (default_model / custom_models) that still reference
+# the old ids.
+FAL_MODEL_ID_RENAMES = {
+    # Image-editing endpoint (requires image_url) — text-to-image is a subpath.
+    "fal-ai/flux-pro/kontext": "fal-ai/flux-pro/kontext/text-to-image",
+    # Not a valid endpoint id; Krea 2 Large lives under krea/v2.
+    "fal-ai/krea-2": "fal-ai/krea/v2/large/text-to-image",
+}
+
+
+def resolve_fal_size_params(model: str, image_size: str) -> Dict[str, str]:
+    """Request-body params expressing the named `image_size` preset in whatever
+    size dialect the target fal endpoint speaks (fal presets, OpenAI WxH sizes,
+    or an `aspect_ratio` string). Reused by the images router."""
+    if model.startswith(_OPENAI_IMAGE_SIZE_PREFIXES):
+        return {"image_size": _OPENAI_IMAGE_SIZE_MAP.get(image_size, "1024x1024")}
+    if "krea" in model:
+        return {"aspect_ratio": _KREA_ASPECT_RATIO_MAP.get(image_size, "1:1")}
+    if model.startswith(_ASPECT_RATIO_MODEL_PREFIXES) or "nano-banana" in model:
+        return {"aspect_ratio": _ASPECT_RATIO_MAP.get(image_size, "1:1")}
+    return {"image_size": image_size}
 
 
 def _upsert_user_setting(session: Session, user_id: str, key: str, serialised_value: str) -> None:
@@ -1900,8 +1939,10 @@ def load_fal_config(session: Session, user_id: str) -> Dict[str, Any]:
         except (ValueError, TypeError):
             cfg = {}
     custom = [str(m).strip() for m in (cfg.get("custom_models") or []) if str(m).strip()]
+    custom = [FAL_MODEL_ID_RENAMES.get(m, m) for m in custom]
+    default_model = cfg.get("default_model") or DEFAULT_FAL_MODEL
     return {
-        "default_model": cfg.get("default_model") or DEFAULT_FAL_MODEL,
+        "default_model": FAL_MODEL_ID_RENAMES.get(default_model, default_model),
         "custom_models": custom,
         "image_size": cfg.get("image_size") or DEFAULT_IMAGE_SIZE,
     }
