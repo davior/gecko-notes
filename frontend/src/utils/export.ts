@@ -456,6 +456,16 @@ interface BundledAsset {
   data: ArrayBuffer
 }
 
+// A note rendered to a single text document (Markdown or HTML) plus the resources it
+// references, ready to drop into a ZIP. Produced by buildMarkdownDoc / buildHtmlDoc and
+// consumed by both the single-note "with resources" exporters and the multi-note export.
+interface BuiltDoc {
+  base: string
+  filename: string // document's name at the ZIP root, e.g. "note--id.md"
+  text: string
+  assets: BundledAsset[]
+}
+
 // Walk a parsed note document: download every embedded resource into `assets/`,
 // rewrite its `src` to the relative asset path, and rewrite internal note links to
 // the linked note's export filename. Mutates `doc` in place; returns the assets.
@@ -527,9 +537,50 @@ async function downloadZip(base: string, docName: string, docText: string, asset
   downloadBlob(blob, `${base}.zip`)
 }
 
+// ─── Export: multiple notes → one ZIP ─────────────────────────────────────────
+//
+// Bundles every selected note into a single ZIP. Markdown/HTML place one document per
+// note at the root and share a single `assets/` folder: asset names are namespaced by
+// noteBaseName so notes never collide, and internal note links are already rewritten to
+// each target's export filename (so cross-note links resolve inside the bundle). PDF/Word
+// embed their own resources, so each note is a self-contained file with no assets folder.
+
+export type BulkExportFormat = 'md' | 'html' | 'pdf' | 'word'
+
+export async function exportNotesToZip(notes: Note[], format: BulkExportFormat): Promise<void> {
+  const JSZip = (await import('jszip')).default
+  const zip = new JSZip()
+
+  if (format === 'md' || format === 'html') {
+    const allAssets: BundledAsset[] = []
+    // Sequential: keeps memory bounded and mirrors the single-note path.
+    for (const note of notes) {
+      const built = format === 'md' ? await buildMarkdownDoc(note) : await buildHtmlDoc(note)
+      zip.file(built.filename, built.text)
+      allAssets.push(...built.assets)
+    }
+    // Only materialise the shared assets/ folder when something references a resource.
+    if (allAssets.length > 0) {
+      const folder = zip.folder('assets')!
+      for (const a of allAssets) folder.file(a.name, a.data)
+    }
+  } else {
+    const ext = format === 'pdf' ? 'pdf' : 'docx'
+    // Sequential: buildPdfBlob mounts a hidden DOM container (html2canvas), which must
+    // not run concurrently across notes.
+    for (const note of notes) {
+      const blob = format === 'pdf' ? await buildPdfBlob(note) : await buildDocxBlob(note)
+      zip.file(noteFileName(note.id, note.title, ext), blob)
+    }
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob' })
+  downloadBlob(blob, 'gecko-notes-export.zip')
+}
+
 // ─── Export: PDF ──────────────────────────────────────────────────────────────
 
-export async function exportToPDF(note: Note): Promise<void> {
+async function buildPdfBlob(note: Note): Promise<Blob> {
   const { default: jsPDF } = await import('jspdf')
   const html2canvas = (await import('html2canvas')).default
 
@@ -652,15 +703,19 @@ export async function exportToPDF(note: Note): Promise<void> {
       pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', margin.side, margin.top, contentWidth, sliceHeightMm)
     }
 
-    pdf.save(`${note.title || 'note'}.pdf`)
+    return pdf.output('blob')
   } finally {
     document.body.removeChild(container)
   }
 }
 
+export async function exportToPDF(note: Note): Promise<void> {
+  downloadBlob(await buildPdfBlob(note), `${note.title || 'note'}.pdf`)
+}
+
 // ─── Export: Word (.docx) ─────────────────────────────────────────────────────
 
-export async function exportToWord(note: Note): Promise<void> {
+async function buildDocxBlob(note: Note): Promise<Blob> {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun, ImageRun, UnderlineType, AlignmentType, Table, TableRow, TableCell, WidthType } =
     await import('docx')
 
@@ -872,8 +927,11 @@ export async function exportToWord(note: Note): Promise<void> {
     }],
   })
 
-  const blob = await Packer.toBlob(doc)
-  downloadBlob(blob, `${note.title || 'note'}.docx`)
+  return await Packer.toBlob(doc)
+}
+
+export async function exportToWord(note: Note): Promise<void> {
+  downloadBlob(await buildDocxBlob(note), `${note.title || 'note'}.docx`)
 }
 
 // ─── Export: Markdown ─────────────────────────────────────────────────────────
@@ -938,7 +996,7 @@ export async function exportToMarkdown(note: Note): Promise<void> {
 
 // ─── Export: Markdown + resources (ZIP) ───────────────────────────────────────
 
-export async function exportToMarkdownWithResources(note: Note): Promise<void> {
+async function buildMarkdownDoc(note: Note): Promise<BuiltDoc> {
   const TurndownService = (await import('turndown')).default
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
   addGfmTableRules(td)
@@ -964,7 +1022,12 @@ export async function exportToMarkdownWithResources(note: Note): Promise<void> {
   const assets = await collectResourcesAndRewrite(doc, base, 'md')
   const frontmatter = buildMarkdownFrontmatter(note)
   const md = `${frontmatter}\n\n${td.turndown(doc.body.innerHTML)}`
-  await downloadZip(base, `${base}.md`, md, assets)
+  return { base, filename: `${base}.md`, text: md, assets }
+}
+
+export async function exportToMarkdownWithResources(note: Note): Promise<void> {
+  const { base, filename, text, assets } = await buildMarkdownDoc(note)
+  await downloadZip(base, filename, text, assets)
 }
 
 // ─── Export: HTML ─────────────────────────────────────────────────────────────
@@ -976,13 +1039,18 @@ export async function exportToHTML(note: Note): Promise<void> {
 
 // ─── Export: HTML + resources (ZIP) ───────────────────────────────────────────
 
-export async function exportToHTMLWithResources(note: Note): Promise<void> {
+async function buildHtmlDoc(note: Note): Promise<BuiltDoc> {
   const base = noteBaseName(note.id, note.title)
   const html = await noteToHTML(note)
   const doc = new DOMParser().parseFromString(html, 'text/html')
   const assets = await collectResourcesAndRewrite(doc, base, 'html')
   const finalHtml = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
-  await downloadZip(base, `${base}.html`, finalHtml, assets)
+  return { base, filename: `${base}.html`, text: finalHtml, assets }
+}
+
+export async function exportToHTMLWithResources(note: Note): Promise<void> {
+  const { base, filename, text, assets } = await buildHtmlDoc(note)
+  await downloadZip(base, filename, text, assets)
 }
 
 // ─── Export: Clipboard (plain text) ──────────────────────────────────────────
