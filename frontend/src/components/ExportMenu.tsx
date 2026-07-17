@@ -1,8 +1,17 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, FileText, FileDown, Code, Clipboard, ChevronDown, FileAudio } from 'lucide-react'
+import { Download, FileText, FileDown, Code, Clipboard, ChevronDown, FileAudio, FileArchive } from 'lucide-react'
 import type { Note } from '@/api/notes'
-import { exportToPDF, exportToWord, exportToMarkdown, exportToHTML, copyAsPlainText, copyAsRichText } from '@/utils/export'
+import {
+  exportToPDF,
+  exportToWord,
+  exportToMarkdown,
+  exportToMarkdownWithResources,
+  exportToHTML,
+  exportToHTMLWithResources,
+  copyAsPlainText,
+  copyAsRichText,
+} from '@/utils/export'
 import { useDropdown } from '@/hooks/useDropdown'
 
 interface Props {
@@ -12,18 +21,20 @@ interface Props {
   onExportAudio?: () => Promise<void>
 }
 
-type ExportKey = 'pdf' | 'word' | 'md' | 'html' | 'plain' | 'rich' | 'audio'
+type ExportKey = 'pdf' | 'word' | 'md' | 'mdzip' | 'html' | 'htmlzip' | 'plain' | 'rich' | 'audio'
 
 export default function ExportMenu({ note, onToast, onExportAudio }: Props) {
   const { open, setOpen, triggerRef, dropdownRef, style } = useDropdown('right')
   const [loading, setLoading] = useState<ExportKey | null>(null)
 
   const items: { key: ExportKey; label: string; icon: React.ElementType; action: () => Promise<void> }[] = [
-    { key: 'pdf', label: 'Export as PDF', icon: FileDown, action: () => exportToPDF(note) },
-    { key: 'word', label: 'Export as Word', icon: FileText, action: () => exportToWord(note) },
-    { key: 'md', label: 'Export as Markdown', icon: FileText, action: () => exportToMarkdown(note) },
-    { key: 'html', label: 'Export as HTML', icon: Code, action: () => exportToHTML(note) },
-    ...(onExportAudio ? [{ key: 'audio' as const, label: 'Export as Audio (MP3)', icon: FileAudio, action: onExportAudio }] : []),
+    { key: 'pdf', label: 'PDF', icon: FileDown, action: () => exportToPDF(note) },
+    { key: 'word', label: 'Word', icon: FileText, action: () => exportToWord(note) },
+    { key: 'md', label: 'Markdown', icon: FileText, action: () => exportToMarkdown(note) },
+    { key: 'mdzip', label: 'MD with Resources', icon: FileArchive, action: () => exportToMarkdownWithResources(note) },
+    { key: 'html', label: 'HTML', icon: Code, action: () => exportToHTML(note) },
+    { key: 'htmlzip', label: 'HTML with Resources', icon: FileArchive, action: () => exportToHTMLWithResources(note) },
+    ...(onExportAudio ? [{ key: 'audio' as const, label: 'Audio (MP3)', icon: FileAudio, action: onExportAudio }] : []),
     { key: 'plain', label: 'Copy plain text', icon: Clipboard, action: async () => { await copyAsPlainText(note); onToast('Copied to clipboard') } },
     { key: 'rich', label: 'Copy rich text', icon: Clipboard, action: async () => { await copyAsRichText(note); onToast('Copied to clipboard') } },
   ]
