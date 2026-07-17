@@ -14,6 +14,7 @@ import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import FolderCustomizeModal from '@/components/FolderCustomizeModal'
+import BulkExportMenu from '@/components/BulkExportMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import { noteSchema } from '@/blocks/childNoteBlock'
 import UserAvatar from '@/components/UserAvatar'
@@ -534,6 +535,7 @@ export default function ListView() {
           <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
             <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{selectedIds.size} selected</span>
             <div className="flex items-center gap-2">
+              <BulkExportMenu noteIds={Array.from(selectedIds)} onToast={showToast} />
               <button
                 className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 flex items-center gap-1 transition-all"
                 title="Move selected to folder"

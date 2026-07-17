@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -21,6 +21,7 @@ import TagChip from '@/components/TagChip'
 import MetaFlyout from '@/components/MetaFlyout'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
+import FolderPickerModal from '@/components/FolderPickerModal'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
@@ -146,6 +147,7 @@ export default function EditorView() {
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showOrphanConfirm, setShowOrphanConfirm] = useState(false)
+  const [showFolderPicker, setShowFolderPicker] = useState(false)
   const [showNotePicker, setShowNotePicker] = useState(false)
   const [showVideoRecorder, setShowVideoRecorder] = useState(false)
   const [showImageGen, setShowImageGen] = useState(false)
@@ -1106,6 +1108,22 @@ export default function EditorView() {
     }
   }
 
+  // Relocate the open note to another folder (or root). Flush pending edits first so
+  // they aren't lost, then use the dedicated /move endpoint and refresh local state so
+  // note.folder_id (read by goBack and the AI panel) stays current.
+  async function handleMoveToFolder(folderId: string | null) {
+    const id = createdNoteId.current || noteId
+    if (!id || !note) return
+    try {
+      if (hasPendingChanges.current) await doSave(true)
+      const { data } = await notesApi.move(id, folderId)
+      setNote(data)
+      showToast('Note moved')
+    } catch {
+      showToast('Could not move note')
+    }
+  }
+
   // Slash menu: default items plus "Child note" and "Link to note".
   function getSlashItems(query: string): DefaultReactSuggestionItem[] {
     const childItem: DefaultReactSuggestionItem = {
@@ -1221,6 +1239,14 @@ export default function EditorView() {
             onClick={() => { void handlePin() }}
           >
             <Pin className="w-4 h-4" fill={note?.is_pinned ? 'currentColor' : 'none'} />
+          </button>
+          <button
+            className="btn-ghost p-2"
+            title="Move to folder"
+            disabled={!note}
+            onClick={() => setShowFolderPicker(true)}
+          >
+            <FolderInput className="w-4 h-4" />
           </button>
           {note && (
             <span ref={exportAnchorRef}>
@@ -1570,6 +1596,14 @@ export default function EditorView() {
             </div>
           </div>
         </div>
+      )}
+
+      {showFolderPicker && note && (
+        <FolderPickerModal
+          title="Move to folder"
+          onSelect={(folderId) => { void handleMoveToFolder(folderId); setShowFolderPicker(false) }}
+          onClose={() => setShowFolderPicker(false)}
+        />
       )}
 
       {showNotePicker && (
