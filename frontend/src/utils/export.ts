@@ -1,5 +1,7 @@
 import type { Note } from '@/api/notes'
-import { renderMermaid, svgToDataUri } from '@/utils/diagram'
+import type Turndown from 'turndown'
+import { notesApi } from '@/api/notes'
+import { renderMermaid, svgToDataUri, noteIdFromHref } from '@/utils/diagram'
 
 // Rasterise a diagram SVG to a PNG (Uint8Array) for embedding in a Word document,
 // which can't display SVG. Sized from the SVG's own width/height attributes (falling
@@ -215,7 +217,18 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[], mode: 'render'
     if (type === 'audioFile') {
       const url = props?.url as string | undefined
       if (url) {
-        parts.push(`<figure style="margin:16px 0"><audio controls src="${escapeHtml(url)}"></audio></figure>`)
+        const name = escapeHtml((props?.name as string) ?? '')
+        parts.push(`<figure style="margin:16px 0"><audio controls src="${escapeHtml(url)}"${name ? ` data-name="${name}"` : ''}></audio></figure>`)
+      }
+      i++
+      continue
+    }
+
+    if (type === 'videoFile') {
+      const url = props?.url as string | undefined
+      if (url) {
+        const name = escapeHtml((props?.name as string) ?? '')
+        parts.push(`<figure style="margin:16px 0"><video controls src="${escapeHtml(url)}"${name ? ` data-name="${name}"` : ''} style="max-width:100%;height:auto;"></video></figure>`)
       }
       i++
       continue
@@ -369,6 +382,149 @@ async function fetchImageData(url: string): Promise<{ data: ArrayBuffer; width: 
   })
   URL.revokeObjectURL(objectUrl)
   return { data: arrayBuffer, ...dims }
+}
+
+// ─── Resource bundling (ZIP exports) ──────────────────────────────────────────
+//
+// The "with resources" exporters package a note as a ZIP: the document at the root
+// plus a shared `assets/` folder holding every embedded resource (images, audio,
+// video, diagrams). In-app absolute references are rewritten to portable relative
+// paths — resource `src`s become `assets/…`, and internal note links (`/notes/<id>`)
+// become the linked note's own export filename. File naming is a single source of
+// truth (`noteFileName`) so a future multi-note export can drop several documents
+// into one ZIP with non-colliding assets and working cross-note links.
+
+// URL/filesystem-safe slug from a note title: lowercase, word chars only, spaces and
+// underscores collapsed to single hyphens, capped so long titles stay reasonable.
+export function slugify(title: string): string {
+  return (
+    (title || '')
+      .toLowerCase()
+      .replace(/[^\w\s-]+/g, '')
+      .replace(/[\s_]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'note'
+  )
+}
+
+// The canonical base name a note maps to. The trailing id segment guarantees
+// uniqueness (two notes may share a title) and makes a `/notes/<id>` link resolvable
+// to exactly the file that note would be exported as.
+export function noteBaseName(id: string, title: string): string {
+  return `${slugify(title)}--${id.slice(0, 8)}`
+}
+
+export function noteFileName(id: string, title: string, ext: string): string {
+  return `${noteBaseName(id, title)}.${ext}`
+}
+
+// Best-effort file extension for a fetched resource: prefer the data-URI / URL hint,
+// then fall back to the blob's MIME type, then a generic default.
+function extFromMime(mime: string): string | null {
+  const map: Record<string, string> = {
+    'image/svg+xml': 'svg', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif',
+    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/webm': 'weba',
+    'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/aac': 'aac',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/ogg': 'ogv', 'video/quicktime': 'mov',
+  }
+  const key = mime.split(';')[0].trim().toLowerCase()
+  if (map[key]) return map[key]
+  const sub = key.includes('/') ? key.split('/')[1].replace(/[^\w]/g, '') : ''
+  return sub || null
+}
+
+function extFor(src: string, mime: string): string {
+  if (src.startsWith('data:')) {
+    const header = src.slice(5, src.indexOf(','))
+    const ext = extFromMime(header)
+    if (ext) return ext
+  } else {
+    const path = src.split('?')[0].split('#')[0]
+    const dot = path.lastIndexOf('.')
+    const slash = path.lastIndexOf('/')
+    if (dot > slash && dot < path.length - 1) {
+      const ext = path.slice(dot + 1).toLowerCase()
+      if (/^[a-z0-9]{1,5}$/.test(ext)) return ext
+    }
+  }
+  return (mime && extFromMime(mime)) || 'bin'
+}
+
+interface BundledAsset {
+  name: string // filename within the ZIP's assets/ folder, e.g. "note--id__1.png"
+  data: ArrayBuffer
+}
+
+// Walk a parsed note document: download every embedded resource into `assets/`,
+// rewrite its `src` to the relative asset path, and rewrite internal note links to
+// the linked note's export filename. Mutates `doc` in place; returns the assets.
+async function collectResourcesAndRewrite(
+  doc: Document,
+  baseName: string,
+  linkExt: 'md' | 'html',
+): Promise<BundledAsset[]> {
+  const assets: BundledAsset[] = []
+  const bySrc = new Map<string, string>() // original src → relative "assets/<name>"
+  let counter = 0
+
+  const media = Array.from(doc.querySelectorAll('img, audio, video'))
+  for (const el of media) {
+    const src = el.getAttribute('src')
+    if (!src) continue
+    const cached = bySrc.get(src)
+    if (cached) {
+      el.setAttribute('src', cached)
+      continue
+    }
+    try {
+      const resp = await fetch(src)
+      const blob = await resp.blob()
+      const name = `${baseName}__${++counter}.${extFor(src, blob.type)}`
+      assets.push({ name, data: await blob.arrayBuffer() })
+      const rel = `assets/${name}`
+      bySrc.set(src, rel)
+      el.setAttribute('src', rel)
+    } catch {
+      // Unreachable resource (e.g. cross-origin without CORS): keep the original
+      // absolute src so the export still succeeds, just not fully offline.
+    }
+  }
+
+  // Internal note links → the linked note's export filename (same naming used for the
+  // main file), so a future multi-note export produces working cross-note links.
+  const filenameById = new Map<string, string | null>()
+  const anchors = Array.from(doc.querySelectorAll('a[href]'))
+  for (const a of anchors) {
+    const href = a.getAttribute('href') ?? ''
+    const id = noteIdFromHref(href)
+    if (!id) continue
+    if (!filenameById.has(id)) {
+      try {
+        const { data } = await notesApi.get(id)
+        filenameById.set(id, noteFileName(data.id, data.title, linkExt))
+      } catch {
+        filenameById.set(id, null) // deleted / inaccessible — leave the link as-is
+      }
+    }
+    const filename = filenameById.get(id)
+    if (filename) a.setAttribute('href', filename)
+  }
+
+  return assets
+}
+
+// Bundle a document plus its assets into a ZIP and download it.
+async function downloadZip(base: string, docName: string, docText: string, assets: BundledAsset[]): Promise<void> {
+  const JSZip = (await import('jszip')).default
+  const zip = new JSZip()
+  zip.file(docName, docText)
+  if (assets.length > 0) {
+    const folder = zip.folder('assets')!
+    for (const a of assets) folder.file(a.name, a.data)
+  }
+  const blob = await zip.generateAsync({ type: 'blob' })
+  downloadBlob(blob, `${base}.zip`)
 }
 
 // ─── Export: PDF ──────────────────────────────────────────────────────────────
@@ -740,11 +896,8 @@ function buildMarkdownFrontmatter(note: Note): string {
   return lines.join('\n')
 }
 
-export async function exportToMarkdown(note: Note): Promise<void> {
-  const TurndownService = (await import('turndown')).default
-  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
-
-  // GFM table support
+// GFM table support, shared by both Markdown exporters.
+function addGfmTableRules(td: Turndown): void {
   td.addRule('tableCell', {
     filter: ['th', 'td'],
     replacement: (content: string) => ` ${content.trim().replace(/\n+/g, ' ')} |`,
@@ -767,6 +920,12 @@ export async function exportToMarkdown(note: Note): Promise<void> {
     filter: 'table',
     replacement: (content: string) => `\n\n${content}\n`,
   })
+}
+
+export async function exportToMarkdown(note: Note): Promise<void> {
+  const TurndownService = (await import('turndown')).default
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
+  addGfmTableRules(td)
 
   let blocks: Record<string, unknown>[] = []
   try { blocks = JSON.parse(note.content) } catch { blocks = [] }
@@ -777,11 +936,53 @@ export async function exportToMarkdown(note: Note): Promise<void> {
   downloadText(md, `${note.title || 'note'}.md`, 'text/markdown')
 }
 
+// ─── Export: Markdown + resources (ZIP) ───────────────────────────────────────
+
+export async function exportToMarkdownWithResources(note: Note): Promise<void> {
+  const TurndownService = (await import('turndown')).default
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
+  addGfmTableRules(td)
+  // Turndown drops <audio>/<video> by default — represent them as links to the
+  // bundled asset (their src has already been rewritten to assets/… below).
+  td.addRule('mediaEmbed', {
+    filter: ['audio', 'video'],
+    replacement: (_content: string, node: Node) => {
+      const el = node as HTMLElement
+      const src = el.getAttribute('src') ?? ''
+      if (!src) return ''
+      const label = el.getAttribute('data-name') || (el.tagName.toLowerCase() === 'video' ? 'Video' : 'Audio')
+      return `\n\n[${label}](${src})\n\n`
+    },
+  })
+
+  let blocks: Record<string, unknown>[] = []
+  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+
+  const base = noteBaseName(note.id, note.title)
+  const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks, 'source')}`
+  const doc = new DOMParser().parseFromString(bodyHTML, 'text/html')
+  const assets = await collectResourcesAndRewrite(doc, base, 'md')
+  const frontmatter = buildMarkdownFrontmatter(note)
+  const md = `${frontmatter}\n\n${td.turndown(doc.body.innerHTML)}`
+  await downloadZip(base, `${base}.md`, md, assets)
+}
+
 // ─── Export: HTML ─────────────────────────────────────────────────────────────
 
 export async function exportToHTML(note: Note): Promise<void> {
   const html = await noteToHTML(note)
   downloadText(html, `${note.title || 'note'}.html`, 'text/html')
+}
+
+// ─── Export: HTML + resources (ZIP) ───────────────────────────────────────────
+
+export async function exportToHTMLWithResources(note: Note): Promise<void> {
+  const base = noteBaseName(note.id, note.title)
+  const html = await noteToHTML(note)
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const assets = await collectResourcesAndRewrite(doc, base, 'html')
+  const finalHtml = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  await downloadZip(base, `${base}.html`, finalHtml, assets)
 }
 
 // ─── Export: Clipboard (plain text) ──────────────────────────────────────────
