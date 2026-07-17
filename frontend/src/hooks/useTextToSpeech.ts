@@ -19,6 +19,7 @@ export interface UseTextToSpeechReturn {
   resume: () => void
   stop: () => void
   synthesizeBlob: (text: string) => Promise<Blob>
+  playAndSynthesize: (text: string) => Promise<Blob>
   exportToFile: (text: string, filename?: string) => Promise<void>
 }
 
@@ -26,21 +27,35 @@ export interface UseTextToSpeechReturn {
 // and split on sentence/line boundaries so each chunk sounds natural.
 const MAX_CHUNK_CHARS = 1500
 
-export function chunkText(text: string): string[] {
-  // Collapse runs of spaces/tabs but preserve newlines so list items, table
-  // rows and other line-delimited content remain separate segments (and the
-  // TTS engine pauses between them) rather than being read as one line.
+// Progressive per-chunk size targets for playback. The first chunk is kept
+// small (~1-2 sentences) so fal renders it in ~1s and audio starts almost
+// immediately; later chunks ramp up to full size to keep request overhead low
+// and prosody natural. Sizes hold at MAX_CHUNK_CHARS after the ramp.
+const PLAYBACK_CHUNK_TARGETS = [220, 500, 1000, MAX_CHUNK_CHARS]
+
+// How many chunks to keep synthesizing ahead of the one currently playing, so
+// playback stays gapless across the smaller fast-start chunks.
+const PREFETCH_DEPTH = 2
+
+// Greedily pack sentences/lines into chunks, where the size budget for the Nth
+// chunk is `limitFor(N)`. Collapses runs of spaces/tabs but preserves newlines
+// so list items, table rows and other line-delimited content stay separate
+// segments (and the TTS engine pauses between them) rather than being read as
+// one line.
+function packChunks(text: string, limitFor: (index: number) => number): string[] {
   const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
   if (!clean) return []
-  if (clean.length <= MAX_CHUNK_CHARS) return [clean]
 
   // Split into sentences / lines, then greedily pack into chunks.
   const sentences = clean.match(/[^.!?\n]+[.!?\n]*\s*/g) ?? [clean]
   const chunks: string[] = []
   let current = ''
   for (const sentence of sentences) {
-    if (sentence.length > MAX_CHUNK_CHARS) {
-      // A single very long sentence: hard-split on word boundaries.
+    const limit = limitFor(chunks.length)
+    if (sentence.length > limit) {
+      // A single sentence bigger than the current budget: flush what we have.
+      // Only hard-split (on word boundaries) if it also exceeds the hard cap;
+      // otherwise let it stand as its own chunk so we never split mid-sentence.
       if (current) { chunks.push(current.trim()); current = '' }
       let rest = sentence
       while (rest.length > MAX_CHUNK_CHARS) {
@@ -50,7 +65,7 @@ export function chunkText(text: string): string[] {
         rest = rest.slice(cut)
       }
       current = rest
-    } else if ((current + sentence).length > MAX_CHUNK_CHARS) {
+    } else if ((current + sentence).length > limit) {
       chunks.push(current.trim())
       current = sentence
     } else {
@@ -59,6 +74,19 @@ export function chunkText(text: string): string[] {
   }
   if (current.trim()) chunks.push(current.trim())
   return chunks.filter(Boolean)
+}
+
+// Uniform chunks — used for whole-file synthesis (audio export), where there's
+// no first-audio latency to optimise.
+export function chunkText(text: string): string[] {
+  const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
+  if (clean && clean.length <= MAX_CHUNK_CHARS) return [clean]
+  return packChunks(text, () => MAX_CHUNK_CHARS)
+}
+
+// Fast-start chunks for playback: a small first chunk, ramping up to full size.
+export function chunkTextForPlayback(text: string): string[] {
+  return packChunks(text, (i) => PLAYBACK_CHUNK_TARGETS[Math.min(i, PLAYBACK_CHUNK_TARGETS.length - 1)])
 }
 
 // Read-aloud volume and speed are global, device-level preferences shared across notes.
@@ -101,7 +129,9 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const queueRef = useRef<string[]>([])
   const indexRef = useRef(0)
   const objectUrlRef = useRef<string | null>(null)
-  const prefetchRef = useRef<Promise<Blob> | null>(null)
+  // In-flight/settled synthesis promises keyed by chunk index, so playback and
+  // (for Insert Mode) the background assembly loop share one request per chunk.
+  const pipelineRef = useRef<Map<number, Promise<Blob>>>(new Map())
   const cancelledRef = useRef(false)
   const volumeRef = useRef(volume)
   const speedRef = useRef(speed)
@@ -132,7 +162,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     cancelledRef.current = true
     queueRef.current = []
     indexRef.current = 0
-    prefetchRef.current = null
+    pipelineRef.current.clear()
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.src = ''
@@ -152,18 +182,33 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     }
   }, [])
 
+  // Synthesize chunk i, memoized in the pipeline so repeated requests (playback
+  // + background assembly) reuse a single fal call.
   const fetchChunk = useCallback((i: number): Promise<Blob> | null => {
     const chunk = queueRef.current[i]
     if (chunk === undefined) return null
-    return settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current)
+    const existing = pipelineRef.current.get(i)
+    if (existing) return existing
+    const p = settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current)
+    // Pre-attach a no-op catch so an early rejection can't raise an unhandled
+    // rejection before the awaiting site handles it.
+    p.catch(() => { /* surfaced where awaited */ })
+    pipelineRef.current.set(i, p)
+    return p
   }, [])
+
+  // Keep up to PREFETCH_DEPTH chunks synthesizing ahead of `fromIndex`.
+  const ensurePipeline = useCallback((fromIndex: number) => {
+    for (let j = fromIndex; j < fromIndex + PREFETCH_DEPTH; j++) fetchChunk(j)
+  }, [fetchChunk])
 
   const playIndex = useCallback(async (i: number) => {
     if (cancelledRef.current) return
-    const blobPromise = i === indexRef.current && prefetchRef.current
-      ? prefetchRef.current
-      : fetchChunk(i)
+    const blobPromise = fetchChunk(i)
     if (!blobPromise) { setStatus('idle'); return }
+
+    // Keep the pipeline topped up so the next chunks are ready before this ends.
+    ensurePipeline(i + 1)
 
     let blob: Blob
     try {
@@ -175,14 +220,6 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       return
     }
     if (cancelledRef.current) return
-
-    // Kick off prefetch of the next chunk while this one plays.
-    prefetchRef.current = null
-    const next = fetchChunk(i + 1)
-    if (next) {
-      prefetchRef.current = next
-      next.catch(() => { /* surfaced when we await it */ })
-    }
 
     revokeUrl()
     const url = URL.createObjectURL(blob)
@@ -198,6 +235,8 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     audio.onplaying = () => { if (!cancelledRef.current) setStatus('playing') }
     audio.onended = () => {
       if (cancelledRef.current) return
+      // Free the just-played chunk; the assembly loop (if any) already captured it.
+      pipelineRef.current.delete(i)
       indexRef.current = i + 1
       if (indexRef.current < queueRef.current.length) {
         void playIndex(indexRef.current)
@@ -218,35 +257,36 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       setErrorMessage('Playback was blocked by the browser')
       setStatus('error')
     }
-  }, [fetchChunk, revokeUrl])
+  }, [fetchChunk, ensurePipeline, revokeUrl])
 
-  const play = useCallback((text: string) => {
-    // Stop anything currently playing first.
+  // Reset state and begin streaming playback of an already-chunked queue.
+  const startPlayback = useCallback((chunks: string[]) => {
     cancelledRef.current = false
     if (audioRef.current) audioRef.current.pause()
     revokeUrl()
-
-    const chunks = chunkText(text)
-    if (chunks.length === 0) return
-
+    pipelineRef.current.clear()
     queueRef.current = chunks
     indexRef.current = 0
-    prefetchRef.current = null
     setErrorMessage('')
     setStatus('loading')
     void playIndex(0)
   }, [playIndex, revokeUrl])
 
+  const play = useCallback((text: string) => {
+    const chunks = chunkTextForPlayback(text)
+    if (chunks.length === 0) return
+    startPlayback(chunks)
+  }, [startPlayback])
+
   // Play an already-synthesized audio blob through the same element/state machine
   // as chunked playback, so pause/resume/stop and the volume control keep working.
-  // Used by "Insert Mode" so the inserted clip plays without re-synthesizing.
   const playBlob = useCallback((blob: Blob) => {
     cancelledRef.current = false
     if (audioRef.current) audioRef.current.pause()
     revokeUrl()
     queueRef.current = []
     indexRef.current = 0
-    prefetchRef.current = null
+    pipelineRef.current.clear()
     setErrorMessage('')
     setStatus('loading')
 
@@ -293,7 +333,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   // MP3 segments are concatenated — MP3 is frame-based, so simple byte
   // concatenation plays back correctly. Sets 'loading' while running; on success
   // it leaves the status as 'loading' so the caller decides the next transition
-  // (download → idle, or playBlob → playing). On failure it sets 'error' and rethrows.
+  // (download → idle). On failure it sets 'error' and rethrows.
   const synthesizeBlob = useCallback(async (text: string): Promise<Blob> => {
     const chunks = chunkText(text)
     if (chunks.length === 0) return new Blob([], { type: 'audio/mpeg' })
@@ -311,6 +351,25 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       throw e
     }
   }, [])
+
+  // Insert Mode: start streaming playback immediately (small first chunk) while
+  // assembling the full clip in the background from the *same* per-chunk audio,
+  // so fal isn't billed twice. Resolves with the concatenated MP3 for saving;
+  // rejects if playback is stopped before synthesis finishes.
+  const playAndSynthesize = useCallback(async (text: string): Promise<Blob> => {
+    const chunks = chunkTextForPlayback(text)
+    if (chunks.length === 0) return new Blob([], { type: 'audio/mpeg' })
+    startPlayback(chunks)
+    const blobs: Blob[] = []
+    for (let i = 0; i < chunks.length; i++) {
+      if (cancelledRef.current) throw new Error('cancelled')
+      const p = fetchChunk(i)
+      if (!p) break
+      blobs.push(await p)
+    }
+    if (cancelledRef.current) throw new Error('cancelled')
+    return new Blob(blobs, { type: 'audio/mpeg' })
+  }, [startPlayback, fetchChunk])
 
   // Synthesize the whole text and download it as a single MP3 file.
   const exportToFile = useCallback(async (text: string, filename = 'note.mp3') => {
@@ -350,6 +409,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     resume,
     stop,
     synthesizeBlob,
+    playAndSynthesize,
     exportToFile,
   }
 }

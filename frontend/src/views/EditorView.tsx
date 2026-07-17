@@ -783,14 +783,16 @@ export default function EditorView() {
     return `${base}.mp3`
   }
 
-  // Insert Mode: synthesize once, save + insert the clip at the top of the note,
-  // then play the same blob (no second synthesis, so fal.ai isn't billed twice).
+  // Insert Mode: start playing immediately (small first chunk) while the full
+  // clip assembles in the background, then save + insert it at the top of the
+  // note. Reuses the same per-chunk audio, so fal.ai isn't billed twice.
   async function handlePlayWithInsert(text: string) {
     let blob: Blob
     try {
-      blob = await tts.synthesizeBlob(text)
+      blob = await tts.playAndSynthesize(text)
     } catch {
-      // synthesizeBlob already set the error status + message (toast via effect).
+      // Playback was stopped, or synthesis failed (which already set the error
+      // status + message, surfaced as a toast via effect) — nothing to save.
       return
     }
     try {
@@ -799,10 +801,9 @@ export default function EditorView() {
         { type: 'audioFile', props: { url, name: `Read-aloud — ${new Date().toLocaleString()}` } } as unknown as PartialBlock,
       ])
     } catch {
-      // Saving to the note failed, but we still have the audio — play it anyway.
+      // Saving to the note failed, but the audio already played — just notify.
       showToast('Could not save the audio to the note')
     }
-    tts.playBlob(blob)
   }
 
   function handlePlayPause() {
