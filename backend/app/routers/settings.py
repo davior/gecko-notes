@@ -9,6 +9,7 @@ import fal_client
 import httpx
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -16,6 +17,8 @@ from sqlmodel import Session, select
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
 from app.pricing import cost_for
+from app.routers.media import MEDIA_DIR as _MEDIA_ROOT
+from app.substack_publish import SubstackError, create_substack_draft
 from app.models import AIProvider, AppSetting, ModelCatalogEntry, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -2260,3 +2263,135 @@ def deactivate_theme(request: Request, session: Session = Depends(get_session)):
     if existing:
         session.delete(existing)
         session.commit()
+
+
+# ─── Substack publishing (per-user) ───────────────────────────────────────────
+#
+# Push a note to the user's Substack publication as a DRAFT. Auth is cookie-only:
+# Substack blocks scripted email/password logins behind a captcha, so the user
+# pastes their browser session-cookie string. The cookie is encrypted at rest
+# (same Fernet scheme as the AI/fal/Deepgram keys) and never returned to the
+# browser — the GET reports only booleans. The publication URL is non-secret.
+# The actual publish (synchronous `python-substack` calls + image uploads) runs in
+# a threadpool; all library specifics live in app/substack_publish.py.
+
+_SUBSTACK_CONFIG = "substack_config"   # JSON: {"publication_url": "..."} — non-secret
+_SUBSTACK_COOKIE = "substack_cookie"   # encrypted session-cookie string
+
+
+def _load_substack_publication_url(session: Session, user_id: str) -> str:
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _SUBSTACK_CONFIG)
+    ).first()
+    if not row or not row.value:
+        return ""
+    try:
+        cfg = json.loads(row.value) or {}
+    except (ValueError, TypeError):
+        return ""
+    return (cfg.get("publication_url") or "").strip()
+
+
+def load_substack_cookie(session: Session, user_id: str) -> Optional[str]:
+    """Decrypted Substack session cookie for a user, or None when unset. Mirrors load_fal_api_key."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _SUBSTACK_COOKIE)
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        stored = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    if not stored:
+        return None
+    try:
+        return decrypt_api_key(stored)
+    except Exception:
+        return None
+
+
+def _substack_settings_payload(session: Session, user_id: str) -> Dict[str, Any]:
+    publication_url = _load_substack_publication_url(session, user_id)
+    has_cookie = bool(load_substack_cookie(session, user_id))
+    return {
+        "publication_url": publication_url,
+        "has_cookie": has_cookie,
+        "configured": bool(publication_url and has_cookie),
+    }
+
+
+class SubstackSettingsUpdate(BaseModel):
+    publication_url: Optional[str] = None
+    # `cookie` is tri-state, same convention as the fal/Deepgram keys: omitted / None
+    # leaves the stored cookie untouched; "" clears it; a non-empty value replaces it.
+    cookie: Optional[str] = None
+
+
+class SubstackPublishRequest(BaseModel):
+    title: str
+    markdown: str
+    subtitle: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+@router.get("/substack", response_model=Dict[str, Any])
+def get_substack_settings(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    return _substack_settings_payload(session, user_id)
+
+
+@router.put("/substack", response_model=Dict[str, Any])
+def update_substack_settings(
+    payload: SubstackSettingsUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+
+    if payload.publication_url is not None:
+        url = payload.publication_url.strip()
+        if url:
+            _require_safe_external_url(url)  # https + public host (also guards SSRF)
+        _upsert_user_setting(session, user_id, _SUBSTACK_CONFIG, json.dumps({"publication_url": url}))
+
+    if payload.cookie is not None:
+        encrypted = encrypt_api_key(payload.cookie) if payload.cookie else ""
+        _upsert_user_setting(session, user_id, _SUBSTACK_COOKIE, json.dumps(encrypted))
+
+    session.commit()
+    return _substack_settings_payload(session, user_id)
+
+
+@router.post("/substack/publish", response_model=Dict[str, Any])
+async def publish_to_substack(
+    payload: SubstackPublishRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Create a Substack draft from the note's rendered Markdown. Returns the draft id/URL."""
+    user_id = _get_user_id(request)
+    publication_url = _load_substack_publication_url(session, user_id)
+    cookie = load_substack_cookie(session, user_id)
+    if not publication_url or not cookie:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "substack_unconfigured", "message": "Add your Substack publication URL and session cookie in Settings → Publishing first."},
+        )
+
+    try:
+        draft_id = await run_in_threadpool(
+            create_substack_draft,
+            publication_url=publication_url,
+            cookie=cookie,
+            title=payload.title,
+            markdown=payload.markdown,
+            subtitle=payload.subtitle or "",
+            tags=payload.tags,
+            media_dir=_MEDIA_ROOT,
+        )
+    except SubstackError as e:
+        raise HTTPException(status_code=502, detail={"code": "substack_failed", "message": str(e)})
+
+    draft_url = f"{publication_url.rstrip('/')}/publish/post/{draft_id}"
+    return {"draft_id": draft_id, "draft_url": draft_url}

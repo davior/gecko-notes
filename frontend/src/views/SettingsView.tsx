@@ -1,5 +1,5 @@
 import { useNavigate, useParams, Link, Navigate } from 'react-router-dom'
-import { ArrowLeft, Tag, Sparkles, SlidersHorizontal, Users, UserCircle, HardDriveDownload, Palette, Activity } from 'lucide-react'
+import { ArrowLeft, Tag, Sparkles, SlidersHorizontal, Users, UserCircle, HardDriveDownload, Palette, Activity, Send } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import CategoryManager from '@/components/settings/CategoryManager'
@@ -9,6 +9,7 @@ import ProfileSettings from '@/components/settings/ProfileSettings'
 import DataManager from '@/components/settings/DataManager'
 import ThemeManager from '@/components/settings/ThemeManager'
 import AIServicesHub from '@/components/settings/AIServicesHub'
+import PublishingSettings from '@/components/settings/PublishingSettings'
 import UserAvatar from '@/components/UserAvatar'
 
 const baseTabs = [
@@ -17,6 +18,7 @@ const baseTabs = [
   { to: '/settings/categories', label: 'Categories', icon: Tag, key: 'categories' },
   { to: '/settings/themes', label: 'Themes', icon: Palette, key: 'themes' },
   { to: '/settings/ai/providers', label: 'AI Services', icon: Sparkles, key: 'ai' },
+  { to: '/settings/publishing', label: 'Publishing', icon: Send, key: 'publishing' },
   { to: '/settings/general', label: 'General', icon: SlidersHorizontal, key: 'general' },
   { to: '/settings/data', label: 'Data', icon: HardDriveDownload, key: 'data' },
 ]
@@ -87,6 +89,7 @@ export default function SettingsView() {
             {!isAI && tab === 'profile' && <ProfileSettings />}
             {!isAI && tab === 'stats' && <UserStats />}
             {!isAI && tab === 'users' && <UserManager />}
+            {!isAI && tab === 'publishing' && <PublishingSettings />}
             {!isAI && tab === 'data' && <DataManager />}
 
             {!isAI && tab === 'general' && (
