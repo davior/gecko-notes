@@ -285,6 +285,24 @@ export interface ThemeUpdate {
   shadow_blur?: number
 }
 
+export interface SubstackSettings {
+  publication_url: string
+  has_cookie: boolean
+  configured: boolean
+}
+
+export interface SubstackSettingsUpdate {
+  publication_url?: string
+  // Tri-state, same convention as the fal/Deepgram keys: omitted leaves the stored
+  // cookie untouched, "" clears it, a non-empty value replaces it.
+  cookie?: string
+}
+
+export interface SubstackPublishResult {
+  draft_id: string
+  draft_url: string
+}
+
 export const settingsApi = {
   getAll(): Promise<Record<string, unknown>> {
     return client.get('/settings').then((r) => r.data)
@@ -418,5 +436,21 @@ export const settingsApi = {
 
   getImagePricing(): Promise<ImagePricing> {
     return client.get('/settings/images/pricing').then((r) => r.data)
+  },
+
+  getSubstackSettings(): Promise<SubstackSettings> {
+    return client.get('/settings/substack').then((r) => r.data)
+  },
+
+  updateSubstackSettings(payload: SubstackSettingsUpdate): Promise<SubstackSettings> {
+    return client.put('/settings/substack', payload).then((r) => r.data)
+  },
+
+  publishToSubstack(payload: { title: string; markdown: string; subtitle?: string; tags?: string[] }): Promise<SubstackPublishResult> {
+    return client.post('/settings/substack/publish', payload).then((r) => r.data)
+  },
+
+  testSubstackConnection(payload: { publication_url?: string; cookie?: string }): Promise<{ success: boolean; message: string }> {
+    return client.post('/settings/substack/test', payload).then((r) => r.data)
   },
 }

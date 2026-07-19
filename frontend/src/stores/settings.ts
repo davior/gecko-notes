@@ -21,6 +21,9 @@ interface SettingsState {
   // Speech (TTS/STT) runs on fal.ai using the shared fal key configured on the
   // Providers tab (Media Provider); this flag reflects whether that key is present.
   falKeyConfigured: boolean
+  // Whether a Substack publication URL + session cookie are configured (Publishing
+  // tab); gates the note Export menu's "Publish to Substack" item.
+  substackConfigured: boolean
   ttsModel: string
   ttsModels: TTSModel[]
   voice: string
@@ -139,6 +142,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeThemeId: null,
   sharedThemeId: null,
   falKeyConfigured: false,
+  substackConfigured: false,
   ttsModel: DEFAULT_TTS_MODEL,
   ttsModels: [],
   voice: DEFAULT_TTS_VOICE,
@@ -205,6 +209,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // no speech endpoint — falKeyConfigured stays false, fall back to the
       // curated ElevenLabs voice list so the read-aloud picker still works.
       set({ voice: normalizeVoice(rawVoice, TTS_VOICES.map((v) => v.id)) })
+    }
+    // Substack publishing config, loaded separately for the same reason.
+    try {
+      const substack = await settingsApi.getSubstackSettings()
+      set({ substackConfigured: substack.configured })
+    } catch {
+      // no substack endpoint (e.g. older backend) — substackConfigured stays false.
     }
   },
 
@@ -415,6 +426,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       activeThemeId: null,
       sharedThemeId: null,
       falKeyConfigured: false,
+      substackConfigured: false,
       ttsModel: DEFAULT_TTS_MODEL,
       voice: DEFAULT_TTS_VOICE,
       ttsModels: [],

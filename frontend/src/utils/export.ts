@@ -40,6 +40,14 @@ async function svgToPngData(svg: string): Promise<{ data: Uint8Array; width: num
   return { data: new Uint8Array(await blob.arrayBuffer()), width, height }
 }
 
+// Encode raw PNG bytes as a base64 data URI (used to embed a rasterised diagram
+// inline in Markdown for Substack, which uploads/hosts the image on its side).
+function pngBytesToDataUri(data: Uint8Array): string {
+  let bin = ''
+  for (const b of data) bin += String.fromCharCode(b)
+  return `data:image/png;base64,${btoa(bin)}`
+}
+
 type DocxParagraph = InstanceType<(typeof import('docx'))['Paragraph']>
 type DocxTextRun = InstanceType<(typeof import('docx'))['TextRun']>
 type DocxTable = InstanceType<(typeof import('docx'))['Table']>
@@ -150,7 +158,10 @@ function buildInlineContent(content: unknown[]): string {
 
 // ─── Helper: convert blocks array to HTML with correct element types ──────────
 
-async function buildBlocksHTML(blocks: Record<string, unknown>[], mode: 'render' | 'source' = 'render'): Promise<string> {
+// `mode` controls diagram handling: 'render' embeds the diagram SVG (crisp, for
+// HTML/PDF), 'source' emits a ```mermaid code block (for Markdown export), and
+// 'raster' embeds a rasterised PNG data URI (for Substack, which re-hosts images).
+async function buildBlocksHTML(blocks: Record<string, unknown>[], mode: 'render' | 'source' | 'raster' = 'render'): Promise<string> {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
   const parts: string[] = []
   let i = 0
@@ -235,14 +246,23 @@ async function buildBlocksHTML(blocks: Record<string, unknown>[], mode: 'render'
     }
 
     if (type === 'diagram') {
+      const source = (props?.source as string) ?? ''
       if (mode === 'source') {
-        const source = (props?.source as string) ?? ''
         parts.push(`<pre><code class="language-mermaid">${escapeHtml(source)}</code></pre>`)
         i++
         continue
       }
-      const { svg, error } = await renderMermaid((props?.source as string) ?? '')
-      if (svg) {
+      const { svg, error } = await renderMermaid(source)
+      if (svg && mode === 'raster') {
+        // Rasterise to PNG (same path the Word exporter uses) so the diagram
+        // survives as a normal uploadable image rather than inline SVG.
+        try {
+          const { data } = await svgToPngData(svg)
+          parts.push(`<figure style="margin:16px 0"><img src="${pngBytesToDataUri(data)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
+        } catch {
+          parts.push(`<p style="color:#b91c1c;font-style:italic">[Diagram]</p>`)
+        }
+      } else if (svg) {
         parts.push(`<figure style="margin:16px 0"><img src="${svgToDataUri(svg)}" style="max-width:100%;height:auto;" alt="Diagram" /></figure>`)
       } else if (error) {
         parts.push(`<p style="color:#b91c1c;font-style:italic">[Diagram: ${escapeHtml(error)}]</p>`)
@@ -992,6 +1012,24 @@ export async function exportToMarkdown(note: Note): Promise<void> {
   const frontmatter = buildMarkdownFrontmatter(note)
   const md = `${frontmatter}\n\n${td.turndown(bodyHTML)}`
   downloadText(md, `${note.title || 'note'}.md`, 'text/markdown')
+}
+
+// ─── Convert a note to plain Markdown body (for Substack) ─────────────────────
+//
+// The note's content as Markdown with NO YAML frontmatter and NO H1 title (the
+// title is sent to Substack as a separate field). Diagrams are rasterised to PNG
+// data URIs so the backend can upload them to Substack; embedded images keep their
+// URLs (the backend resolves and uploads those too). Audio/video are dropped.
+export async function noteToMarkdownBody(note: Note): Promise<string> {
+  const TurndownService = (await import('turndown')).default
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
+  addGfmTableRules(td)
+
+  let blocks: Record<string, unknown>[] = []
+  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+
+  const bodyHTML = await buildBlocksHTML(blocks, 'raster')
+  return td.turndown(bodyHTML).trim()
 }
 
 // ─── Export: Markdown + resources (ZIP) ───────────────────────────────────────

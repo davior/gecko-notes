@@ -43,6 +43,7 @@ import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation, type DictationMode } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
+import { noteToMarkdownBody } from '@/utils/export'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -280,7 +281,7 @@ export default function EditorView() {
     return res.data.url
   }, [])
 
-  const { falKeyConfigured, sttProvider } = settingsStore
+  const { falKeyConfigured, substackConfigured, sttProvider } = settingsStore
   const transcribeAudio = useCallback(
     (blob: Blob) => settingsApi.transcribeAudio(blob),
     [],
@@ -824,6 +825,26 @@ export default function EditorView() {
     await tts.exportToFile(text, speechFilename())
   }
 
+  async function handlePublishSubstack() {
+    if (!note) return
+    showToast('Publishing to Substack…')
+    try {
+      const markdown = await noteToMarkdownBody(note)
+      const { draft_url } = await settingsApi.publishToSubstack({
+        title: note.title,
+        markdown,
+        tags: note.tags,
+      })
+      showToast('Draft created on Substack ✓')
+      window.open(draft_url, '_blank', 'noopener')
+    } catch (e) {
+      // Surface the backend's message (e.g. an expired session cookie) when present.
+      const detail = (e as { response?: { data?: { detail?: { message?: string } | string } } })?.response?.data?.detail
+      const msg = typeof detail === 'string' ? detail : detail?.message
+      showToast(msg || 'Failed to publish to Substack')
+    }
+  }
+
   function addTag() {
     const raw = newTagInput.trim().replace(/^#/, '').toLowerCase()
     if (raw && !tags.includes(raw)) setTags((t) => [...t, raw])
@@ -1250,7 +1271,7 @@ export default function EditorView() {
           </button>
           {note && (
             <span ref={exportAnchorRef}>
-              <ExportMenu note={note} onToast={showToast} onExportAudio={falKeyConfigured ? handleExportAudio : undefined} />
+              <ExportMenu note={note} onToast={showToast} onExportAudio={falKeyConfigured ? handleExportAudio : undefined} onPublishSubstack={substackConfigured ? handlePublishSubstack : undefined} />
             </span>
           )}
           {note && <ShareMenu note={note} onToast={showToast} onUpdate={setNote} />}
