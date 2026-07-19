@@ -8,6 +8,7 @@ import { useDropdown } from '@/hooks/useDropdown'
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  deepseek: 'DeepSeek',
   ollama: 'Ollama',
   custom: 'Custom',
 }

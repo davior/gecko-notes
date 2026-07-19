@@ -579,6 +579,7 @@ export function createAIService(provider: AIProvider): AIService {
         maxTokens: provider.max_tokens ?? 16384,
       })
     case 'openai':
+    case 'deepseek':
     case 'custom':
       return new OpenAIProvider({
         id: provider.id,

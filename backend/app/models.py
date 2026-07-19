@@ -81,7 +81,7 @@ class Annotation(SQLModel, table=True):
 class AIProvider(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
-    provider_type: str  # "anthropic" | "openai" | "ollama" | "custom"
+    provider_type: str  # "anthropic" | "openai" | "deepseek" | "ollama" | "custom"
     api_key: str = Field(default='')
     base_url: Optional[str] = None
     model: str
@@ -106,7 +106,7 @@ class UsageEvent(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
     kind: str = Field(index=True)        # "tts" | "stt" | "ai" | "image"
-    provider: Optional[str] = Field(default=None, index=True)  # "anthropic" | "openai" | "ollama" | "fal.ai"
+    provider: Optional[str] = Field(default=None, index=True)  # "anthropic" | "openai" | "deepseek" | "ollama" | "fal.ai"
     model: str = Field(default="")
     units: int = Field(default=0)        # chars (tts) / seconds (stt) / tokens (ai) / images (image)
     unit_type: str = Field(default="")   # "chars" | "seconds" | "tokens" | "images"

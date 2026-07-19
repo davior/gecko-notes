@@ -136,7 +136,7 @@ export interface SystemPromptUpdate {
 export interface AIProvider {
   id: string
   name: string
-  provider_type: 'anthropic' | 'openai' | 'ollama' | 'custom'
+  provider_type: 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
   api_key: string
   base_url: string | null
   model: string
@@ -147,7 +147,7 @@ export interface AIProvider {
 
 export interface AIProviderCreate {
   name: string
-  provider_type: 'anthropic' | 'openai' | 'ollama' | 'custom'
+  provider_type: 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
   api_key?: string
   base_url?: string | null
   model: string
@@ -158,7 +158,7 @@ export interface AIProviderCreate {
 
 export interface AIProviderUpdate {
   name?: string
-  provider_type?: 'anthropic' | 'openai' | 'ollama' | 'custom'
+  provider_type?: 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
   api_key?: string
   base_url?: string | null
   model?: string
@@ -169,7 +169,7 @@ export interface AIProviderUpdate {
 
 export interface AIProviderTest {
   provider_id?: string
-  provider_type: 'anthropic' | 'openai' | 'ollama' | 'custom'
+  provider_type: 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
   api_key?: string
   base_url?: string | null
   model: string

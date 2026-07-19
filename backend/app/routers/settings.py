@@ -58,8 +58,8 @@ def _record_usage(
 ) -> None:
     """Record an external-API usage event. Best-effort: never breaks the request.
 
-    `provider` groups events in the usage dashboard ("anthropic"/"openai"/"ollama"/
-    "fal.ai"). `external_ref`/`cost`/`currency` are cost attribution; `cost_estimated`
+    `provider` groups events in the usage dashboard ("anthropic"/"openai"/"deepseek"/
+    "ollama"/"fal.ai"). `external_ref`/`cost`/`currency` are cost attribution; `cost_estimated`
     flags a list-price estimate (LLM tokens) vs a provider-billed exact amount (fal)."""
     try:
         session.add(UsageEvent(
@@ -320,8 +320,8 @@ async def test_ai_provider(
                 return {"success": True, "message": "Connection successful"}
             return {"success": False, "message": f"HTTP {response.status_code}"}
 
-        elif payload.provider_type in ("openai", "custom"):
-            base = (base_url or "https://api.openai.com").rstrip("/")
+        elif payload.provider_type in ("openai", "deepseek", "custom"):
+            base = _openai_compat_base(payload.provider_type, base_url)
             _require_safe_external_url(base)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -736,6 +736,18 @@ class OpenAIProxyRequest(BaseModel):
     temperature: Optional[float] = None
 
 
+def _openai_compat_base(provider_type: Optional[str], base_url: Optional[str]) -> str:
+    """Resolve the upstream base URL for an OpenAI-compatible provider.
+
+    DeepSeek is a fixed managed endpoint (like OpenAI's own), so it ignores any
+    stored base_url — that both spares the user a URL field and stops a crafted
+    base_url from redirecting the proxy. `openai`/`custom` keep the existing
+    behaviour (custom supplies its own base, already SSRF-checked on save)."""
+    if provider_type == "deepseek":
+        return "https://api.deepseek.com"
+    return (base_url or "https://api.openai.com").rstrip("/")
+
+
 @router.post("/ai-providers/proxy/openai")
 async def proxy_openai(
     payload: OpenAIProxyRequest,
@@ -746,10 +758,10 @@ async def proxy_openai(
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
-    if provider.provider_type not in ("openai", "custom"):
+    if provider.provider_type not in ("openai", "deepseek", "custom"):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
 
-    base = (provider.base_url or "https://api.openai.com").rstrip("/")
+    base = _openai_compat_base(provider.provider_type, provider.base_url)
     body: Dict[str, Any] = {
         "model": payload.model,
         "max_tokens": payload.max_tokens,
@@ -965,10 +977,10 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
-    if provider.provider_type not in ("openai", "custom"):
+    if provider.provider_type not in ("openai", "deepseek", "custom"):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
 
-    base = (provider.base_url or "https://api.openai.com").rstrip("/")
+    base = _openai_compat_base(provider.provider_type, provider.base_url)
     body: Dict[str, Any] = {
         "model": payload.model,
         "max_tokens": payload.max_tokens,

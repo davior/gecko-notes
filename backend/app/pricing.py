@@ -51,6 +51,14 @@ _PRICES: dict[str, List[Tuple[str, float, float]]] = {
         ("o1", 15.0, 60.0),
         ("gpt", 2.50, 10.0),  # unknown GPT model — assume 4o-tier
     ],
+    # DeepSeek's OpenAI-compatible API. Standard (cache-miss) list prices; the
+    # dashboard flags these as estimates and does not model DeepSeek's cache-hit
+    # discount. List the specific model ids before the chat-tier catch-all.
+    "deepseek": [
+        ("deepseek-reasoner", 0.55, 2.19),
+        ("deepseek-chat", 0.27, 1.10),
+        ("deepseek", 0.27, 1.10),  # unknown DeepSeek model — assume chat-tier
+    ],
 }
 
 

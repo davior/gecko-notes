@@ -18,7 +18,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Per-note statistics (word/character count, reading time, size including attachments, versions, and likes) from an info button in the status bar
 
 ### AI assistant
-- Conversational AI assistant (Anthropic, OpenAI, Ollama, or any OpenAI-compatible endpoint)
+- Conversational AI assistant (Anthropic, OpenAI, DeepSeek, Ollama, or any OpenAI-compatible endpoint)
 - **Agentic note plans** — the assistant turns requests into executable, multi-step plans that edit the note (insert/edit sections, add references, move notes) with per-step checkboxes
 - **Web search** via Anthropic's built-in tool
 - Context scope controls (current note, selection, attachments) with prompt-cache freezing to reduce token cost
@@ -63,7 +63,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 | Frontend | React 18 + Vite + TypeScript + Zustand + Tailwind CSS v3 |
 | Editor | BlockNote (`@blocknote/react`) |
 | Backend | FastAPI + SQLModel (SQLite) |
-| AI | Anthropic / OpenAI / Ollama / OpenAI-compatible; web search via Anthropic |
+| AI | Anthropic / OpenAI / DeepSeek / Ollama / OpenAI-compatible; web search via Anthropic |
 | Voice & Images | fal.ai (TTS + STT + image generation) |
 | Container | Docker Compose + Nginx |
 
@@ -129,6 +129,7 @@ Go to **Settings → AI Providers** to configure an AI provider:
 |----------|-------|
 | Anthropic | Requires an API key from console.anthropic.com. Required for the AI assistant's web search tool. |
 | OpenAI | Requires an API key from platform.openai.com |
+| DeepSeek | Requires an API key from platform.deepseek.com. Models: `deepseek-chat` or `deepseek-reasoner` |
 | Ollama | Point to your local Ollama instance (e.g. `http://localhost:11434`) |
 | Custom | Any OpenAI-compatible endpoint |
 

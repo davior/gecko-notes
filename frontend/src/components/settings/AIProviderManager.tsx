@@ -4,22 +4,23 @@ import { useSettingsStore } from '@/stores/settings'
 import { settingsApi, type AIProvider } from '@/api/settings'
 import MediaProviderSettings from '@/components/settings/MediaProviderSettings'
 
-type ProviderType = 'anthropic' | 'openai' | 'ollama' | 'custom'
+type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
 interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; enabled: boolean }
 
 // Sensible per-type output-token defaults. Anthropic 4.x models support 64000
 // (Opus up to 128000); most OpenAI-compatible models cap output near 16384.
-const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, openai: 16384, ollama: 16384, custom: 16384 }
+const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, openai: 16384, deepseek: 8192, ollama: 16384, custom: 16384 }
 
 const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, enabled: true })
 
 const modelPlaceholders: Record<string, string> = {
-  anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', ollama: 'llama3.2', custom: 'model-name',
+  anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', deepseek: 'deepseek-chat', ollama: 'llama3.2', custom: 'model-name',
 }
 
 const typeBadge: Record<string, string> = {
   anthropic: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
   openai: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+  deepseek: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400',
   ollama: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400',
   custom: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
 }
@@ -104,8 +105,8 @@ export default function AIProviderManager() {
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
           These providers power text-based AI features — chat with the assistant, note summaries,
           tag suggestions, and other language-model tasks. Add one or more, then mark one{' '}
-          <span className="font-medium">Active</span> to use it across the app. Anthropic and OpenAI
-          need an API key; Ollama runs models locally and needs a reachable server URL instead.
+          <span className="font-medium">Active</span> to use it across the app. Anthropic, OpenAI, and
+          DeepSeek need an API key; Ollama runs models locally and needs a reachable server URL instead.
         </p>
       </div>
 
@@ -122,6 +123,7 @@ export default function AIProviderManager() {
               <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t] }) }} className="input">
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
                 <option value="ollama">Ollama</option>
                 <option value="custom">Custom (OpenAI-compatible)</option>
               </select>
