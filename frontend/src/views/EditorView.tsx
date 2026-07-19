@@ -833,7 +833,6 @@ export default function EditorView() {
       const { draft_url } = await settingsApi.publishToSubstack({
         title: note.title,
         markdown,
-        subtitle: note.summary || undefined,
         tags: note.tags,
       })
       showToast('Draft created on Substack ✓')

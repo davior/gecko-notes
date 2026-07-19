@@ -14,6 +14,8 @@ export default function PublishingSettings() {
   const [showCookie, setShowCookie] = useState(false)
   const [savingUrl, setSavingUrl] = useState(false)
   const [savingCookie, setSavingCookie] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [saved, setSaved] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -55,6 +57,24 @@ export default function PublishingSettings() {
       setError('Failed to save the session cookie')
     } finally {
       setSavingCookie(false)
+    }
+  }
+
+  // Validate the cookie + URL without saving or publishing. Uses whatever is currently
+  // typed; the server falls back to the stored values for any field left blank, so this
+  // works both before saving a new cookie and to re-check the stored one.
+  async function testConnection() {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      setTestResult(await settingsApi.testSubstackConnection({
+        publication_url: pubUrl.trim() || undefined,
+        cookie: cookie || undefined,
+      }))
+    } catch {
+      setTestResult({ success: false, message: 'Connection test failed' })
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -128,6 +148,13 @@ export default function PublishingSettings() {
               <button className="btn-primary text-sm" disabled={savingCookie || !cookie} onClick={() => void saveCookie(cookie)}>
                 {savingCookie ? 'Saving…' : 'Save Cookie'}
               </button>
+              <button
+                className="btn-secondary text-sm"
+                disabled={testing || !pubUrl.trim() || (!cookie && !settings?.has_cookie)}
+                onClick={() => void testConnection()}
+              >
+                {testing ? 'Testing…' : 'Test connection'}
+              </button>
               {settings?.has_cookie && (
                 <button className="text-sm text-red-500 hover:text-red-700 dark:hover:text-red-400" disabled={savingCookie} onClick={() => void saveCookie('')}>
                   Remove cookie
@@ -135,6 +162,11 @@ export default function PublishingSettings() {
               )}
               {saved === 'cookie' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
             </div>
+            {testResult && (
+              <div className={`text-sm ${testResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                {testResult.success ? '✓' : '✗'} {testResult.message}
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -449,4 +449,8 @@ export const settingsApi = {
   publishToSubstack(payload: { title: string; markdown: string; subtitle?: string; tags?: string[] }): Promise<SubstackPublishResult> {
     return client.post('/settings/substack/publish', payload).then((r) => r.data)
   },
+
+  testSubstackConnection(payload: { publication_url?: string; cookie?: string }): Promise<{ success: boolean; message: string }> {
+    return client.post('/settings/substack/test', payload).then((r) => r.data)
+  },
 }

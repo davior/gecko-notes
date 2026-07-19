@@ -102,6 +102,24 @@ def create_substack_draft(
     return str(draft_id)
 
 
+def test_substack_connection(*, publication_url: str, cookie: str) -> None:
+    """Verify a cookie + publication URL without creating anything. Raises
+    :class:`SubstackError` with a user-facing message on failure, returns None on success.
+
+    Constructing the Api already makes an authenticated call (it fetches the user's
+    publications and matches the publication subdomain), so a bad cookie or a wrong URL
+    surfaces there; `get_user_id()` is a second lightweight authenticated read to be sure."""
+    from substack import Api
+
+    if not publication_url or not cookie:
+        raise SubstackError("Enter both a publication URL and a session cookie first.")
+    try:
+        api = Api(cookies_string=cookie, publication_url=publication_url)
+        api.get_user_id()
+    except Exception as e:
+        raise SubstackError(_connect_error_message(e, publication_url)) from e
+
+
 class _AuthError(Exception):
     """Internal: an image call failed in a way that looks like an expired cookie."""
 
@@ -224,3 +242,14 @@ def _auth_hint(exc: Exception, action: str) -> str:
             f"Refresh it in Settings → Publishing. ({exc})"
         )
     return f"Couldn't {action}: {exc}"
+
+
+def _connect_error_message(exc: Exception, publication_url: str) -> str:
+    """User-facing message for a failed connection test: distinguish an expired cookie
+    from a publication-URL mismatch when we can."""
+    if _looks_like_auth_error(exc):
+        return "Your Substack session cookie looks invalid or expired — copy a fresh one and try again."
+    return (
+        f"Couldn't connect. Check that the cookie is current (they expire) and that the "
+        f"publication URL ({publication_url}) matches your account. ({exc})"
+    )

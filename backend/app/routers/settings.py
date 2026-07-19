@@ -18,7 +18,7 @@ from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
 from app.pricing import cost_for
 from app.routers.media import MEDIA_DIR as _MEDIA_ROOT
-from app.substack_publish import SubstackError, create_substack_draft
+from app.substack_publish import SubstackError, create_substack_draft, test_substack_connection
 from app.models import AIProvider, AppSetting, ModelCatalogEntry, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -2335,6 +2335,13 @@ class SubstackPublishRequest(BaseModel):
     tags: Optional[List[str]] = None
 
 
+class SubstackTestRequest(BaseModel):
+    # Both optional: a non-empty value tests what the user just typed (before saving);
+    # an omitted/empty value falls back to the stored setting (re-check the saved cookie).
+    publication_url: Optional[str] = None
+    cookie: Optional[str] = None
+
+
 @router.get("/substack", response_model=Dict[str, Any])
 def get_substack_settings(request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
@@ -2395,3 +2402,23 @@ async def publish_to_substack(
 
     draft_url = f"{publication_url.rstrip('/')}/publish/post/{draft_id}"
     return {"draft_id": draft_id, "draft_url": draft_url}
+
+
+@router.post("/substack/test", response_model=Dict[str, Any])
+async def test_substack(
+    payload: SubstackTestRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Validate a cookie + publication URL without creating a draft. Always HTTP 200
+    with {success, message} (mirrors /ai-providers/test)."""
+    user_id = _get_user_id(request)
+    publication_url = (payload.publication_url or "").strip() or _load_substack_publication_url(session, user_id)
+    cookie = payload.cookie or load_substack_cookie(session, user_id)
+    if not publication_url or not cookie:
+        return {"success": False, "message": "Enter a publication URL and session cookie first."}
+    try:
+        await run_in_threadpool(test_substack_connection, publication_url=publication_url, cookie=cookie)
+        return {"success": True, "message": "Connected — your cookie is valid and the publication was found."}
+    except SubstackError as e:
+        return {"success": False, "message": str(e)}
