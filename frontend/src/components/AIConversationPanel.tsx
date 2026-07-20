@@ -1249,6 +1249,18 @@ export default function AIConversationPanel({
     abortRef.current?.abort()
   }
 
+  // Submit the input box, ending any in-progress dictation first. Shared by the
+  // Enter key and the Send button so both stop the mic on submit — the dictate
+  // button already stops via toggleDictation. dictatedThisSessionRef is cleared so
+  // the mode→null transition effect doesn't also fire a second, duplicate send.
+  function submitFromInput() {
+    if (dictation.mode === 'dictation') {
+      dictatedThisSessionRef.current = false
+      dictation.stopDictation()
+    }
+    void handleSend(input, conversation)
+  }
+
   function handleEdit(idx: number) {
     const priorMessages = conversation.slice(0, idx)
     setEditingId(null)
@@ -1745,11 +1757,7 @@ export default function AIConversationPanel({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    if (dictation.mode === 'dictation') {
-                      dictatedThisSessionRef.current = false
-                      dictation.stopDictation()
-                    }
-                    void handleSend(input, conversation)
+                    submitFromInput()
                   }
                 }}
                 placeholder="Ask a question or tell me what to do…"
@@ -1773,7 +1781,7 @@ export default function AIConversationPanel({
                 <button
                   className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
                   disabled={executing || !input.trim()}
-                  onClick={() => void handleSend(input, conversation)}
+                  onClick={submitFromInput}
                   type="button"
                 >
                   {executing ? <Spinner /> : <Send className="w-3.5 h-3.5" />}
