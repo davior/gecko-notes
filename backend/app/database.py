@@ -85,6 +85,16 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Image-capability flag. New column defaults to 0 (text-only) so text-only
+        # backends like DeepSeek are guarded by default; backfill the provider types
+        # whose current models are vision-capable so existing users keep attaching
+        # images. Runs once and never overwrites a value the user later sets.
+        try:
+            conn.execute(text("ALTER TABLE aiprovider ADD COLUMN supports_images BOOLEAN NOT NULL DEFAULT 0"))
+            conn.execute(text("UPDATE aiprovider SET supports_images = 1 WHERE provider_type IN ('anthropic', 'openai')"))
+            conn.commit()
+        except Exception:
+            pass
         # Assign existing AI providers to first admin (admin-only migration)
         try:
             admin = conn.execute(text(

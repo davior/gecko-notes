@@ -369,6 +369,11 @@ export default function AIConversationPanel({
   // list-view assistant (null note_id). A brand-new, unsaved editor note has no id yet.
   const sessionsEnabled = isList || !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
+  const activeProvider = useSettingsStore((s) => s.activeProvider)
+  // Whether the active provider can take image/PDF content blocks. Default to true
+  // when unknown (no provider yet) so we never over-block; text-only backends like
+  // DeepSeek set this false and the attach flow drops images before they're sent.
+  const supportsImages = activeProvider?.supports_images ?? true
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)
   const categories = useCategoriesStore((s) => s.categories)
@@ -418,6 +423,9 @@ export default function AIConversationPanel({
   const [executing, setExecuting] = useState(false)
   const [generating, setGenerating] = useState(false)  // Phase 2: filling deferred note bodies
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  // Set when image/PDF files are dropped from a selection because the active provider
+  // is text-only. Cleared on the next selection or when the provider changes.
+  const [attachNotice, setAttachNotice] = useState('')
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
   // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
@@ -542,6 +550,12 @@ export default function AIConversationPanel({
   useEffect(() => {
     try { localStorage.setItem('ai-include-linked-files', String(includeLinkedFiles)) } catch { /* noop */ }
   }, [includeLinkedFiles])
+
+  // Clear the "images skipped" notice once the active provider can take images again
+  // (e.g. the user switched to a vision-capable provider).
+  useEffect(() => {
+    if (supportsImages) setAttachNotice('')
+  }, [supportsImages])
 
   useEffect(() => {
     try { localStorage.setItem('ai-plan-mode', String(planMode)) } catch { /* noop */ }
@@ -720,7 +734,7 @@ export default function AIConversationPanel({
     if (!isList && contextScope === 'none') {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { referenceContextText: '', currentNoteText: '', attachments: imgs.map(p => p.attachment), targetNotes: [], annotationIds }
+      return { referenceContextText: '', currentNoteText: '', attachments: supportsImages ? imgs.map(p => p.attachment) : [], targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
@@ -848,7 +862,11 @@ export default function AIConversationPanel({
     return {
       referenceContextText,
       currentNoteText: currentNoteParts.join('\n\n---\n\n'),
-      attachments: fileAttachments,
+      // Safety net: a text-only provider (supports_images = false) can't take image or
+      // PDF content blocks — the picker already filters them out, but linked-file images
+      // (Files toggle) also land here, so drop any that slipped through. Text files stay:
+      // they ride in currentNoteText as plain text, which every provider accepts.
+      attachments: supportsImages ? fileAttachments : [],
       targetNotes,
       annotationIds,
     }
@@ -1692,7 +1710,7 @@ export default function AIConversationPanel({
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={!!frozenContext}
-              title="Attach files to next message"
+              title={supportsImages ? 'Attach files to next message' : `Attach text files — ${activeProvider?.name ?? 'the active provider'} doesn't accept images`}
               className="flex items-center gap-0.5 text-gray-400 hover:text-blue-500 transition-colors disabled:opacity-40"
             >
               <Paperclip className="w-3 h-3" />
@@ -1704,13 +1722,37 @@ export default function AIConversationPanel({
               ref={fileInputRef}
               type="file"
               multiple
+              // Text-only providers can't take images/PDFs — hint the native picker.
+              // Not a hard guarantee (drag/drop, "all files"), so onChange filters too.
+              accept={supportsImages ? undefined : '.md,.txt,.json,.csv,.yaml,.yml,.toml,.xml,.js,.ts,.py,.sh,.sql,text/*,application/json,application/xml'}
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) setPendingFiles((prev) => [...prev, ...Array.from(e.target.files!)])
+                const picked = e.target.files ? Array.from(e.target.files) : []
                 e.target.value = ''
+                if (!picked.length) return
+                if (supportsImages) {
+                  setAttachNotice('')
+                  setPendingFiles((prev) => [...prev, ...picked])
+                  return
+                }
+                // Provider is text-only: keep text files, drop images/PDFs and say why.
+                const isImageLike = (file: File) => file.type.startsWith('image/') || file.type === 'application/pdf'
+                const blocked = picked.filter(isImageLike)
+                const allowed = picked.filter((file) => !isImageLike(file))
+                if (allowed.length) setPendingFiles((prev) => [...prev, ...allowed])
+                setAttachNotice(
+                  blocked.length
+                    ? `${blocked.length} image/PDF file${blocked.length > 1 ? 's' : ''} skipped — ${activeProvider?.name ?? 'the active provider'} doesn't support images. Switch to a vision-capable provider in Settings.`
+                    : ''
+                )
               }}
             />
           </div>
+
+          {/* Text-only-provider attach notice */}
+          {attachNotice && (
+            <div className="px-2 pb-1 text-xs text-amber-600 dark:text-amber-400">{attachNotice}</div>
+          )}
 
           {/* Pending file pills */}
           {pendingFiles.length > 0 && (

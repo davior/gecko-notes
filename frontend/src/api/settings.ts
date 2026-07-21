@@ -141,6 +141,7 @@ export interface AIProvider {
   base_url: string | null
   model: string
   max_tokens: number
+  supports_images: boolean
   enabled: boolean
   is_active: boolean
 }
@@ -152,6 +153,7 @@ export interface AIProviderCreate {
   base_url?: string | null
   model: string
   max_tokens?: number
+  supports_images?: boolean
   enabled?: boolean
   is_active?: boolean
 }
@@ -163,6 +165,7 @@ export interface AIProviderUpdate {
   base_url?: string | null
   model?: string
   max_tokens?: number
+  supports_images?: boolean
   enabled?: boolean
   is_active?: boolean
 }

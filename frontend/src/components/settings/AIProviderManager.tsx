@@ -5,13 +5,20 @@ import { settingsApi, type AIProvider } from '@/api/settings'
 import MediaProviderSettings from '@/components/settings/MediaProviderSettings'
 
 type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
-interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; enabled: boolean }
+interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; supports_images: boolean; enabled: boolean }
 
 // Sensible per-type output-token defaults. Anthropic 4.x models support 64000
 // (Opus up to 128000); most OpenAI-compatible models cap output near 16384.
 const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, openai: 16384, deepseek: 8192, ollama: 16384, custom: 16384 }
 
-const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, enabled: true })
+// Whether a type's typical model accepts image attachments, used to pre-tick the
+// checkbox when the user picks a type. Anthropic (all current models) and OpenAI
+// (gpt-4o etc.) are vision-capable; DeepSeek chat is text-only, and Ollama/custom
+// default off since most local/self-hosted models can't take images — the user
+// ticks it on for a vision model (llava, a custom multimodal endpoint, …).
+const defaultSupportsImages: Record<ProviderType, boolean> = { anthropic: true, openai: true, deepseek: false, ollama: false, custom: false }
+
+const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, supports_images: defaultSupportsImages.anthropic, enabled: true })
 
 const modelPlaceholders: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', deepseek: 'deepseek-chat', ollama: 'llama3.2', custom: 'model-name',
@@ -48,7 +55,7 @@ export default function AIProviderManager() {
 
   function startEdit(p: AIProvider) {
     setEditingId(p.id)
-    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], enabled: p.enabled })
+    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], supports_images: p.supports_images ?? defaultSupportsImages[p.provider_type], enabled: p.enabled })
     setTestResult(null); setShowForm(true)
   }
 
@@ -58,7 +65,7 @@ export default function AIProviderManager() {
     setSaving(true)
     try {
       const max_tokens = Math.min(200000, Math.max(1, Math.round(form.max_tokens) || defaultMaxTokens[form.provider_type]))
-      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, enabled: form.enabled }
+      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, supports_images: form.supports_images, enabled: form.enabled }
       if (editingId) { await updateAIProvider(editingId, payload) } else { await createAIProvider(payload) }
       setShowForm(false); setEditingId(null); showToast('Provider saved', false)
     } catch { showToast('Failed to save provider', true) }
@@ -120,7 +127,7 @@ export default function AIProviderManager() {
             </div>
             <div>
               <label className="label">Provider Type</label>
-              <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t] }) }} className="input">
+              <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t], supports_images: defaultSupportsImages[t] }) }} className="input">
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
                 <option value="deepseek">DeepSeek</option>
@@ -159,6 +166,13 @@ export default function AIProviderManager() {
                 placeholder={String(defaultMaxTokens[f.provider_type])}
               />
               <p className="text-xs text-gray-400 mt-1">Caps the response length, not your note. Keep within the model's ceiling (e.g. 64000 for Claude Sonnet/Haiku, 128000 for Opus) — too high is rejected.</p>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <input id="images-check" type="checkbox" checked={f.supports_images} onChange={(e) => setF({ supports_images: e.target.checked })} className="rounded" />
+                <label htmlFor="images-check" className="text-sm text-gray-700 dark:text-gray-300">Supports image attachments</label>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">Tick only if this model accepts images. Text-only models (e.g. DeepSeek chat) reject them — leaving this off hides the assistant's image attach option for this provider.</p>
             </div>
             <div className="flex items-center gap-2">
               <input id="enabled-check" type="checkbox" checked={f.enabled} onChange={(e) => setF({ enabled: e.target.checked })} className="rounded" />
