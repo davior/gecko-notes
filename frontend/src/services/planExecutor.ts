@@ -126,6 +126,19 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
   const refMap = new Map<string, string>() // ref label -> real created id (notes & folders)
   const results: ActionResult[] = []
 
+  // Snapshot each affected note only once per plan run, capturing its pre-plan
+  // state before the first mutation. Each mutating handler snapshots before it
+  // writes, so the first touch of a note is its genuine pre-plan state. Without
+  // this, every step re-snapshots; because each step changes the content the
+  // backend's checksum dedup can't collapse them, so an N-step plan on one note
+  // would leave N snapshots (the original plus N-1 mid-plan intermediates).
+  const snapshotted = new Set<string>()
+  const snapshotOnce = async (noteId: string) => {
+    if (snapshotted.has(noteId)) return
+    snapshotted.add(noteId)
+    await notesApi.createVersion(noteId).catch(() => null)
+  }
+
   const mdToBlocks = async (markdown: string): Promise<unknown[]> => {
     const blocks = await ctx.editor.tryParseMarkdownToBlocks(markdown ?? '')
     return blocks.length
@@ -189,7 +202,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'edit_note': {
         const r = resolveNote(action.noteId)
         if ('error' in r) return { ok: false, message: r.error }
-        await notesApi.createVersion(r.id).catch(() => null) // snapshot for undo (dedup-safe)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const newBlocks = await mdToBlocks(action.content)
         const content =
@@ -210,7 +223,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'edit_section': {
         const r = resolveNote(action.noteId)
         if ('error' in r) return { ok: false, message: r.error }
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
         const newBlocks = await mdToBlocks(action.content)
@@ -272,7 +285,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
       case 'append_note': {
         const r = resolveNote(action.noteId)
         if ('error' in r) return { ok: false, message: r.error }
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const added = await mdToBlocks(action.content)
         await notesApi.update(r.id, { content: JSON.stringify([...parseBlocks(cur.data.content), ...added]) })
@@ -312,7 +325,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         // Embed a childNote block in the parent so the child shows up in the UI
         // (mirrors EditorView.insertEmptyChild). The createChild endpoint only
         // sets parent_note_id; it does not touch the parent's content.
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const parent = await notesApi.get(r.id)
         const parentBlocks = parseBlocks(parent.data.content)
         parentBlocks.push({ type: 'childNote', props: { childNoteId: child.data.id, title: child.data.title } })
@@ -390,7 +403,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         if (!ctx.validNoteIds.has(action.referenceNoteId)) {
           return { ok: false, message: `Note reference “${action.referenceTitle}” is not in context — skipped.` }
         }
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
 
@@ -483,7 +496,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         if ('error' in r) return { ok: false, message: r.error }
         const validated = await validateMermaidSource(action.source)
         if (!validated.ok) return { ok: false, message: `Diagram not created: ${validated.error}` }
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
         blocks.push({ type: 'diagram', props: { diagramId: newDiagramId(), source: action.source } })
@@ -523,7 +536,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         if (!found) {
           return { ok: false, message: `Diagram “${action.diagramId}” not found in “${cur.data.title}” — skipped.` }
         }
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         await notesApi.update(r.id, { content: JSON.stringify(newBlocks) })
         return {
           ok: true,
@@ -554,7 +567,7 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           return { ok: false, message: `Image not generated: ${msg}` }
         }
 
-        await notesApi.createVersion(r.id).catch(() => null)
+        await snapshotOnce(r.id)
         const cur = await notesApi.get(r.id)
         const blocks = parseBlocks(cur.data.content)
         const imageBlock = { type: 'image', props: { url: generated.url, caption: action.alt ?? '' } } as unknown
