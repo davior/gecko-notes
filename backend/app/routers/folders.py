@@ -2,16 +2,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlmodel import Session, select
+from sqlmodel import Session, select, col
 
 from app.database import get_session
-from app.models import Folder, Note
+from app.folder_utils import get_folder_subtree
+from app.models import Folder, Note, NoteVersion, Annotation
 from app.schemas import (
     FolderCreate, FolderUpdate, FolderRead, FolderContents,
     DataResponse, ListResponse,
 )
 
 router = APIRouter()
+
+ARCHIVE_SYSTEM_KEY = "archive"
 
 
 def _get_user_id(request: Request) -> str:
@@ -56,6 +59,75 @@ def _breadcrumb(session: Session, folder: Folder, user_id: str, max_depth: int =
         seen += 1
     chain.reverse()
     return chain
+
+
+def _reject_if_system(folder: Folder) -> None:
+    """Block direct rename/move/customize/delete of app-managed folders (the Bin)."""
+    if folder.system_key:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "system_folder", "message": "This folder can't be modified"},
+        )
+
+
+def get_or_create_archive_folder(session: Session, user_id: str) -> Folder:
+    """Return the user's Archive Bin (a special root-level folder), creating it lazily."""
+    existing = session.exec(
+        select(Folder).where(Folder.user_id == user_id, Folder.system_key == ARCHIVE_SYSTEM_KEY)
+    ).first()
+    if existing:
+        return existing
+    now = datetime.now(timezone.utc)
+    bin_folder = Folder(
+        id=str(uuid.uuid4()),
+        name="Archive Bin",
+        parent_folder_id=None,
+        user_id=user_id,
+        sort_order=1_000_000,  # sorts last among top-level folders
+        icon_type="emoji",
+        icon_value="🗑️",
+        system_key=ARCHIVE_SYSTEM_KEY,
+        created_at=now,
+        modified_at=now,
+    )
+    session.add(bin_folder)
+    session.commit()
+    session.refresh(bin_folder)
+    return bin_folder
+
+
+def _delete_note_hard(session: Session, note: Note) -> None:
+    """Permanently delete a note plus its versions/annotations, orphaning any child
+    notes — mirrors the note router's delete_note cleanup."""
+    for version in session.exec(select(NoteVersion).where(NoteVersion.note_id == note.id)).all():
+        session.delete(version)
+    for annotation in session.exec(select(Annotation).where(Annotation.note_id == note.id)).all():
+        session.delete(annotation)
+    for child in session.exec(select(Note).where(Note.parent_note_id == note.id)).all():
+        child.parent_note_id = None
+        session.add(child)
+    session.delete(note)
+
+
+def _delete_folder_recursive(session: Session, folder_id: str, user_id: str) -> None:
+    """Permanently delete a folder and everything nested inside it (subfolders + notes).
+    Does not commit — the caller owns the transaction boundary."""
+    subtree_ids = get_folder_subtree(folder_id, user_id, session)
+    for note in session.exec(
+        select(Note).where(Note.user_id == user_id, col(Note.folder_id).in_(subtree_ids))
+    ).all():
+        _delete_note_hard(session, note)
+    folders_by_id = {
+        f.id: f
+        for f in session.exec(
+            select(Folder).where(Folder.user_id == user_id, col(Folder.id).in_(subtree_ids))
+        ).all()
+    }
+    # Deepest-first (reverse of the BFS order) so a parent is never removed before its child.
+    for fid in reversed(subtree_ids):
+        f = folders_by_id.get(fid)
+        if f is not None:
+            session.delete(f)
 
 
 @router.get("", response_model=ListResponse[FolderRead])
@@ -138,6 +210,7 @@ def create_folder(payload: FolderCreate, request: Request, session: Session = De
 def update_folder(folder_id: str, payload: FolderUpdate, request: Request, session: Session = Depends(get_session)):
     user_id = _get_user_id(request)
     folder = _get_owned_folder(session, folder_id, user_id)
+    _reject_if_system(folder)
 
     if payload.name is not None:
         folder.name = payload.name
@@ -169,11 +242,24 @@ def update_folder(folder_id: str, payload: FolderUpdate, request: Request, sessi
 
 
 @router.delete("/{folder_id}", status_code=204)
-def delete_folder(folder_id: str, request: Request, session: Session = Depends(get_session)):
-    """Delete a folder, re-parenting its contents to the folder's parent so
-    nothing is orphaned or lost."""
+def delete_folder(
+    folder_id: str,
+    request: Request,
+    recursive: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Delete a folder. By default its contents are re-parented to the folder's parent
+    so nothing is orphaned or lost. With ?recursive=true the folder and everything
+    nested inside it (subfolders + notes) are permanently deleted."""
     user_id = _get_user_id(request)
     folder = _get_owned_folder(session, folder_id, user_id)
+    _reject_if_system(folder)
+
+    if recursive:
+        _delete_folder_recursive(session, folder_id, user_id)
+        session.commit()
+        return
+
     new_parent = folder.parent_folder_id
 
     for sub in session.exec(
@@ -190,3 +276,43 @@ def delete_folder(folder_id: str, request: Request, session: Session = Depends(g
 
     session.delete(folder)
     session.commit()
+
+
+@router.post("/archive/empty", status_code=204)
+def empty_archive(request: Request, session: Session = Depends(get_session)):
+    """Permanently delete everything inside the Archive Bin, keeping the Bin itself."""
+    user_id = _get_user_id(request)
+    bin_folder = session.exec(
+        select(Folder).where(Folder.user_id == user_id, Folder.system_key == ARCHIVE_SYSTEM_KEY)
+    ).first()
+    if not bin_folder:
+        return
+    for child in session.exec(
+        select(Folder).where(Folder.user_id == user_id, Folder.parent_folder_id == bin_folder.id)
+    ).all():
+        _delete_folder_recursive(session, child.id, user_id)
+    for note in session.exec(
+        select(Note).where(Note.user_id == user_id, Note.folder_id == bin_folder.id)
+    ).all():
+        _delete_note_hard(session, note)
+    session.commit()
+
+
+@router.post("/{folder_id}/archive", response_model=DataResponse[FolderRead])
+def archive_folder(folder_id: str, request: Request, session: Session = Depends(get_session)):
+    """Move a folder (with everything nested inside it) into the Archive Bin instead of
+    deleting it. The Bin is created lazily on first use."""
+    user_id = _get_user_id(request)
+    folder = _get_owned_folder(session, folder_id, user_id)
+    if folder.system_key == ARCHIVE_SYSTEM_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "system_folder", "message": "The Archive Bin can't be archived"},
+        )
+    bin_folder = get_or_create_archive_folder(session, user_id)
+    folder.parent_folder_id = bin_folder.id
+    folder.modified_at = datetime.now(timezone.utc)
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return DataResponse(data=FolderRead.model_validate(folder))

@@ -1,5 +1,6 @@
 import { ChevronRight, Home } from 'lucide-react'
 import type { Folder } from '@/api/folders'
+import { resolveFolderIcon } from '@/utils/folderIcons'
 
 interface Props {
   breadcrumb: Folder[]
@@ -19,11 +20,12 @@ export default function FolderBreadcrumb({ breadcrumb, onNavigate }: Props) {
       </button>
       {breadcrumb.map((folder, i) => {
         const isLast = i === breadcrumb.length - 1
+        const resolved = resolveFolderIcon(folder)
         return (
           <span key={folder.id} className="flex items-center gap-1 shrink-0">
             <ChevronRight className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
             <button
-              className={`px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors truncate max-w-[12rem] ${
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors max-w-[12rem] ${
                 isLast
                   ? 'font-semibold text-gray-800 dark:text-gray-100'
                   : 'hover:text-gray-700 dark:hover:text-gray-200'
@@ -31,7 +33,15 @@ export default function FolderBreadcrumb({ breadcrumb, onNavigate }: Props) {
               onClick={() => onNavigate(folder.id)}
               disabled={isLast}
             >
-              {folder.name}
+              {resolved.kind === 'emoji' ? (
+                <span className="text-sm leading-none shrink-0">{resolved.emoji}</span>
+              ) : (
+                <resolved.Icon
+                  className={`w-3.5 h-3.5 shrink-0 ${folder.color ? '' : 'text-gray-400'}`}
+                  style={{ color: folder.color ?? undefined }}
+                />
+              )}
+              <span className="truncate">{folder.name}</span>
             </button>
           </span>
         )

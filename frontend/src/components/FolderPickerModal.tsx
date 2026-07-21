@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Home } from 'lucide-react'
 import { foldersApi, type Folder } from '@/api/folders'
 import { resolveFolderIcon } from '@/utils/folderIcons'
+import { buildTree } from '@/utils/folderTree'
 
 interface Props {
   title?: string
@@ -10,32 +11,6 @@ interface Props {
   disabledIds?: Set<string>
   onSelect: (folderId: string | null) => void
   onClose: () => void
-}
-
-interface TreeNode extends Folder {
-  depth: number
-}
-
-/** Flatten the folder list into a depth-ordered tree for an indented picker. */
-function buildTree(folders: Folder[]): TreeNode[] {
-  const byParent = new Map<string | null, Folder[]>()
-  for (const f of folders) {
-    const key = f.parent_folder_id
-    if (!byParent.has(key)) byParent.set(key, [])
-    byParent.get(key)!.push(f)
-  }
-  for (const list of byParent.values()) {
-    list.sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-  }
-  const out: TreeNode[] = []
-  const walk = (parent: string | null, depth: number) => {
-    for (const f of byParent.get(parent) ?? []) {
-      out.push({ ...f, depth })
-      walk(f.id, depth + 1)
-    }
-  }
-  walk(null, 0)
-  return out
 }
 
 export default function FolderPickerModal({ title = 'Move to folder', disabledIds, onSelect, onClose }: Props) {

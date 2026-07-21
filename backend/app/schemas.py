@@ -109,6 +109,7 @@ class FolderRead(BaseModel):
     icon_type: Optional[str] = None
     icon_value: Optional[str] = None
     color: Optional[str] = None
+    system_key: Optional[str] = None  # 'archive' => the Archive Bin; null => normal folder
     created_at: UTCDatetime
     modified_at: UTCDatetime
 
