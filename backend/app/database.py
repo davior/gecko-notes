@@ -421,6 +421,12 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 pass
+        # Archive Bin: system_key flags app-managed folders ('archive' = the trash).
+        try:
+            conn.execute(text("ALTER TABLE folder ADD COLUMN system_key TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Backfill stt_model into existing users' speech_gen_config, so the stored
         # JSON blob is materialized consistently with the new tts_model/stt_model
         # shape (load_speech_config already defaults a missing key at read time —

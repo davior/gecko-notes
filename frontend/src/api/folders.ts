@@ -10,6 +10,7 @@ export interface Folder {
   icon_type: FolderIconType | null
   icon_value: string | null
   color: string | null
+  system_key: string | null   // 'archive' => the Archive Bin; null => normal folder
   created_at: string
   modified_at: string
 }
@@ -64,5 +65,20 @@ export const foldersApi = {
 
   delete(id: string): Promise<void> {
     return client.delete(`/folders/${id}`).then(() => undefined)
+  },
+
+  // Move a folder (with its contents) into the Archive Bin instead of deleting it.
+  archive(id: string): Promise<{ data: Folder }> {
+    return client.post(`/folders/${id}/archive`).then((r) => r.data)
+  },
+
+  // Permanently delete a folder and everything nested inside it (used from the Bin).
+  deleteRecursive(id: string): Promise<void> {
+    return client.delete(`/folders/${id}`, { params: { recursive: true } }).then(() => undefined)
+  },
+
+  // Permanently delete everything inside the Archive Bin, keeping the Bin itself.
+  emptyArchive(): Promise<void> {
+    return client.post('/folders/archive/empty').then(() => undefined)
   },
 }

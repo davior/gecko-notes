@@ -14,6 +14,7 @@ import FolderIconBar from '@/components/FolderIconBar'
 import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import FolderCustomizeModal from '@/components/FolderCustomizeModal'
+import FolderTreePanel from '@/components/FolderTreePanel'
 import BulkExportMenu from '@/components/BulkExportMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import { noteSchema } from '@/blocks/childNoteBlock'
@@ -24,6 +25,7 @@ import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { parseMarkdownFrontmatter } from '@/utils/markdown'
 import { resolveFolderIcon } from '@/utils/folderIcons'
+import { indexById, findArchiveFolder, isInArchive, ancestorIds } from '@/utils/folderTree'
 import { notesApi } from '@/api/notes'
 import type { NoteListItem } from '@/api/notes'
 import type { Folder } from '@/api/folders'
@@ -64,7 +66,7 @@ export default function ListView() {
 
   const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, createNote } = useNotesStore()
   const foldersStore = useFoldersStore()
-  const { breadcrumb, subfolders } = foldersStore
+  const { breadcrumb, subfolders, allFolders } = foldersStore
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
   const categories = useCategoriesStore((s) => s.categories)
   const defaultSortOrder = useSettingsStore((s) => s.defaultSortOrder)
@@ -87,7 +89,7 @@ export default function ListView() {
     { type: 'note'; label: string } | { type: 'folder'; folder: Folder } | null
   >(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
-  const [folderModal, setFolderModal] = useState<{ folder: Folder | null } | null>(null)
+  const [folderModal, setFolderModal] = useState<{ folder: Folder | null; parentId: string | null } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [noteMoveOpen, setNoteMoveOpen] = useState(false)
   const [noteDeleteOpen, setNoteDeleteOpen] = useState(false)
@@ -101,6 +103,9 @@ export default function ListView() {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const categoryScrollRef = useRef<HTMLDivElement>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
+  // Folder the next Markdown import lands in — set by the FAB (current folder) or by
+  // the tree panel (a specific folder) just before opening the file picker.
+  const importTargetRef = useRef<string | null>(null)
   const [importing, setImporting] = useState(false)
 
   // Headless BlockNote editor: powers the list-view AI Assistant's markdown↔blocks
@@ -120,6 +125,12 @@ export default function ListView() {
     in_folder: true,
     folder_id: folderId ?? undefined,
   }), [sortOrder, activeCategoryId, folderId])
+
+  const foldersById = useMemo(() => indexById(allFolders), [allFolders])
+  const archiveFolder = useMemo(() => findArchiveFolder(allFolders), [allFolders])
+  const archiveId = archiveFolder?.id ?? null
+  // The Archive Bin is navigated from the tree, not shown as a normal subfolder chip.
+  const visibleSubfolders = useMemo(() => subfolders.filter((f) => f.system_key !== 'archive'), [subfolders])
 
   function showToast(msg: string) {
     setToast(msg)
@@ -169,6 +180,12 @@ export default function ListView() {
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)
+  }, [])
+
+  // Load the full folder set once for the left-hand tree panel.
+  useEffect(() => {
+    void foldersStore.loadAllFolders()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function toggleSort() {
@@ -254,15 +271,29 @@ export default function ListView() {
   }
 
   function handleNewFolder() {
-    setFolderModal({ folder: null })
+    setFolderModal({ folder: null, parentId: folderId })
+  }
+
+  function handleNewSubfolder(parentId: string | null) {
+    setFolderModal({ folder: null, parentId })
+  }
+
+  function handleNewNoteInFolder(id: string | null) {
+    navigate(id ? `/notes/new?folder=${id}` : '/notes/new')
+  }
+
+  function handleImportToFolder(id: string | null) {
+    importTargetRef.current = id
+    importInputRef.current?.click()
   }
 
   function titleFromFilename(filename: string): string {
     return filename.replace(/\.(md|markdown)$/i, '').trim() || 'Untitled'
   }
 
-  // Imports one or more .md files as new notes in the currently open folder.
-  async function handleImportMarkdown(files: FileList | null) {
+  // Imports one or more .md files as new notes into targetFolderId (the current
+  // folder when triggered from the FAB, or a specific folder from the tree panel).
+  async function handleImportMarkdown(files: FileList | null, targetFolderId: string | null) {
     if (!files || files.length === 0) return
     setImporting(true)
     let imported = 0
@@ -277,7 +308,7 @@ export default function ListView() {
             title: title || titleFromFilename(file.name),
             content: JSON.stringify(blocks.length > 0 ? blocks : [{ type: 'paragraph' }]),
             category_id: defaultCategoryId,
-            folder_id: folderId,
+            folder_id: targetFolderId,
             tags,
           })
           imported++
@@ -298,13 +329,55 @@ export default function ListView() {
   }
 
   function handleCustomizeFolder(folder: Folder) {
-    setFolderModal({ folder })
+    setFolderModal({ folder, parentId: null })
   }
 
   async function handleDeleteFolder(folder: Folder) {
-    if (!window.confirm(`Delete folder "${folder.name}"? Its notes and subfolders move up one level.`)) return
-    await foldersStore.deleteFolder(folder.id)
-    loadNotes(buildParams(), true)  // re-parented notes may now appear here
+    const inArchive = isInArchive(folder.id, foldersById, archiveId)
+    // If we're removing the folder we're currently viewing (or an ancestor of it),
+    // drop back to root afterwards so we don't linger on a folder that's gone.
+    const affectsCurrent =
+      folderId !== null && (folderId === folder.id || ancestorIds(folderId, foldersById).includes(folder.id))
+    if (inArchive) {
+      if (!window.confirm(`Permanently delete "${folder.name}" and everything inside it? This cannot be undone.`)) return
+      try {
+        await foldersStore.permanentlyDeleteFolder(folder.id)
+      } catch {
+        showToast('Could not delete folder.')
+        return
+      }
+    } else {
+      if (!window.confirm(`Move "${folder.name}" to the Archive Bin? Its notes and subfolders go with it.`)) return
+      try {
+        await foldersStore.archiveFolder(folder.id)
+      } catch {
+        showToast('Could not archive folder.')
+        return
+      }
+    }
+    if (affectsCurrent) {
+      openFolder(null)
+    } else {
+      loadNotes(buildParams(), true)
+      foldersStore.loadContents(folderId)
+    }
+  }
+
+  async function handleEmptyArchive() {
+    if (!window.confirm('Permanently delete everything in the Archive Bin? This cannot be undone.')) return
+    try {
+      await foldersStore.emptyArchive()
+    } catch {
+      showToast('Could not empty the Archive Bin.')
+      return
+    }
+    // If we were viewing something inside the Bin, it may be gone now.
+    if (folderId && folderId !== archiveId && isInArchive(folderId, foldersById, archiveId)) {
+      openFolder(null)
+    } else {
+      loadNotes(buildParams(), true)
+      foldersStore.loadContents(folderId)
+    }
   }
 
   async function handleMoveSelect(destFolderId: string | null) {
@@ -427,7 +500,7 @@ export default function ListView() {
   }
 
   const folderBarProps = {
-    folders: subfolders,
+    folders: visibleSubfolders,
     onOpen: openFolder,
     onMove: (f: Folder) => setMoveTarget({ id: f.id }),
     onCustomize: handleCustomizeFolder,
@@ -565,10 +638,22 @@ export default function ListView() {
       </header>
 
       <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+      <FolderTreePanel
+        folders={allFolders}
+        currentFolderId={folderId}
+        onOpenFolder={openFolder}
+        onNewSubfolder={handleNewSubfolder}
+        onNewNote={handleNewNoteInFolder}
+        onImport={handleImportToFolder}
+        onMove={(f) => setMoveTarget({ id: f.id })}
+        onCustomize={handleCustomizeFolder}
+        onDelete={handleDeleteFolder}
+        onEmptyArchive={handleEmptyArchive}
+      />
       <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
-          {deepLoading || (loading && notes.length === 0 && subfolders.length === 0 && !inDeepMode) ? (
+          {deepLoading || (loading && notes.length === 0 && visibleSubfolders.length === 0 && !inDeepMode) ? (
             <div className={gridClass}>
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className={`card dark:bg-gray-800 dark:border-gray-700 animate-pulse ${viewMode === 'card' ? 'h-52' : 'p-4'}`}>
@@ -581,7 +666,7 @@ export default function ListView() {
                 </div>
               ))}
             </div>
-          ) : displayNotes.length === 0 && (inDeepMode || subfolders.length === 0) ? (
+          ) : displayNotes.length === 0 && (inDeepMode || visibleSubfolders.length === 0) ? (
             inDeepMode ? (
               <div className="text-center py-20">
                 <p className="text-5xl mb-4">🔍</p>
@@ -707,7 +792,7 @@ export default function ListView() {
       {folderModal && (
         <FolderCustomizeModal
           folder={folderModal.folder}
-          parentFolderId={folderId}
+          parentFolderId={folderModal.parentId}
           onClose={() => setFolderModal(null)}
         />
       )}
@@ -747,7 +832,7 @@ export default function ListView() {
           accept=".md,.markdown"
           multiple
           className="hidden"
-          onChange={(e) => void handleImportMarkdown(e.target.files)}
+          onChange={(e) => void handleImportMarkdown(e.target.files, importTargetRef.current)}
         />
         {fabMenuOpen && (
           <div className="absolute bottom-full right-0 mb-3 w-48 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden p-1">
@@ -767,7 +852,7 @@ export default function ListView() {
               New Folder
             </button>
             <button
-              onClick={() => { setFabMenuOpen(false); importInputRef.current?.click() }}
+              onClick={() => { setFabMenuOpen(false); importTargetRef.current = folderId; importInputRef.current?.click() }}
               disabled={importing}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left disabled:opacity-50"
             >

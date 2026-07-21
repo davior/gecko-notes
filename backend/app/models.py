@@ -33,6 +33,9 @@ class Folder(SQLModel, table=True):
     icon_type: Optional[str] = None   # 'emoji' | 'lucide'
     icon_value: Optional[str] = None  # the emoji character, or a Lucide icon name
     color: Optional[str] = None       # hex e.g. "#3B82F6"
+    # Marks special, app-managed folders. 'archive' identifies the per-user Archive
+    # Bin (where deleted folders are moved); null for ordinary user folders.
+    system_key: Optional[str] = Field(default=None, index=True)
     created_at: datetime
     modified_at: datetime
 
