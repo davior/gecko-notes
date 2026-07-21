@@ -315,6 +315,7 @@ class AIProviderCreate(BaseModel):
     base_url: Optional[str] = None
     model: str
     max_tokens: int = Field(default=16384, ge=1, le=200000)
+    supports_images: bool = False
     enabled: bool = True
     is_active: bool = False
 
@@ -326,6 +327,7 @@ class AIProviderUpdate(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, ge=1, le=200000)
+    supports_images: Optional[bool] = None
     enabled: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -338,6 +340,7 @@ class AIProviderRead(BaseModel):
     base_url: Optional[str]
     model: str
     max_tokens: int = 16384
+    supports_images: bool = False
     enabled: bool
     is_active: bool
 

@@ -86,6 +86,11 @@ class AIProvider(SQLModel, table=True):
     base_url: Optional[str] = None
     model: str
     max_tokens: int = Field(default=16384)  # cap on the model's response (output) length
+    # Whether this provider/model accepts image (and PDF) content blocks. Text-only
+    # backends (e.g. DeepSeek chat) reject them with a deserialization error, so the
+    # UI checks this flag before letting the user attach images. Capability-driven so
+    # a new provider only needs the flag set — no per-type special-casing in the app.
+    supports_images: bool = Field(default=False)
     enabled: bool = True
     is_active: bool = False
     user_id: Optional[str] = Field(default=None, index=True)

@@ -205,6 +205,7 @@ def create_ai_provider(payload: AIProviderCreate, request: Request, session: Ses
         base_url=payload.base_url,
         model=payload.model,
         max_tokens=payload.max_tokens,
+        supports_images=payload.supports_images,
         enabled=payload.enabled,
         is_active=payload.is_active,
         user_id=user_id,
@@ -232,7 +233,7 @@ def update_ai_provider(
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
-    for field in ["name", "provider_type", "base_url", "model", "max_tokens", "enabled", "is_active"]:
+    for field in ["name", "provider_type", "base_url", "model", "max_tokens", "supports_images", "enabled", "is_active"]:
         val = getattr(payload, field, None)
         if val is not None:
             setattr(provider, field, val)
