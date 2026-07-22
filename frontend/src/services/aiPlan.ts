@@ -391,10 +391,34 @@ function extractOutsideProse(located: LocatedPlan): string {
     .trim()
 }
 
+// Some OpenAI-compatible models — DeepSeek most notably — ignore the "JSON only"
+// contract and wrap their plan in an XML-style <actions>…</actions> block instead of
+// the `{ "actions": [...] }` envelope, or, for a plain conversational reply, append an
+// EMPTY <actions></actions> after their prose (e.g. `I'll look into that.\n<actions>
+// </actions>`). Neither is valid plan JSON, so locatePlanJson misses it and the tags
+// render verbatim in the chat. Fold any such block back into the JSON the parser
+// expects — an array inner becomes an `{"actions": …}` envelope, a bare object/envelope
+// inner is passed through — and drop it entirely when empty, leaving the surrounding
+// prose as the reply. A no-op for well-formed replies (the regex simply never matches).
+export function normalizeActionTags(raw: string): string {
+  let out = raw.replace(/<actions\b[^>]*>([\s\S]*?)<\/actions>|<actions\b[^>]*\/>/gi, (_m, body) => {
+    const inner = (body ?? '').trim()
+    if (!inner) return ''                               // empty container → strip the tags
+    if (inner.startsWith('[')) return `{"actions": ${inner}}`  // bare action array → envelope
+    return inner                                        // object / full envelope → hand to the JSON locator
+  })
+  // Remove any orphan/unclosed <actions …> or </actions> markers left behind (e.g. a
+  // reply truncated mid-block, or a stray opener while still streaming) — they are
+  // container noise, never content.
+  out = out.replace(/<\/?actions\b[^>]*>/gi, '')
+  return out
+}
+
 export function parsePlan(raw: string): Plan {
-  if (!raw || !raw.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
+  const text = normalizeActionTags(raw)
+  if (!text || !text.trim()) return { actions: [{ type: 'respond', text: '(no response)' }] }
   // No parseable plan JSON → the whole message IS the reply. Never drop it.
-  const proseFallback = (): Plan => ({ actions: [{ type: 'respond', text: raw.trim() || '(no response)' }] })
+  const proseFallback = (): Plan => ({ actions: [{ type: 'respond', text: text.trim() || '(no response)' }] })
   // A plan JSON envelope WAS located but yielded no usable action (e.g. every action
   // failed validation, as with an empty find_notes query). Show only the prose around
   // it — never the literal JSON — falling back to a generic message when there's no
@@ -405,7 +429,7 @@ export function parsePlan(raw: string): Plan {
   }
 
   try {
-    const located = locatePlanJson(raw)
+    const located = locatePlanJson(text)
     if (!located) return proseFallback()
 
     const parsed = JSON.parse(located.json) as unknown

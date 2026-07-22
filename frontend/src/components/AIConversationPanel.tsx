@@ -18,6 +18,7 @@ import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn } from '@/services/ai'
 import {
   parsePlan,
+  normalizeActionTags,
   buildPlanReferenceBlock,
   buildPlanSummary,
   buildContentStepInstruction,
@@ -75,7 +76,10 @@ function stripCodeFence(text: string): string {
 // always comes from parsePlan on the complete text, never from this. Returns '' when only
 // non-respond JSON has arrived so the caller can show a placeholder rather than braces.
 function liveExtractText(buf: string): string {
-  const s = buf.replace(/^```(?:json)?\s*/i, '')
+  // Strip any XML-style <actions> container a model (e.g. DeepSeek) emits instead of
+  // the JSON envelope, so the tags never flash in the live bubble — the final message
+  // is re-derived by parsePlan, which normalizes the same way.
+  const s = normalizeActionTags(buf).replace(/^```(?:json)?\s*/i, '')
   const brace = s.indexOf('{')
   if (brace === -1) return s.trim()              // pure prose so far
   const pre = s.slice(0, brace).trim()           // prose before the JSON envelope
