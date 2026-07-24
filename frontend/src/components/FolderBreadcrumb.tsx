@@ -5,12 +5,14 @@ import { resolveFolderIcon } from '@/utils/folderIcons'
 interface Props {
   breadcrumb: Folder[]
   onNavigate: (folderId: string | null) => void
+  /** Extra classes for the <nav> spacing slot; defaults to `mb-2` for stacked layouts. */
+  className?: string
 }
 
 /** Breadcrumb trail for the current folder: Home / Parent / … / Current. */
-export default function FolderBreadcrumb({ breadcrumb, onNavigate }: Props) {
+export default function FolderBreadcrumb({ breadcrumb, onNavigate, className }: Props) {
   return (
-    <nav className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 overflow-x-auto mb-2">
+    <nav className={`flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 overflow-x-auto ${className ?? 'mb-2'}`}>
       <button
         className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200 shrink-0 transition-colors"
         onClick={() => onNavigate(null)}
