@@ -46,6 +46,7 @@ import { useDictation, type DictationMode } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
 import { noteToMarkdownBody } from '@/utils/export'
+import { ARCHIVE_SYSTEM_KEY } from '@/utils/folderTree'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
 
@@ -972,10 +973,20 @@ export default function EditorView() {
     setTimeout(() => document.head.removeChild(style), 1000)
   }
 
+  // A note is "in the archive" when its folder chain runs through the Archive Bin.
+  // folderBreadcrumb is the note folder's ancestor chain, already loaded for the
+  // header breadcrumb — so no need to pull in the whole folder tree here.
+  const noteInArchive = folderBreadcrumb.some((f) => f.system_key === ARCHIVE_SYSTEM_KEY)
+
   async function confirmDelete() {
     const id = createdNoteId.current || noteId
     if (!id) { navigate('/notes'); return }
-    await notesStore.deleteNote(id)
+    // First delete archives (soft); deleting again from inside the Bin is permanent.
+    if (noteInArchive) {
+      await notesStore.deleteNote(id)
+    } else {
+      await notesStore.archiveNote(id)
+    }
     navigate('/notes')
   }
 
@@ -1634,10 +1645,18 @@ export default function EditorView() {
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowDeleteConfirm(false)}>
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Note</h3>
-            <p className="text-gray-600 text-sm mb-6">Are you sure you want to delete &ldquo;{title}&rdquo;? This cannot be undone.</p>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              {noteInArchive ? 'Delete permanently' : 'Move to Archive Bin'}
+            </h3>
+            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">
+              {noteInArchive
+                ? <>Permanently delete &ldquo;{title}&rdquo;? This cannot be undone.</>
+                : <>Move &ldquo;{title}&rdquo; to the Archive Bin? You can restore it later.</>}
+            </p>
             <div className="flex gap-3">
-              <button className="btn-danger flex-1" onClick={confirmDelete}>Delete</button>
+              <button className="btn-danger flex-1" onClick={confirmDelete}>
+                {noteInArchive ? 'Delete' : 'Move to Bin'}
+              </button>
               <button className="btn-secondary flex-1" onClick={() => setShowDeleteConfirm(false)}>Cancel</button>
             </div>
           </div>

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, select, col
 
 from app.database import get_session
-from app.folder_utils import get_folder_subtree
+from app.folder_utils import ARCHIVE_SYSTEM_KEY, get_folder_subtree, get_or_create_archive_folder
 from app.models import Folder, Note, NoteVersion, Annotation
 from app.schemas import (
     FolderCreate, FolderUpdate, FolderRead, FolderContents,
@@ -13,8 +13,6 @@ from app.schemas import (
 )
 
 router = APIRouter()
-
-ARCHIVE_SYSTEM_KEY = "archive"
 
 
 def _get_user_id(request: Request) -> str:
@@ -68,32 +66,6 @@ def _reject_if_system(folder: Folder) -> None:
             status_code=400,
             detail={"code": "system_folder", "message": "This folder can't be modified"},
         )
-
-
-def get_or_create_archive_folder(session: Session, user_id: str) -> Folder:
-    """Return the user's Archive Bin (a special root-level folder), creating it lazily."""
-    existing = session.exec(
-        select(Folder).where(Folder.user_id == user_id, Folder.system_key == ARCHIVE_SYSTEM_KEY)
-    ).first()
-    if existing:
-        return existing
-    now = datetime.now(timezone.utc)
-    bin_folder = Folder(
-        id=str(uuid.uuid4()),
-        name="Archive Bin",
-        parent_folder_id=None,
-        user_id=user_id,
-        sort_order=1_000_000,  # sorts last among top-level folders
-        icon_type="emoji",
-        icon_value="🗑️",
-        system_key=ARCHIVE_SYSTEM_KEY,
-        created_at=now,
-        modified_at=now,
-    )
-    session.add(bin_folder)
-    session.commit()
-    session.refresh(bin_folder)
-    return bin_folder
 
 
 def _delete_note_hard(session: Session, note: Note) -> None:

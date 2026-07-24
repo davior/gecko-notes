@@ -64,7 +64,7 @@ export default function ListView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
 
-  const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, createNote } = useNotesStore()
+  const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, archiveNote, createNote } = useNotesStore()
   const foldersStore = useFoldersStore()
   const { breadcrumb, subfolders, allFolders } = foldersStore
   const getCategoryById = useCategoriesStore((s) => s.getCategoryById)
@@ -407,15 +407,50 @@ export default function ListView() {
     }
   }
 
+  // Inside the Archive Bin, "Delete" is permanent; everywhere else it archives.
+  const viewingArchive = isInArchive(folderId, foldersById, archiveId)
+
   async function handleBulkDelete() {
     const ids = Array.from(selectedIds)
     setNoteDeleteOpen(false)
     try {
-      await Promise.all(ids.map((id) => deleteNote(id)))
+      await Promise.all(ids.map((id) => (viewingArchive ? deleteNote(id) : archiveNote(id))))
     } catch {
-      showToast('Could not delete some notes.')
+      showToast(viewingArchive ? 'Could not delete some notes.' : 'Could not archive some notes.')
     } finally {
       clearSelection()
+      // Archiving may have just created the Bin — refresh the tree so it shows up.
+      if (!viewingArchive) void foldersStore.loadAllFolders()
+    }
+  }
+
+  // Per-note card actions (mirror the archived-folder menu).
+  async function handleArchiveNote(id: string) {
+    try {
+      await archiveNote(id)
+    } catch {
+      showToast('Could not archive note.')
+      return
+    }
+    void foldersStore.loadAllFolders()
+  }
+
+  async function handleRestoreNote(id: string) {
+    try {
+      await foldersStore.moveNoteToFolder(id, null)  // move out of the Bin, back to root
+    } catch {
+      showToast('Could not restore note.')
+      return
+    }
+    loadNotes(buildParams(), true)  // the note left the Bin view
+  }
+
+  async function handleDeleteNotePermanent(id: string) {
+    if (!window.confirm('Permanently delete this note? This cannot be undone.')) return
+    try {
+      await deleteNote(id)
+    } catch {
+      showToast('Could not delete note.')
     }
   }
 
@@ -494,6 +529,10 @@ export default function ListView() {
           onToggleSelect={toggleSelect}
           onShareClick={handleShareClick}
           viewMode={viewMode}
+          inArchive={isInArchive(note.folder_id, foldersById, archiveId)}
+          onArchive={handleArchiveNote}
+          onRestore={handleRestoreNote}
+          onDeletePermanent={handleDeleteNotePermanent}
         />
       </DraggableNote>
     ))
@@ -808,10 +847,18 @@ export default function ListView() {
       {noteDeleteOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setNoteDeleteOpen(false)}>
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete Notes</h3>
-            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">Are you sure you want to delete {selectedIds.size} note{selectedIds.size === 1 ? '' : 's'}? This cannot be undone.</p>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              {viewingArchive ? 'Delete permanently' : 'Move to Archive Bin'}
+            </h3>
+            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6">
+              {viewingArchive
+                ? <>Permanently delete {selectedIds.size} note{selectedIds.size === 1 ? '' : 's'}? This cannot be undone.</>
+                : <>Move {selectedIds.size} note{selectedIds.size === 1 ? '' : 's'} to the Archive Bin? You can restore {selectedIds.size === 1 ? 'it' : 'them'} later.</>}
+            </p>
             <div className="flex gap-3">
-              <button className="btn-danger flex-1" onClick={handleBulkDelete}>Delete</button>
+              <button className="btn-danger flex-1" onClick={handleBulkDelete}>
+                {viewingArchive ? 'Delete' : 'Move to Bin'}
+              </button>
               <button className="btn-secondary flex-1" onClick={() => setNoteDeleteOpen(false)}>Cancel</button>
             </div>
           </div>

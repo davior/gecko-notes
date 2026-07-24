@@ -41,6 +41,7 @@ interface NotesState {
   pinNote: (id: string) => Promise<Note>
   shareNote: (id: string) => Promise<Note>
   unshareNote: (id: string) => Promise<Note>
+  archiveNote: (id: string) => Promise<void>
   deleteNote: (id: string) => Promise<void>
   clearCurrentNote: () => void
   reset: () => void
@@ -154,6 +155,17 @@ export const useNotesStore = create<NotesState>((set, get) => ({
       notes: s.notes.map((n) => n.id === id ? { ...n, is_shared: false } : n),
     }))
     return response.data
+  },
+
+  // Soft delete: move the note into the Archive Bin. Drops it from the current
+  // list just like a delete; the caller refreshes the folder tree so a freshly
+  // created Bin appears.
+  async archiveNote(id) {
+    await notesApi.archive(id)
+    set((s) => ({
+      notes: s.notes.filter((n) => n.id !== id),
+      currentNote: s.currentNote?.id === id ? null : s.currentNote,
+    }))
   },
 
   async deleteNote(id) {

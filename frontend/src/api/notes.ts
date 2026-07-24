@@ -184,6 +184,10 @@ export const notesApi = {
     return client.put(`/notes/${childId}`, { parent_note_id: null }).then((r) => r.data)
   },
 
+  archive(id: string): Promise<{ data: Note }> {
+    return client.post(`/notes/${id}/archive`).then((r) => r.data)
+  },
+
   delete(id: string): Promise<void> {
     return client.delete(`/notes/${id}`).then(() => undefined)
   },
