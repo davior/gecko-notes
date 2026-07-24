@@ -1,0 +1,223 @@
+%% ============================================================
+%%  gecko-notes — System Entity-Relationship Diagram
+%%  Source of truth: backend/app/models.py (SQLModel over SQLite)
+%%  DB table names are the lower-cased model names (User -> user).
+%% ============================================================
+erDiagram
+
+    %% ---- Users & identity ----
+    User {
+        string   id                PK
+        string   username          UK
+        string   email             UK
+        string   hashed_password
+        bool     is_active
+        bool     is_admin
+        string   avatar_url
+        datetime created_at
+        datetime last_login
+    }
+
+    %% ---- Content: categories, folders, notes ----
+    Category {
+        string id         PK
+        string label
+        string emoji
+        string color        "hex, e.g. #3B82F6"
+        bool   is_default
+        int    sort_order
+    }
+
+    Folder {
+        string   id                PK
+        string   name
+        string   parent_folder_id  FK "self-ref; null = top level"
+        string   user_id           "app-level ref to User.id"
+        int      sort_order
+        string   icon_type          "emoji / lucide"
+        string   icon_value
+        string   color
+        string   system_key        "e.g. archive bin; null = normal"
+        datetime created_at
+        datetime modified_at
+    }
+
+    Note {
+        string   id                PK
+        string   title
+        text     content            "BlockNote JSON"
+        string   category_id       FK
+        string   folder_id         FK "null = root"
+        string   parent_note_id    FK "self-ref; null = top-level"
+        text     tags               "JSON array"
+        bool     is_pinned
+        bool     is_shared
+        string   share_token
+        int      like_count         "public likes on shared page"
+        text     summary
+        text     conversation       "legacy inline chat; JSON"
+        datetime created_at
+        datetime modified_at
+        string   user_id           "app-level ref to User.id"
+    }
+
+    NoteVersion {
+        string   id                PK
+        string   note_id           FK
+        string   user_id           "app-level ref to User.id"
+        string   title
+        text     content            "snapshot"
+        string   content_checksum   "SHA-256 for dedup"
+        string   category_id        "snapshot value (no FK)"
+        text     tags               "JSON array snapshot"
+        datetime created_at
+    }
+
+    Annotation {
+        string   id                PK
+        string   note_id           FK
+        string   user_id           "app-level ref to User.id"
+        string   block_id           "BlockNote block anchor"
+        string   text               "markdown body"
+        datetime created_at
+        datetime modified_at
+    }
+
+    %% ---- AI / assistant subsystem ----
+    AIProvider {
+        string id             PK
+        string name
+        string provider_type   "anthropic / openai / deepseek / ollama / custom"
+        string api_key
+        string base_url
+        string model
+        int    max_tokens
+        bool   supports_images
+        bool   enabled
+        bool   is_active
+        string user_id         "app-level ref to User.id"
+    }
+
+    SystemPrompt {
+        string id         PK
+        string name
+        text   content
+        bool   is_active
+        int    sort_order
+        string user_id     "app-level ref to User.id"
+    }
+
+    AISession {
+        string   id                    PK
+        string   note_id               FK "null = global (list-view) session"
+        string   user_id               "app-level ref to User.id"
+        string   name
+        text     messages               "JSON"
+        string   context_scope
+        bool     use_summaries
+        bool     include_linked_files
+        bool     plan_mode
+        datetime created_at
+        datetime updated_at
+    }
+
+    %% ---- Usage, jobs, personalization ----
+    UsageEvent {
+        string   id             PK
+        string   user_id        "app-level ref to User.id"
+        string   kind            "tts / stt / ai / image"
+        string   provider
+        string   model
+        int      units
+        string   unit_type       "chars / seconds / tokens / images"
+        datetime created_at
+        string   external_ref    "provider request id"
+        float    cost
+        string   currency
+        bool     cost_estimated
+    }
+
+    TranscriptionJob {
+        string   id               PK
+        string   user_id          "app-level ref to User.id"
+        string   source_filename   "video in user media dir"
+        string   status            "queued / processing / done / error"
+        string   result_filename
+        string   error_message
+        datetime created_at
+        datetime updated_at
+    }
+
+    Theme {
+        string   id             PK
+        string   name
+        string   user_id        "null = global theme"
+        bool     is_global
+        string   mode            "light / dark"
+        string   bg_type         "flat / gradient / image"
+        string   bg_color1
+        string   bg_color2
+        string   bg_image_url
+        string   bg_image_mode   "repeat / stretch / fill"
+        float    bg_blur
+        float    glass_opacity
+        float    glass_blur
+        float    shadow_size
+        float    shadow_blur
+        datetime created_at
+    }
+
+    %% ---- Global / shared configuration ----
+    AppSetting {
+        string key    PK
+        text   value   "JSON-serialised"
+    }
+
+    UserSetting {
+        string user_id  PK "app-level ref to User.id"
+        string key      PK
+        text   value      "JSON-serialised"
+    }
+
+    ModelCatalogEntry {
+        string   id          PK
+        string   kind         "image / tts / stt"
+        string   model_id     "fal endpoint id"
+        string   label
+        string   maker_note
+        int      sort_order
+        bool     is_active
+        text     voices       "JSON (tts only)"
+        string   text_field
+        string   voice_field
+        text     extra_params "JSON (tts only)"
+        datetime created_at
+    }
+
+    %% ============================================================
+    %%  Relationships
+    %% ============================================================
+
+    %% -- Declared foreign keys (enforced by the schema) --
+    Category ||--o{ Note        : "classifies"
+    Folder   |o--o{ Note        : "contains"
+    Folder   |o--o{ Folder      : "nests (parent_folder_id)"
+    Note     |o--o{ Note        : "nests (parent_note_id)"
+    Note     ||--o{ NoteVersion : "snapshots"
+    Note     ||--o{ Annotation  : "anchors"
+
+    %% -- Note-scoped AI sessions (note_id nullable -> global sessions) --
+    Note |o--o{ AISession       : "scopes"
+
+    %% -- Application-level ownership (user_id columns; not DB FKs) --
+    User ||--o{ NoteVersion      : "authors"
+    User ||--o{ UserSetting      : "has"
+    User ||--o{ UsageEvent       : "generates"
+    User ||--o{ AISession        : "runs"
+    User ||--o{ TranscriptionJob : "requests"
+    User |o--o{ Note             : "owns"
+    User |o--o{ Folder           : "owns"
+    User |o--o{ Annotation       : "writes"
+    User |o--o{ AIProvider       : "configures"
+    User |o--o{ SystemPrompt     : "defines"
+    User |o--o{ Theme            : "customizes"
