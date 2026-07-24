@@ -1,6 +1,8 @@
-import { Pin, Globe, CheckCircle2 } from 'lucide-react'
+import { Pin, Globe, CheckCircle2, MoreHorizontal, Trash2, RotateCcw, type LucideIcon } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import type { NoteListItem } from '@/api/notes'
 import type { Category } from '@/api/categories'
+import { useDropdown } from '@/hooks/useDropdown'
 import CategoryBadge from './CategoryBadge'
 import TagChip from './TagChip'
 
@@ -29,6 +31,71 @@ function handleImgError(e: React.SyntheticEvent<HTMLImageElement>, fallback: str
   if (img.src !== fallback) img.src = fallback
 }
 
+// Per-note "⋯" menu mirroring the archived-folder menu: a normal note offers
+// "Delete" (which archives it); a note already in the Archive Bin offers
+// "Restore" and "Delete permanently". Built on the shared useDropdown + portal
+// pattern (see MetaFlyout) so it escapes the card's overflow clipping.
+interface NoteMenuProps {
+  noteId: string
+  inArchive: boolean
+  hasImage: boolean
+  onArchive?: (id: string) => void
+  onRestore?: (id: string) => void
+  onDeletePermanent?: (id: string) => void
+}
+
+function NoteMenu({ noteId, inArchive, hasImage, onArchive, onRestore, onDeletePermanent }: NoteMenuProps) {
+  const { open, setOpen, triggerRef, dropdownRef, style } = useDropdown('right')
+
+  const item = (key: string, Icon: LucideIcon, label: string, onSelect: () => void, danger = false) => (
+    <button
+      key={key}
+      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 ${
+        danger ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'
+      }`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); setOpen(false); onSelect() }}
+    >
+      <Icon className="w-4 h-4 shrink-0" /> <span className="truncate">{label}</span>
+    </button>
+  )
+
+  const items = (inArchive
+    ? [
+        onRestore && item('restore', RotateCcw, 'Restore', () => onRestore(noteId)),
+        onDeletePermanent && item('delete', Trash2, 'Delete permanently', () => onDeletePermanent(noteId), true),
+      ]
+    : [onArchive && item('archive', Trash2, 'Delete', () => onArchive(noteId), true)]
+  ).filter(Boolean)
+
+  if (items.length === 0) return null
+
+  return (
+    <div ref={triggerRef} className="relative">
+      <button
+        className="p-0.5 rounded transition-colors text-gray-300 hover:text-gray-500"
+        style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+        title="More actions"
+        aria-label="More actions"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }}
+      >
+        <MoreHorizontal className="w-3.5 h-3.5" />
+      </button>
+      {open && createPortal(
+        <div
+          ref={dropdownRef}
+          style={style}
+          className="z-50 min-w-[11rem] rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
+        >
+          {items}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
 interface Props {
   note: NoteListItem
   category?: Category
@@ -38,9 +105,13 @@ interface Props {
   onToggleSelect?: (id: string) => void
   onShareClick?: (url: string) => void
   viewMode?: 'list' | 'card'
+  inArchive?: boolean
+  onArchive?: (id: string) => void
+  onRestore?: (id: string) => void
+  onDeletePermanent?: (id: string) => void
 }
 
-export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list' }: Props) {
+export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list', inArchive = false, onArchive, onRestore, onDeletePermanent }: Props) {
   const visibleTags = note.tags.slice(0, 3)
 
   function handleShareClick(e: React.MouseEvent) {
@@ -134,6 +205,14 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
+            <NoteMenu
+              noteId={note.id}
+              inArchive={inArchive}
+              hasImage={hasImage}
+              onArchive={onArchive}
+              onRestore={onRestore}
+              onDeletePermanent={onDeletePermanent}
+            />
           </div>
         </div>
 
@@ -233,6 +312,14 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </button>
             )}
+            <NoteMenu
+              noteId={note.id}
+              inArchive={inArchive}
+              hasImage={false}
+              onArchive={onArchive}
+              onRestore={onRestore}
+              onDeletePermanent={onDeletePermanent}
+            />
           </div>
         </div>
         <h3 className="font-semibold text-gray-900 dark:text-gray-100 text-sm leading-tight mb-1 truncate">

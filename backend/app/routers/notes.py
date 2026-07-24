@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, and_, col
 
 from app.database import get_session
-from app.folder_utils import get_folder_subtree
+from app.folder_utils import archived_subtree_ids, get_folder_subtree, get_or_create_archive_folder
 from app.models import Note, NoteVersion, Folder, Annotation
 from app.routers.media import MEDIA_DIR
 from app.schemas import (
@@ -347,6 +347,16 @@ def list_notes(
     # Pinned notes are surfaced at the root regardless of which folder they live
     # in. Inside a folder, every note belonging to that folder is shown (pinned
     # or not) — there is no separate pinned section within a folder.
+    # Archived notes (those in the Archive Bin or nested under it) are hidden from
+    # the root view and from global/search results — they only surface when the
+    # user explicitly browses into the Bin (in_folder + folder_id). The
+    # `folder_id IS NULL` leg keeps root notes, which a bare NOT IN would drop.
+    archived_ids = archived_subtree_ids(session, user_id)
+    exclude_archived = (
+        or_(Note.folder_id == None, col(Note.folder_id).notin_(archived_ids))  # noqa: E711
+        if archived_ids else None
+    )
+
     if in_folder:
         if folder_id:
             if recursive:
@@ -362,6 +372,13 @@ def list_notes(
             root_filter = or_(Note.folder_id == None, Note.is_pinned == True)  # noqa: E711, E712
             query = query.where(root_filter)
             count_query = count_query.where(root_filter)
+            if exclude_archived is not None:
+                query = query.where(exclude_archived)
+                count_query = count_query.where(exclude_archived)
+    elif exclude_archived is not None:
+        # Global (no folder scoping — used by search): still hide archived notes.
+        query = query.where(exclude_archived)
+        count_query = count_query.where(exclude_archived)
 
     if search:
         search_term = f"%{search}%"
@@ -406,6 +423,13 @@ def smart_search_notes(
         select(func.count()).select_from(Note)
         .where(Note.user_id == user_id, Note.parent_note_id == None)  # noqa: E711
     )
+
+    # Never surface archived notes (those in the Archive Bin or nested under it).
+    archived_ids = archived_subtree_ids(session, user_id)
+    if archived_ids:
+        exclude_archived = or_(Note.folder_id == None, col(Note.folder_id).notin_(archived_ids))  # noqa: E711
+        query = query.where(exclude_archived)
+        count_query = count_query.where(exclude_archived)
 
     def apply(filter_clause):
         nonlocal query, count_query
@@ -665,6 +689,25 @@ def create_child(note_id: str, payload: CreateChildRequest, request: Request, se
     session.commit()
     session.refresh(child)
     return DataResponse(data=note_to_read(child))
+
+
+@router.post("/{note_id}/archive", response_model=DataResponse[NoteRead])
+def archive_note(note_id: str, request: Request, session: Session = Depends(get_session)):
+    """Move a note into the Archive Bin (soft delete) instead of permanently deleting
+    it. The Bin is created lazily. Unpins the note so it stops surfacing at the root
+    view. Permanent deletion is DELETE /notes/{id} (used when it's already in the Bin)."""
+    user_id = _get_user_id(request)
+    note = session.get(Note, note_id)
+    if not note or note.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
+    bin_folder = get_or_create_archive_folder(session, user_id)
+    note.folder_id = bin_folder.id
+    note.is_pinned = False
+    note.modified_at = datetime.now(timezone.utc)
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return DataResponse(data=note_to_read(note))
 
 
 @router.delete("/{note_id}", status_code=204)
