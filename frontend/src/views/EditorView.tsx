@@ -22,6 +22,7 @@ import MetaFlyout from '@/components/MetaFlyout'
 import ExportMenu from '@/components/ExportMenu'
 import ShareMenu from '@/components/ShareMenu'
 import FolderPickerModal from '@/components/FolderPickerModal'
+import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
@@ -39,6 +40,7 @@ import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { transcriptionApi } from '@/api/transcription'
 import { notesApi, configApi, type Note } from '@/api/notes'
+import { foldersApi, type Folder } from '@/api/folders'
 import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation, type DictationMode } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
@@ -144,6 +146,7 @@ export default function EditorView() {
   const [tags, setTags] = useState<string[]>([])
   const [newTagInput, setNewTagInput] = useState('')
   const [parentNoteTitle, setParentNoteTitle] = useState('')
+  const [folderBreadcrumb, setFolderBreadcrumb] = useState<Folder[]>([])
   const [loaded, setLoaded] = useState(false)
   const [saveStatus, setSaveStatus] = useState('All changes saved')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -496,6 +499,23 @@ export default function EditorView() {
       }
     }
   }, [noteId])
+
+  // Folder the note lives in — or, for a brand-new note, the folder it's being
+  // created inside (carried on ?folder=). Drives the header breadcrumb trail.
+  const folderId = note?.folder_id ?? searchParams.get('folder')
+
+  // Load the folder's ancestor chain (root..current) for the header breadcrumb.
+  useEffect(() => {
+    let cancelled = false
+    if (!folderId) {
+      setFolderBreadcrumb([])
+      return
+    }
+    foldersApi.listContents(folderId)
+      .then((res) => { if (!cancelled) setFolderBreadcrumb(res.data.breadcrumb) })
+      .catch(() => { if (!cancelled) setFolderBreadcrumb([]) })
+    return () => { cancelled = true }
+  }, [folderId])
 
   // Sync categoryId once categories load (for new notes)
   useEffect(() => {
@@ -905,7 +925,9 @@ export default function EditorView() {
     el.style.height = `${el.scrollHeight}px`
   }
 
-  async function goBack() {
+  // Flush a pending/draft save before navigating away, so edits aren't lost to
+  // the cancelled autosave debounce. Shared by the Back button and breadcrumb.
+  async function flushPendingSave() {
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current)
       autosaveTimer.current = null
@@ -915,9 +937,18 @@ export default function EditorView() {
     if ((hasPendingChanges.current || (isNew && !createdNoteId.current && hasDraftContent)) && categoryId) {
       await doSave(true)
     }
+  }
 
-    const folderId = note?.folder_id ?? searchParams.get('folder')
+  async function goBack() {
+    await flushPendingSave()
     navigate(folderId ? `/notes?folder=${folderId}` : '/notes')
+  }
+
+  // Breadcrumb crumb click: flush like goBack, then open that folder's list view
+  // (null => "All notes" root).
+  async function navigateToFolder(id: string | null) {
+    await flushPendingSave()
+    navigate(id ? `/notes?folder=${id}` : '/notes')
   }
 
   async function orphanChild() {
@@ -1225,6 +1256,13 @@ export default function EditorView() {
           <button className="btn-ghost p-2" onClick={goBack} title="Back">
             <ArrowLeft className="w-5 h-5" />
           </button>
+          {folderBreadcrumb.length > 0 && (
+            <FolderBreadcrumb
+              breadcrumb={folderBreadcrumb}
+              onNavigate={navigateToFolder}
+              className="min-w-0"
+            />
+          )}
           {note?.parent_note_id && (
             <div className="flex items-center gap-1">
               <button
