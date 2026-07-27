@@ -15,7 +15,7 @@ import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
 import { describeDiagrams } from '@/utils/diagram'
-import type { FileAttachment, ConversationTurn } from '@/services/ai'
+import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
 import {
   parsePlan,
   normalizeActionTags,
@@ -434,6 +434,9 @@ export default function AIConversationPanel({
   const [freezing, setFreezing] = useState(false)
   // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
   const [streamingText, setStreamingText] = useState<string | null>(null)
+  // Phase 2 (deferred body) generation progress, shown live in the plan modal so a long
+  // multi-minute stream doesn't look frozen. null = not generating.
+  const [genProgress, setGenProgress] = useState<{ done: number; total: number; chars: number } | null>(null)
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -445,9 +448,13 @@ export default function AIConversationPanel({
   const streamBufRef = useRef('')                          // raw accumulated stream text
   const abortRef = useRef<AbortController | null>(null)     // cancels the in-flight stream
   const liveRafRef = useRef<number | null>(null)            // rAF handle throttling live updates
+  const genAbortRef = useRef<AbortController | null>(null)  // cancels in-flight Phase 2 body generation
+  const genCharsRef = useRef(0)                            // chars streamed so far across all in-flight bodies
+  const genDoneRef = useRef(0)                             // bodies finished (ok or failed) this run
+  const genRafRef = useRef<number | null>(null)            // rAF handle throttling genProgress updates
 
   // Abort any in-flight stream on unmount so its reader/state updates don't leak.
-  useEffect(() => () => { abortRef.current?.abort() }, [])
+  useEffect(() => () => { abortRef.current?.abort(); genAbortRef.current?.abort() }, [])
 
   // Tracks whether the *current* dictation session has recognized any speech
   // yet, so stopping the mic without having said anything never re-sends
@@ -943,6 +950,22 @@ export default function AIConversationPanel({
     return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
   }
 
+  // Throttle live Phase 2 progress to at most one update per frame — 5 parallel body streams
+  // would otherwise re-render on every token. `total` is preserved from the initial set.
+  const flushGenProgress = () => {
+    if (genRafRef.current !== null) return
+    genRafRef.current = requestAnimationFrame(() => {
+      genRafRef.current = null
+      setGenProgress((p) => (p ? { ...p, done: genDoneRef.current, chars: genCharsRef.current } : p))
+    })
+  }
+
+  // Abort in-flight Phase 2 body generation (the long-running step). runPlan treats the
+  // resulting abort as a soft cancel and skips execution — see below.
+  function stopGenerating() {
+    genAbortRef.current?.abort()
+  }
+
   // Phase 2: fill in deferred note bodies. For each action that declared a `spec` but left
   // `content` empty, make a per-document generation call that reuses the planning call's
   // cached prefix (same instructions/reference/history/current-note + request) and appends
@@ -954,20 +977,27 @@ export default function AIConversationPanel({
     ctx: PlanContext,
     history: ConversationTurn[],
     userRequest: string,
-  ): Promise<{ plan: Plan; genFailures: ActionResult[] }> {
+  ): Promise<{ plan: Plan; genFailures: ActionResult[]; cancelled: boolean }> {
     const svc = aiService
     const targets = plan.actions
       .map((action, index) => ({ action, index }))
       .filter(({ action }) => actionNeedsGeneration(action))
-    if (!targets.length || !svc) return { plan, genFailures: [] }
+    if (!targets.length || !svc) return { plan, genFailures: [], cancelled: false }
 
     const planSummary = buildPlanSummary(plan)
     const genFailures: ActionResult[] = []
     const failedIdx = new Set<number>()
+    const signal = genAbortRef.current?.signal
+
+    // Reset the live progress counters and show the indicator for this run.
+    genCharsRef.current = 0
+    genDoneRef.current = 0
+    setGenProgress({ done: 0, total: targets.length, chars: 0 })
 
     await mapWithConcurrency(targets, GEN_CONCURRENCY, async ({ action, index }) => {
+      if (signal?.aborted) return  // cancelled — don't start further bodies
       try {
-        const raw = await svc.completeConversation({
+        const req: ConversationRequest = {
           instructions: ctx.instructions,
           referenceBlock: ctx.referenceBlock,
           currentNoteText: ctx.currentNoteText || undefined,
@@ -979,17 +1009,31 @@ export default function AIConversationPanel({
           ],
           temperature: 0,
           enableWebSearch: false,
-        })
+        }
+        // Stream so the read timeout bounds the gap between tokens, not the whole
+        // generation — a long body no longer trips the blocking cap (or nginx's 300s).
+        // onDelta only sums a character total, so parallel streams can't interleave; it
+        // also drives the live progress indicator and lets the fetch be aborted.
+        const raw = svc.streamConversation
+          ? await svc.streamConversation(req, (t) => { genCharsRef.current += t.length; flushGenProgress() }, signal)
+          : await svc.completeConversation(req)
         const body = stripCodeFence(raw)
         if (!body.trim()) throw new Error('the model returned an empty body')
         ;(action as { content: string }).content = body
       } catch (e) {
+        // A user-initiated Stop aborts the fetch — not a real failure. Don't record it;
+        // runPlan detects the abort and cancels the whole run.
+        if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
         failedIdx.add(index)
         genFailures.push({ ok: false, message: `Couldn't write “${defaultActionLabel(action, ctx.labelMap)}”: ${errorMessage(e)}` })
+      } finally {
+        genDoneRef.current += 1
+        flushGenProgress()
       }
     })
 
-    return { plan: { actions: plan.actions.filter((_, i) => !failedIdx.has(i)) }, genFailures }
+    if (signal?.aborted) return { plan, genFailures: [], cancelled: true }
+    return { plan: { actions: plan.actions.filter((_, i) => !failedIdx.has(i)) }, genFailures, cancelled: false }
   }
 
   async function runPlan(
@@ -1011,9 +1055,18 @@ export default function AIConversationPanel({
       let runnable = plan
       let genFailures: ActionResult[] = []
       if (plan.actions.some(actionNeedsGeneration)) {
+        genAbortRef.current = new AbortController()  // lets the user Stop the long generation
         setGenerating(true)
         try {
           const out = await generatePlanContent(plan, ctx, history, userRequest)
+          // User pressed Stop: abandon this run rather than execute a partially-written plan.
+          if (out.cancelled) {
+            const cancelled = [...baseMessages, assistantMsg('_Generation cancelled._')]
+            setConversation(cancelled)
+            void persistCurrentSession(cancelled)
+            setPendingPlan(null)
+            return
+          }
           runnable = out.plan
           genFailures = out.genFailures
         } finally {
@@ -1057,6 +1110,9 @@ export default function AIConversationPanel({
     } finally {
       setExecuting(false)
       setPendingPlan(null)
+      genAbortRef.current = null
+      if (genRafRef.current !== null) { cancelAnimationFrame(genRafRef.current); genRafRef.current = null }
+      setGenProgress(null)
     }
   }
 
@@ -1843,7 +1899,7 @@ export default function AIConversationPanel({
       {pendingPlan && (
         <div
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-3"
-          onClick={() => { if (!executing) cancelPlan() }}
+          onClick={() => { if (!executing && !generating) cancelPlan() }}
         >
           <div
             className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-sm max-h-full flex flex-col"
@@ -1876,6 +1932,19 @@ export default function AIConversationPanel({
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
               </p>
             )}
+            {generating && genProgress && (
+              // Live liveness cue for the long streaming generation (a static spinner alone
+              // reads as frozen): a growing char count for a single body, done/total for many.
+              <div className="flex items-center gap-2 px-4 pb-2 text-xs text-gray-500 dark:text-gray-400">
+                <Spinner />
+                <span>
+                  {genProgress.total > 1
+                    ? `Writing note bodies… ${genProgress.done}/${genProgress.total}`
+                    : 'Writing the note body…'}
+                  {genProgress.chars > 0 ? ` · ${genProgress.chars.toLocaleString()} characters` : ''}
+                </span>
+              </div>
+            )}
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
@@ -1888,13 +1957,23 @@ export default function AIConversationPanel({
               >
                 {generating ? <><Spinner /> Writing…</> : executing ? <><Spinner /> Running…</> : 'Approve & run'}
               </button>
+              {generating ? (
+                // While generating, Cancel becomes an active Stop that aborts the streams.
+                <button
+                  className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                  onClick={stopGenerating}
+                >
+                  Stop
+                </button>
+              ) : (
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
-                disabled={executing || generating}
+                disabled={executing}
                 onClick={cancelPlan}
               >
                 Cancel
               </button>
+              )}
             </div>
           </div>
         </div>

@@ -447,6 +447,14 @@ _RETRY_STATUS_CODES = {429, 503}
 _MAX_UPSTREAM_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 0.5
 
+# Read timeout for blocking upstream POSTs. A full-note summary/tag/rewrite body can take
+# well over a minute to generate, and a blocking request returns nothing until the whole
+# completion is ready, so a short cap fails with a ReadTimeout mid-generation. 120s matches
+# the streaming paths and the Anthropic read timeout, and stays under the nginx /api/
+# proxy_read_timeout (300s). Connect/write/pool stay short (see _post_upstream) so a
+# genuinely unreachable provider still fails fast.
+_BLOCKING_UPSTREAM_TIMEOUT = 120.0
+
 
 async def _post_upstream(
     url: str,
@@ -473,7 +481,13 @@ async def _post_upstream(
     other status is returned immediately, same as before.
     """
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # Split the timeout: allow a long read (a blocking POST returns nothing until the
+        # whole completion is generated) while keeping connect/write/pool short so a dead
+        # endpoint fails fast instead of hanging for the entire read window.
+        client_timeout = httpx.Timeout(
+            timeout, connect=min(timeout, 10.0), write=min(timeout, 30.0), pool=min(timeout, 10.0)
+        )
+        async with httpx.AsyncClient(timeout=client_timeout) as client:
             for attempt in range(_MAX_UPSTREAM_ATTEMPTS):
                 response = await client.post(url, headers=headers, json=json_body)
                 if response.status_code not in _RETRY_STATUS_CODES or attempt == _MAX_UPSTREAM_ATTEMPTS - 1:
@@ -781,7 +795,7 @@ async def proxy_openai(
             "content-type": "application/json",
         },
         json_body=body,
-        timeout=60.0,
+        timeout=_BLOCKING_UPSTREAM_TIMEOUT,
         provider_label="the OpenAI-compatible API",
     )
 
@@ -842,7 +856,7 @@ async def proxy_ollama(
         f"{base}/api/chat",
         headers={"content-type": "application/json"},
         json_body=body,
-        timeout=60.0,
+        timeout=_BLOCKING_UPSTREAM_TIMEOUT,
         provider_label="Ollama",
     )
 
