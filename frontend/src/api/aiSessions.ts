@@ -10,6 +10,8 @@ export interface AISession {
   use_summaries: boolean
   include_linked_files: boolean
   plan_mode: boolean
+  // JSON array of {id, title} notes the user hand-attached to the AI context.
+  attached_notes: string
   created_at: string
   updated_at: string
 }
@@ -21,6 +23,7 @@ export interface AISessionCreate {
   use_summaries?: boolean
   include_linked_files?: boolean
   plan_mode?: boolean
+  attached_notes?: string
 }
 
 export interface AISessionUpdate {
@@ -30,6 +33,7 @@ export interface AISessionUpdate {
   use_summaries?: boolean
   include_linked_files?: boolean
   plan_mode?: boolean
+  attached_notes?: string
 }
 
 // A null noteId targets the global (note-less) session endpoints; otherwise the

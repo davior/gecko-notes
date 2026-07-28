@@ -480,6 +480,14 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Hand-attached notes for the AI Assistant context (JSON array of {id, title}).
+        # Runs last so the aisession table-rebuild above (old NOT-NULL note_id DBs)
+        # can't drop the new column.
+        try:
+            conn.execute(text("ALTER TABLE aisession ADD COLUMN attached_notes TEXT NOT NULL DEFAULT '[]'"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

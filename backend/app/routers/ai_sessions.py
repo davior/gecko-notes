@@ -57,6 +57,7 @@ def create_session(note_id: str, body: AISessionCreate, request: Request, sessio
         use_summaries=body.use_summaries,
         include_linked_files=body.include_linked_files,
         plan_mode=body.plan_mode,
+        attached_notes=body.attached_notes,
         created_at=now,
         updated_at=now,
     )
@@ -85,6 +86,8 @@ def update_session(note_id: str, session_id: str, body: AISessionUpdate, request
         obj.include_linked_files = body.include_linked_files
     if body.plan_mode is not None:
         obj.plan_mode = body.plan_mode
+    if body.attached_notes is not None:
+        obj.attached_notes = body.attached_notes
     obj.updated_at = datetime.utcnow()
     session.add(obj)
     session.commit()
@@ -139,6 +142,7 @@ def create_global_session(body: AISessionCreate, request: Request, session: Sess
         use_summaries=body.use_summaries,
         include_linked_files=body.include_linked_files,
         plan_mode=body.plan_mode,
+        attached_notes=body.attached_notes,
         created_at=now,
         updated_at=now,
     )
@@ -164,6 +168,8 @@ def update_global_session(session_id: str, body: AISessionUpdate, request: Reque
         obj.include_linked_files = body.include_linked_files
     if body.plan_mode is not None:
         obj.plan_mode = body.plan_mode
+    if body.attached_notes is not None:
+        obj.attached_notes = body.attached_notes
     obj.updated_at = datetime.utcnow()
     session.add(obj)
     session.commit()

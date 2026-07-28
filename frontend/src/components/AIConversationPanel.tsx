@@ -2,12 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, History } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, FilePlus2, History } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
 import DictationWaveIcon from '@/components/DictationWaveIcon'
+import NotePickerModal from '@/components/NotePickerModal'
 import { settingsApi } from '@/api/settings'
 import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
@@ -427,6 +428,10 @@ export default function AIConversationPanel({
   const [executing, setExecuting] = useState(false)
   const [generating, setGenerating] = useState(false)  // Phase 2: filling deferred note bodies
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  // Notes the user hand-attached as extra AI context (on top of the scope). {id, title}:
+  // the id is authoritative (bodies are re-fetched live each send); title is for the pill.
+  const [attachedNotes, setAttachedNotes] = useState<{ id: string; title: string }[]>([])
+  const [showNotePicker, setShowNotePicker] = useState(false)
   // Set when image/PDF files are dropped from a selection because the active provider
   // is text-only. Cleared on the next selection or when the provider changes.
   const [attachNotice, setAttachNotice] = useState('')
@@ -534,6 +539,7 @@ export default function AIConversationPanel({
     setCurrentSessionId(null)
     setSessions([])
     setShowHistory(false)
+    setAttachedNotes([])
     if (!sessionsEnabled) return
     aiSessionsApi.list(noteId ?? null).then((data) => {
       setSessions(data)
@@ -545,6 +551,7 @@ export default function AIConversationPanel({
         setUseSummaries(latest.use_summaries)
         setIncludeLinkedFiles(latest.include_linked_files)
         setPlanMode(latest.plan_mode)
+        try { setAttachedNotes(JSON.parse(latest.attached_notes)) } catch { setAttachedNotes([]) }
       }
     }).catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -575,7 +582,7 @@ export default function AIConversationPanel({
   // Auto-unfreeze when scope settings change — frozen context is now stale
   useEffect(() => {
     setFrozenContext(null)
-  }, [contextScope, useSummaries, includeLinkedFiles])
+  }, [contextScope, useSummaries, includeLinkedFiles, attachedNotes])
 
   useEffect(() => {
     if (!isOpen) return
@@ -643,6 +650,7 @@ export default function AIConversationPanel({
         use_summaries: useSummaries,
         include_linked_files: includeLinkedFiles,
         plan_mode: planMode,
+        attached_notes: JSON.stringify(attachedNotes),
       })
       setSessions((prev) =>
         [updated, ...prev.filter((s) => s.id !== sid)]
@@ -661,6 +669,7 @@ export default function AIConversationPanel({
         use_summaries: useSummaries,
         include_linked_files: includeLinkedFiles,
         plan_mode: planMode,
+        attached_notes: JSON.stringify(attachedNotes),
       })
       setCurrentSessionId(session.id)
       setSessions((prev) => [session, ...prev])
@@ -677,6 +686,7 @@ export default function AIConversationPanel({
     setFrozenContext(null)
     setPendingPlan(null)
     setShowHistory(false)
+    setAttachedNotes([])
   }
 
   function handleOpenSession(session: AISession) {
@@ -690,6 +700,7 @@ export default function AIConversationPanel({
     setUseSummaries(session.use_summaries)
     setIncludeLinkedFiles(session.include_linked_files)
     setPlanMode(session.plan_mode)
+    try { setAttachedNotes(JSON.parse(session.attached_notes)) } catch { setAttachedNotes([]) }
     setFrozenContext(null)
     setPendingPlan(null)
     setShowHistory(false)
@@ -742,7 +753,7 @@ export default function AIConversationPanel({
     const fileAttachments: FileAttachment[] = []
     const annotationIds = new Set<string>()
 
-    if (!isList && contextScope === 'none') {
+    if (!isList && contextScope === 'none' && attachedNotes.length === 0) {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
       return { referenceContextText: '', currentNoteText: '', attachments: supportsImages ? imgs.map(p => p.attachment) : [], targetNotes: [], annotationIds }
@@ -792,6 +803,14 @@ export default function AIConversationPanel({
         const curBlocks = getNoteDocument?.() ?? []
         notes.unshift({ id: noteId ?? undefined, title: noteTitle ?? '', content: blocksToMarkdown(curBlocks), summary: noteSummary, blocks: curBlocks, createdAt: noteCreatedAt ?? undefined, modifiedAt: noteModifiedAt ?? undefined })
       }
+    }
+
+    // Fold in user-attached notes (dedup vs. notes already in scope). They're always
+    // reference context (never the volatile "current" note) and re-fetched live by id.
+    const presentIds = new Set(notes.map((n) => n.id).filter(Boolean) as string[])
+    const extraIds = attachedNotes.map((n) => n.id).filter((id) => !presentIds.has(id))
+    if (extraIds.length) {
+      notes = [...notes, ...await fetchNotesById(extraIds)]
     }
 
     // Render one note as labelled Markdown (heading carries its id so the model can
@@ -1768,6 +1787,17 @@ export default function AIConversationPanel({
             )}
 
             <button
+              onClick={() => setShowNotePicker(true)}
+              disabled={!!frozenContext}
+              title="Attach notes to the AI context"
+              className="flex items-center gap-0.5 text-gray-400 hover:text-blue-500 transition-colors disabled:opacity-40"
+            >
+              <FilePlus2 className="w-3 h-3" />
+              {attachedNotes.length > 0 && (
+                <span className="text-blue-500 font-medium">{attachedNotes.length}</span>
+              )}
+            </button>
+            <button
               onClick={() => fileInputRef.current?.click()}
               disabled={!!frozenContext}
               title={supportsImages ? 'Attach files to next message' : `Attach text files — ${activeProvider?.name ?? 'the active provider'} doesn't accept images`}
@@ -1812,6 +1842,28 @@ export default function AIConversationPanel({
           {/* Text-only-provider attach notice */}
           {attachNotice && (
             <div className="px-2 pb-1 text-xs text-amber-600 dark:text-amber-400">{attachNotice}</div>
+          )}
+
+          {/* Attached-note pills */}
+          {attachedNotes.length > 0 && (
+            <div className="flex flex-wrap gap-1 px-2 pb-1">
+              {attachedNotes.map((note, i) => (
+                <span
+                  key={note.id}
+                  className="flex items-center gap-1 text-xs bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded px-1.5 py-0.5"
+                  title={note.title || 'Untitled'}
+                >
+                  <FileText className="w-3 h-3 shrink-0" />
+                  {(note.title || 'Untitled').length > 16 ? `${(note.title || 'Untitled').slice(0, 14)}…` : (note.title || 'Untitled')}
+                  <button
+                    onClick={() => setAttachedNotes((prev) => prev.filter((_, j) => j !== i))}
+                    className="hover:text-red-500 transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
 
           {/* Pending file pills */}
@@ -1977,6 +2029,16 @@ export default function AIConversationPanel({
             </div>
           </div>
         </div>
+      )}
+
+      {showNotePicker && (
+        <NotePickerModal
+          onSelect={(id, title) => {
+            setAttachedNotes((prev) => (prev.some((n) => n.id === id) ? prev : [...prev, { id, title }]))
+            setShowNotePicker(false)
+          }}
+          onClose={() => setShowNotePicker(false)}
+        />
       )}
     </div>
   )
