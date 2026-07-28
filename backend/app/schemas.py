@@ -396,6 +396,7 @@ class AISessionCreate(BaseModel):
     use_summaries: bool = False
     include_linked_files: bool = False
     plan_mode: bool = True
+    attached_notes: str = '[]'
 
 
 class AISessionUpdate(BaseModel):
@@ -405,6 +406,7 @@ class AISessionUpdate(BaseModel):
     use_summaries: Optional[bool] = None
     include_linked_files: Optional[bool] = None
     plan_mode: Optional[bool] = None
+    attached_notes: Optional[str] = None
 
 
 class AISessionRead(BaseModel):
@@ -416,6 +418,7 @@ class AISessionRead(BaseModel):
     use_summaries: bool
     include_linked_files: bool
     plan_mode: bool
+    attached_notes: str
     created_at: UTCDatetime
     updated_at: UTCDatetime
 

@@ -150,6 +150,10 @@ class AISession(SQLModel, table=True):
     use_summaries: bool = Field(default=False)
     include_linked_files: bool = Field(default=False)
     plan_mode: bool = Field(default=True)
+    # JSON array of {id, title} notes the user hand-attached to the AI context (in
+    # addition to the scope). Title is denormalized for display; the id is the source
+    # of truth — bodies are re-fetched live at send time.
+    attached_notes: str = Field(default='[]')
     created_at: datetime
     updated_at: datetime
 
