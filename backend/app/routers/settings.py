@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
+from app.model_profiles import anthropic_supports_temperature
 from app.pricing import cost_for
 from app.routers.media import MEDIA_DIR as _MEDIA_ROOT
 from app.substack_publish import SubstackError, create_substack_draft, test_substack_connection
@@ -694,7 +695,9 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     }
     if payload.system:
         body["system"] = payload.system
-    if payload.temperature is not None:
+    # `temperature` is model-gated: newer Claude families removed the sampling
+    # parameter and 400 on it, so only send it when the model still accepts it.
+    if payload.temperature is not None and anthropic_supports_temperature(payload.model):
         body["temperature"] = payload.temperature
     if payload.tools:
         body["tools"] = payload.tools
@@ -948,7 +951,9 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
     }
     if payload.system:
         body["system"] = payload.system
-    if payload.temperature is not None:
+    # `temperature` is model-gated: newer Claude families removed the sampling
+    # parameter and 400 on it, so only send it when the model still accepts it.
+    if payload.temperature is not None and anthropic_supports_temperature(payload.model):
         body["temperature"] = payload.temperature
     if payload.tools:
         body["tools"] = payload.tools
