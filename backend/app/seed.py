@@ -18,7 +18,6 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_USER_SETTINGS = {
     "default_sort_order": '"modified_at"',
-    "ai_temperature": "0.8",
     "ai_prefill": '""',
     "summary_prompt": '""',
 }
