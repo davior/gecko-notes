@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
-from app.model_profiles import anthropic_supports_temperature
+from app.model_profiles import parse_extra_params
 from app.pricing import cost_for
 from app.routers.media import MEDIA_DIR as _MEDIA_ROOT
 from app.substack_publish import SubstackError, create_substack_draft, test_substack_connection
@@ -207,6 +207,7 @@ def create_ai_provider(payload: AIProviderCreate, request: Request, session: Ses
         model=payload.model,
         max_tokens=payload.max_tokens,
         supports_images=payload.supports_images,
+        extra_params=json.dumps(payload.extra_params) if payload.extra_params else None,
         enabled=payload.enabled,
         is_active=payload.is_active,
         user_id=user_id,
@@ -238,6 +239,9 @@ def update_ai_provider(
         val = getattr(payload, field, None)
         if val is not None:
             setattr(provider, field, val)
+    # extra_params is a dict on the wire but stored as JSON text; sending {} clears it.
+    if payload.extra_params is not None:
+        provider.extra_params = json.dumps(payload.extra_params) if payload.extra_params else None
     if payload.api_key:
         if payload.provider_type in ("openai", "custom") and payload.base_url:
             _require_safe_external_url(payload.base_url)
@@ -670,7 +674,6 @@ class AnthropicProxyRequest(BaseModel):
     max_tokens: int
     messages: List[Dict[str, Any]]
     system: Optional[Union[str, List[Dict[str, Any]]]] = None
-    temperature: Optional[float] = None
     prefill: Optional[str] = None
     tools: Optional[List[Dict[str, Any]]] = None
 
@@ -695,12 +698,13 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     }
     if payload.system:
         body["system"] = payload.system
-    # `temperature` is model-gated: newer Claude families removed the sampling
-    # parameter and 400 on it, so only send it when the model still accepts it.
-    if payload.temperature is not None and anthropic_supports_temperature(payload.model):
-        body["temperature"] = payload.temperature
     if payload.tools:
         body["tools"] = payload.tools
+    # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the
+    # provider and merged in. Structural keys are stripped, so this can't override
+    # model/messages/system/tools. Kept byte-for-byte identical in both Anthropic
+    # builders to preserve the prompt-cache breakpoints.
+    body.update(parse_extra_params(provider.extra_params))
 
     uses_web_search = payload.tools and any(
         t.get("type", "").startswith("web_search") for t in payload.tools
@@ -754,7 +758,6 @@ class OpenAIProxyRequest(BaseModel):
     model: str
     max_tokens: int
     messages: List[Dict[str, Any]]
-    temperature: Optional[float] = None
 
 
 def _openai_compat_base(provider_type: Optional[str], base_url: Optional[str]) -> str:
@@ -788,8 +791,8 @@ async def proxy_openai(
         "max_tokens": payload.max_tokens,
         "messages": payload.messages,
     }
-    if payload.temperature is not None:
-        body["temperature"] = payload.temperature
+    # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the provider.
+    body.update(parse_extra_params(provider.extra_params))
 
     response = await _post_upstream(
         f"{base}/v1/chat/completions",
@@ -823,7 +826,6 @@ class OllamaProxyRequest(BaseModel):
     provider_id: str
     model: str
     messages: List[Dict[str, Any]]
-    temperature: Optional[float] = None
     max_tokens: Optional[int] = None
 
 
@@ -846,10 +848,10 @@ async def proxy_ollama(
         "messages": payload.messages,
         "stream": False,
     }
-    # Ollama's output cap is options.num_predict (its equivalent of max_tokens).
-    options: Dict[str, Any] = {}
-    if payload.temperature is not None:
-        options["temperature"] = payload.temperature
+    # Ollama nests params under `options`; num_predict is its output cap (from
+    # max_tokens). Other params (temperature, top_k, …) come from the provider's
+    # extra_params blob.
+    options: Dict[str, Any] = dict(parse_extra_params(provider.extra_params))
     if payload.max_tokens is not None:
         options["num_predict"] = payload.max_tokens
     if options:
@@ -951,12 +953,13 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
     }
     if payload.system:
         body["system"] = payload.system
-    # `temperature` is model-gated: newer Claude families removed the sampling
-    # parameter and 400 on it, so only send it when the model still accepts it.
-    if payload.temperature is not None and anthropic_supports_temperature(payload.model):
-        body["temperature"] = payload.temperature
     if payload.tools:
         body["tools"] = payload.tools
+    # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the
+    # provider and merged in. Structural keys are stripped, so this can't override
+    # model/messages/system/tools. Kept byte-for-byte identical in both Anthropic
+    # builders to preserve the prompt-cache breakpoints.
+    body.update(parse_extra_params(provider.extra_params))
 
     uses_web_search = payload.tools and any(
         t.get("type", "").startswith("web_search") for t in payload.tools
@@ -1011,8 +1014,8 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    if payload.temperature is not None:
-        body["temperature"] = payload.temperature
+    # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the provider.
+    body.update(parse_extra_params(provider.extra_params))
     headers = {
         "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
         "content-type": "application/json",
@@ -1097,9 +1100,7 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
         "messages": payload.messages,
         "stream": True,
     }
-    options: Dict[str, Any] = {}
-    if payload.temperature is not None:
-        options["temperature"] = payload.temperature
+    options: Dict[str, Any] = dict(parse_extra_params(provider.extra_params))
     if payload.max_tokens is not None:
         options["num_predict"] = payload.max_tokens
     if options:

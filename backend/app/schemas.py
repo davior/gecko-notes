@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
 from datetime import datetime, timezone, date
@@ -317,6 +318,7 @@ class AIProviderCreate(BaseModel):
     model: str
     max_tokens: int = Field(default=16384, ge=1, le=200000)
     supports_images: bool = False
+    extra_params: Optional[dict[str, Any]] = None
     enabled: bool = True
     is_active: bool = False
 
@@ -329,6 +331,7 @@ class AIProviderUpdate(BaseModel):
     model: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, ge=1, le=200000)
     supports_images: Optional[bool] = None
+    extra_params: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -342,6 +345,7 @@ class AIProviderRead(BaseModel):
     model: str
     max_tokens: int = 16384
     supports_images: bool = False
+    extra_params: Optional[dict[str, Any]] = None
     enabled: bool
     is_active: bool
 
@@ -349,6 +353,16 @@ class AIProviderRead(BaseModel):
     @classmethod
     def _redact(cls, v: Any) -> str:
         return ""
+
+    @field_validator("extra_params", mode="before")
+    @classmethod
+    def _decode_extra_params(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return None
+        return v
 
     class Config:
         from_attributes = True

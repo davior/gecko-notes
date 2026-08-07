@@ -142,6 +142,7 @@ export interface AIProvider {
   model: string
   max_tokens: number
   supports_images: boolean
+  extra_params: Record<string, unknown> | null
   enabled: boolean
   is_active: boolean
 }
@@ -154,6 +155,7 @@ export interface AIProviderCreate {
   model: string
   max_tokens?: number
   supports_images?: boolean
+  extra_params?: Record<string, unknown> | null
   enabled?: boolean
   is_active?: boolean
 }
@@ -166,6 +168,7 @@ export interface AIProviderUpdate {
   model?: string
   max_tokens?: number
   supports_images?: boolean
+  extra_params?: Record<string, unknown> | null
   enabled?: boolean
   is_active?: boolean
 }

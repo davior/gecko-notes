@@ -145,7 +145,7 @@ export async function generateNoteFilter(
 ): Promise<NoteSearchFilter> {
   const currentDate = new Date().toISOString().slice(0, 10)
   const prompt = buildSmartQueryPrompt(query, categories, currentDate)
-  const result = await aiService.complete(prompt, { systemPrompt: SMART_QUERY_INSTRUCTIONS, temperature: 0 })
+  const result = await aiService.complete(prompt, { systemPrompt: SMART_QUERY_INSTRUCTIONS })
   const filter = toNoteSearchFilter(extractJsonObject(result))
 
   const hasCriteria = Boolean(

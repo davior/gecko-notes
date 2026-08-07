@@ -1,23 +1,54 @@
-"""Per-model request-parameter profiles for the LLM proxies.
+"""Per-model request-parameter helpers for the LLM proxies.
 
-Some request parameters are model-dependent: a value that one model accepts,
-a newer model may reject outright. The Anthropic Messages API removed the
-`temperature` sampling parameter on its newer model families — sending it now
-returns a 400 (`invalid_request_error: "temperature is deprecated for this
-model."`). Older families still accept it, as do the OpenAI-compatible
-providers.
+Two concerns live here:
 
-Rather than hardcode assumptions at each call site, this module answers "does
-this model support parameter X?" from the model id, so switching a provider to
-a newer model "just works" without the caller needing to track the schema.
+1. ``parse_extra_params`` — decode a provider's stored ``extra_params`` JSON blob into a
+   dict that is safe to merge into an outgoing request body. Uncommon / provider-specific
+   parameters (and ``temperature`` itself) are configured per provider and merged at send
+   time, so the base request sends nothing optional by default.
 
-Only parameters whose *presence* depends on the model belong here. Values that
-are always sent but merely have a different ceiling per model (e.g.
-`max_tokens`) are intentionally out of scope.
+2. ``anthropic_supports_temperature`` — the Anthropic model families that reject the
+   ``temperature`` sampling parameter. This is now used only by the one-time DB migration
+   that backfills ``extra_params`` for existing providers (so a provider already on a
+   temperature-rejecting model isn't given a ``temperature`` it would 400 on). It is no
+   longer consulted at request time.
 
-Matching mirrors `pricing.py`: a lowercased substring test against the model
-id, so a dated snapshot (`...-20260101`) matches the same family.
+Matching mirrors ``pricing.py``: a lowercased substring test against the model id, so a
+dated snapshot (``...-20260101``) matches the same family.
 """
+
+import json
+from typing import Any, Optional
+
+# Request-body keys the proxies build themselves. An `extra_params` blob must never
+# override these — doing so could break routing, auth, the message payload, or the
+# output cap — so they are stripped before the merge.
+_PROTECTED_PARAM_KEYS = frozenset({
+    "model",
+    "max_tokens",
+    "messages",
+    "system",
+    "tools",
+    "stream",
+    "stream_options",
+    "provider_id",
+})
+
+
+def parse_extra_params(raw: Optional[str]) -> dict[str, Any]:
+    """Decode a provider's ``extra_params`` JSON text into a dict safe to merge into a
+    request body. Returns ``{}`` for missing / invalid / non-object JSON, and drops any
+    protected structural key so the blob can only add optional parameters."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k not in _PROTECTED_PARAM_KEYS}
+
 
 # Anthropic model families whose Messages API rejects the `temperature` sampling
 # parameter. Opus 4.7 / 4.8 / 5, Sonnet 5, and Fable/Mythos 5 all 400 on it;
@@ -34,9 +65,9 @@ _ANTHROPIC_TEMPERATURE_UNSUPPORTED: tuple[str, ...] = (
 
 
 def anthropic_supports_temperature(model: str) -> bool:
-    """Whether the Anthropic model accepts a `temperature` sampling parameter.
+    """Whether the Anthropic model accepts a ``temperature`` sampling parameter.
 
-    Unknown / older model ids default to True so current behaviour is preserved
-    for everything except the families known to reject it."""
+    Unknown / older model ids default to True. Used by the DB migration that backfills
+    ``extra_params``, not at request time."""
     m = (model or "").lower()
     return not any(needle in m for needle in _ANTHROPIC_TEMPERATURE_UNSUPPORTED)
