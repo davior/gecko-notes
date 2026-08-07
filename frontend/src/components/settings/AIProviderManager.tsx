@@ -5,7 +5,7 @@ import { settingsApi, type AIProvider } from '@/api/settings'
 import MediaProviderSettings from '@/components/settings/MediaProviderSettings'
 
 type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
-interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; supports_images: boolean; enabled: boolean }
+interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; supports_images: boolean; extra_params: string; enabled: boolean }
 
 // Sensible per-type output-token defaults. Anthropic 4.x models support 64000
 // (Opus up to 128000); most OpenAI-compatible models cap output near 16384.
@@ -18,7 +18,7 @@ const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, opena
 // ticks it on for a vision model (llava, a custom multimodal endpoint, …).
 const defaultSupportsImages: Record<ProviderType, boolean> = { anthropic: true, openai: true, deepseek: false, ollama: false, custom: false }
 
-const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, supports_images: defaultSupportsImages.anthropic, enabled: true })
+const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, supports_images: defaultSupportsImages.anthropic, extra_params: '', enabled: true })
 
 const modelPlaceholders: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', deepseek: 'deepseek-chat', ollama: 'llama3.2', custom: 'model-name',
@@ -55,17 +55,31 @@ export default function AIProviderManager() {
 
   function startEdit(p: AIProvider) {
     setEditingId(p.id)
-    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], supports_images: p.supports_images ?? defaultSupportsImages[p.provider_type], enabled: p.enabled })
+    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], supports_images: p.supports_images ?? defaultSupportsImages[p.provider_type], extra_params: p.extra_params ? JSON.stringify(p.extra_params, null, 2) : '', enabled: p.enabled })
     setTestResult(null); setShowForm(true)
   }
 
   function cancelForm() { setShowForm(false); setEditingId(null) }
 
   async function saveForm() {
+    // extra_params is a free-text JSON object merged into each request server-side.
+    // Empty → {} (clears any stored params). Reject anything that isn't a JSON object.
+    let extra_params: Record<string, unknown> = {}
+    const rawExtra = form.extra_params.trim()
+    if (rawExtra) {
+      try {
+        const parsed = JSON.parse(rawExtra)
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error()
+        extra_params = parsed as Record<string, unknown>
+      } catch {
+        showToast('Extra Params must be a valid JSON object', true)
+        return
+      }
+    }
     setSaving(true)
     try {
       const max_tokens = Math.min(200000, Math.max(1, Math.round(form.max_tokens) || defaultMaxTokens[form.provider_type]))
-      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, supports_images: form.supports_images, enabled: form.enabled }
+      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, supports_images: form.supports_images, extra_params, enabled: form.enabled }
       if (editingId) { await updateAIProvider(editingId, payload) } else { await createAIProvider(payload) }
       setShowForm(false); setEditingId(null); showToast('Provider saved', false)
     } catch { showToast('Failed to save provider', true) }
@@ -166,6 +180,11 @@ export default function AIProviderManager() {
                 placeholder={String(defaultMaxTokens[f.provider_type])}
               />
               <p className="text-xs text-gray-400 mt-1">Caps the response length, not your note. Keep within the model's ceiling (e.g. 64000 for Claude Sonnet/Haiku, 128000 for Opus) — too high is rejected.</p>
+            </div>
+            <div>
+              <label className="label">Extra Params (JSON)</label>
+              <textarea value={f.extra_params} onChange={(e) => setF({ extra_params: e.target.value })} rows={3} className="input font-mono text-xs" placeholder='{"temperature": 0}' />
+              <p className="text-xs text-gray-400 mt-1">Optional per-model request parameters merged into each call — e.g. temperature, top_p, or provider-specific options. Leave blank to send none. A model that rejects a parameter (like temperature on the newest Claude models) will error, so omit those for that model.</p>
             </div>
             <div>
               <div className="flex items-center gap-2">

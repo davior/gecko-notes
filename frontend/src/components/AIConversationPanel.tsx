@@ -1026,7 +1026,6 @@ export default function AIConversationPanel({
             { role: 'assistant', content: planSummary },
             { role: 'user', content: buildContentStepInstruction(action, index, ctx.labelMap) },
           ],
-          temperature: 0,
           enableWebSearch: false,
         }
         // Stream so the read timeout bounds the gap between tokens, not the whole
@@ -1215,7 +1214,6 @@ export default function AIConversationPanel({
           history,
           userRequest,
           attachments: ctx.attachments.length ? ctx.attachments : undefined,
-          temperature: 0,
           enableWebSearch: true,
         }
         const raw = svc.streamConversation

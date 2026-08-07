@@ -4,50 +4,13 @@ import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
 
 export default function AssistantSettings() {
-  const { updateAppSettings, aiTemperature, aiPrefill, summaryPrompt } = useSettingsStore()
+  const { updateAppSettings, aiPrefill, summaryPrompt } = useSettingsStore()
   const [localSummaryPrompt, setLocalSummaryPrompt] = useState<string | null>(null)
   const displaySummaryPrompt = localSummaryPrompt ?? summaryPrompt
 
   return (
     <div className="space-y-8">
       <SystemPromptManager />
-
-      <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Temperature</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Controls randomness. Lower values produce more focused responses; higher values are more creative.
-        </p>
-        <div className="card p-4 space-y-3">
-          <div className="flex items-center gap-4">
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={aiTemperature}
-              className="flex-1 accent-blue-600"
-              onChange={(e) => updateAppSettings({ ai_temperature: parseFloat(e.target.value) })}
-            />
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              value={aiTemperature}
-              className="input w-20 text-center text-sm"
-              onChange={(e) => {
-                const v = parseFloat(e.target.value)
-                if (!isNaN(v) && v >= 0 && v <= 1) updateAppSettings({ ai_temperature: v })
-              }}
-            />
-          </div>
-          <div className="flex justify-between text-xs text-gray-400">
-            <span>0 — Focused</span>
-            <span>0.8 — Default</span>
-            <span>1 — Creative</span>
-          </div>
-        </div>
-      </div>
 
       <div>
         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Prefilled Assistant Response</h3>

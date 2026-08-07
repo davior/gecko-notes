@@ -488,6 +488,26 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Per-provider request-parameter blob (JSON-as-text) merged into outgoing LLM
+        # requests. Backfill temperature=0 for existing providers whose model still
+        # accepts it (preserving the old hard-coded chat temperature); providers on a
+        # temperature-rejecting Claude model get none, so the deprecation 400 can't recur.
+        # The backfill rides the ALTER's try, so it runs exactly once.
+        try:
+            import json as _json
+            from app.model_profiles import anthropic_supports_temperature
+            conn.execute(text("ALTER TABLE aiprovider ADD COLUMN extra_params TEXT"))
+            rows = conn.execute(text("SELECT id, provider_type, model FROM aiprovider")).fetchall()
+            for r in rows:
+                accepts_temp = r.provider_type != "anthropic" or anthropic_supports_temperature(r.model)
+                if accepts_temp:
+                    conn.execute(
+                        text("UPDATE aiprovider SET extra_params = :ep WHERE id = :id"),
+                        {"ep": _json.dumps({"temperature": 0}), "id": r.id},
+                    )
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

@@ -12,7 +12,6 @@ interface SettingsState {
   theme: 'light' | 'dark'
   systemPrompts: SystemPrompt[]
   activeSystemPrompt: SystemPrompt | null
-  aiTemperature: number
   aiPrefill: string
   summaryPrompt: string
   themes: Theme[]
@@ -135,7 +134,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   theme: storedTheme,
   systemPrompts: [],
   activeSystemPrompt: null,
-  aiTemperature: 0.8,
   aiPrefill: '',
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
   themes: [],
@@ -176,7 +174,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         defaultSortOrder: (settings['default_sort_order'] as string) ?? 'modified_at',
         systemPrompts: prompts.data,
         activeSystemPrompt: deriveActiveSystemPrompt(prompts.data),
-        aiTemperature: (settings['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
         themes: themesResp.data,
@@ -226,7 +223,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       return {
         appSettings: updated,
         defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
-        aiTemperature: (updated['ai_temperature'] as number) ?? 0.8,
         aiPrefill: (updated['ai_prefill'] as string) ?? '',
         summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
         voice: rawVoice && s.availableVoices.includes(rawVoice) ? rawVoice : s.voice,
@@ -419,7 +415,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       defaultSortOrder: 'modified_at',
       systemPrompts: [],
       activeSystemPrompt: null,
-      aiTemperature: 0.8,
       aiPrefill: '',
       summaryPrompt: DEFAULT_SUMMARY_PROMPT,
       themes: [],
