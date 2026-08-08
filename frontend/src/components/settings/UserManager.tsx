@@ -1,9 +1,25 @@
 import { useState, useEffect } from 'react'
-import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3 } from 'lucide-react'
+import { ShieldCheck, ShieldOff, UserX, KeyRound, Loader2, BarChart3, UserPlus } from 'lucide-react'
 import { usersApi, type UserMetrics, type UserStorage } from '@/api/users'
+import { adminApi, type AdminSettings } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import UserMetricsPanel from '@/components/settings/UserMetricsPanel'
 import type { User } from '@/api/auth'
+
+function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+    >
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+    </button>
+  )
+}
 
 export default function UserManager() {
   const currentUser = useAuthStore((s) => s.user)
@@ -27,9 +43,22 @@ export default function UserManager() {
   const [storage, setStorage] = useState<Record<string, UserStorage>>({})
   const [storageLoading, setStorageLoading] = useState<string | null>(null)
 
+  const [adminSettings, setAdminSettings] = useState<AdminSettings | null>(null)
+  const [savingSetting, setSavingSetting] = useState(false)
+
   useEffect(() => {
     usersApi.listUsers().then(setUsers).finally(() => setLoading(false))
+    adminApi.getSettings().then(setAdminSettings).catch(() => { /* non-admin or error */ })
   }, [])
+
+  async function updateSetting(patch: Partial<AdminSettings>) {
+    setSavingSetting(true)
+    try {
+      setAdminSettings(await adminApi.updateSettings(patch))
+    } finally {
+      setSavingSetting(false)
+    }
+  }
 
   async function toggleMetrics(user: User) {
     if (expandedId === user.id) { setExpandedId(null); return }
@@ -107,6 +136,40 @@ export default function UserManager() {
   return (
     <div>
       <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-6">User Management</h2>
+
+      {/* Registration policy (admin-wide) */}
+      {adminSettings && (
+        <div className="card p-5 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <UserPlus className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Registration</h3>
+          </div>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Allow new registrations</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">When off, the public sign-up form is hidden and new accounts are rejected.</p>
+              </div>
+              <Toggle
+                checked={adminSettings.registration_enabled}
+                disabled={savingSetting}
+                onChange={(v) => updateSetting({ registration_enabled: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Require email verification</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">New users must confirm their email before signing in. Only enforced when email is configured on the server.</p>
+              </div>
+              <Toggle
+                checked={adminSettings.email_verification_required}
+                disabled={savingSetting}
+                onChange={(v) => updateSetting({ email_verification_required: v })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-3">
         {users.map((user) => {

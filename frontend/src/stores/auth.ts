@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { authApi, type User } from '@/api/auth'
+import { authApi, isTwoFactorRequired, type User, type LoginResult, type LoginResponse } from '@/api/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useNotesStore } from '@/stores/notes'
 
@@ -9,12 +9,16 @@ interface AuthState {
   isAuthenticated: boolean
   loading: boolean
   error: string | null
-  login: (username: string, password: string) => Promise<void>
+  // Returns the raw result so the login screen can branch into a 2FA step. When 2FA
+  // is required the session is NOT established until completeTwoFactor succeeds.
+  login: (username: string, password: string) => Promise<LoginResult>
+  completeTwoFactor: (challengeToken: string, code: string) => Promise<void>
   register: (username: string, email: string, password: string) => Promise<void>
   logout: () => void
   initAuth: () => void
   updateProfile: (data: Partial<Pick<User, 'username' | 'email' | 'avatar_url'>>) => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
+  setUser: (user: User) => void
 }
 
 function loadStoredAuth(): { user: User | null; token: string | null } {
@@ -28,6 +32,17 @@ function loadStoredAuth(): { user: User | null; token: string | null } {
     }
   }
   return { token: null, user: null }
+}
+
+// The login/verification endpoints can return a structured detail ({code, message});
+// normalise to a display string so the UI never tries to render an object.
+function extractMessage(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    return String((detail as { message: unknown }).message)
+  }
+  return fallback
 }
 
 const stored = loadStoredAuth()
@@ -47,16 +62,30 @@ export const useAuthStore = create<AuthState>((set) => ({
   async login(username, password) {
     set({ loading: true, error: null })
     try {
-      const { access_token, user } = await authApi.login(username, password)
-      localStorage.setItem('auth_token', access_token)
-      localStorage.setItem('auth_user', JSON.stringify(user))
-      set({ token: access_token, user, isAuthenticated: true })
+      const result = await authApi.login(username, password)
+      if (isTwoFactorRequired(result)) {
+        // Don't establish a session yet — the caller will drive the second factor.
+        return result
+      }
+      _applySession(set, result)
+      await useSettingsStore.getState().loadSettings()
+      return result
+    } catch (err: unknown) {
+      set({ error: extractMessage(err, 'Login failed') })
+      throw err
+    } finally {
+      set({ loading: false })
+    }
+  },
+
+  async completeTwoFactor(challengeToken, code) {
+    set({ loading: true, error: null })
+    try {
+      const result = await authApi.loginTwoFactor(challengeToken, code)
+      _applySession(set, result)
       await useSettingsStore.getState().loadSettings()
     } catch (err: unknown) {
-      const message =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-        'Login failed'
-      set({ error: message })
+      set({ error: extractMessage(err, 'Verification failed') })
       throw err
     } finally {
       set({ loading: false })
@@ -68,10 +97,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       await authApi.register(username, email, password)
     } catch (err: unknown) {
-      const message =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-        'Registration failed'
-      set({ error: message })
+      set({ error: extractMessage(err, 'Registration failed') })
       throw err
     } finally {
       set({ loading: false })
@@ -95,4 +121,15 @@ export const useAuthStore = create<AuthState>((set) => ({
   async changePassword(currentPassword, newPassword) {
     await authApi.changePassword(currentPassword, newPassword)
   },
+
+  setUser(user) {
+    localStorage.setItem('auth_user', JSON.stringify(user))
+    set({ user })
+  },
 }))
+
+function _applySession(set: (partial: Partial<AuthState>) => void, result: LoginResponse) {
+  localStorage.setItem('auth_token', result.access_token)
+  localStorage.setItem('auth_user', JSON.stringify(result.user))
+  set({ token: result.access_token, user: result.user, isAuthenticated: true })
+}

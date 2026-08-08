@@ -7,6 +7,8 @@ import ListView from '@/views/ListView'
 import EditorView from '@/views/EditorView'
 import SettingsView from '@/views/SettingsView'
 import LoginView from '@/views/LoginView'
+import VerifyEmailView from '@/views/VerifyEmailView'
+import ResetPasswordView from '@/views/ResetPasswordView'
 import SharedNoteView from '@/views/SharedNoteView'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -55,6 +57,8 @@ export default function App() {
       />
       <Routes>
         <Route path="/login" element={isAuthenticated ? <Navigate to="/notes" replace /> : <LoginView />} />
+        <Route path="/verify-email" element={<VerifyEmailView />} />
+        <Route path="/reset-password" element={<ResetPasswordView />} />
         <Route path="/" element={<Navigate to="/notes" replace />} />
         <Route path="/notes" element={<ProtectedRoute><ListView /></ProtectedRoute>} />
         <Route path="/notes/new" element={<ProtectedRoute><EditorView /></ProtectedRoute>} />

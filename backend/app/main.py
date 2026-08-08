@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -21,10 +21,13 @@ from app.routers import notes, categories, media, settings, folders, annotations
 from app.thumbnails import backfill_thumbnails
 from app.routers import auth as auth_router
 from app.routers import users as users_router
+from app.routers import admin as admin_router
 from app.routers import data as data_router
 from app.routers import shared as shared_router
 from app.routers import ai_sessions as ai_sessions_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
+from app.mail import email_enabled
+from app.app_settings import get_bool, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED
 from app.models import AIProvider
 from sqlmodel import Session, select
 
@@ -33,7 +36,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MEDIA_DIR = REPO_ROOT / "data" / "media"
 MEDIA_DIR = os.getenv("MEDIA_DIR", str(DEFAULT_MEDIA_DIR))
 
-PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/register"}
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/config",
+    "/api/auth/login",
+    "/api/auth/login/2fa",
+    "/api/auth/register",
+    "/api/auth/verify-email",
+    "/api/auth/resend-verification",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+}
 
 
 def _is_public(path: str) -> bool:
@@ -126,6 +139,7 @@ async def jwt_auth_middleware(request: Request, call_next):
 
 app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users_router.router, prefix="/api/users", tags=["users"])
+app.include_router(admin_router.router, prefix="/api/admin", tags=["admin"])
 app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(annotations.router, prefix="/api/notes", tags=["annotations"])
 app.include_router(ai_sessions_router.router, prefix="/api/notes", tags=["ai-sessions"])
@@ -150,8 +164,8 @@ def health_check():
 
 
 @app.get("/api/config")
-def app_config():
-    """Client-facing runtime configuration (env-var driven)."""
+def app_config(session: Session = Depends(get_session)):
+    """Client-facing runtime configuration (env-var + admin-settings driven)."""
     try:
         interval = max(1, int(os.getenv("NOTE_VERSION_INTERVAL_MINUTES", "5")))
     except ValueError:
@@ -160,7 +174,13 @@ def app_config():
         max_count = max(1, int(os.getenv("NOTE_VERSION_MAX_COUNT", "50")))
     except ValueError:
         max_count = 50
+    mail_on = email_enabled()
     return {
         "note_version_interval_minutes": interval,
         "note_version_max_count": max_count,
+        # Registration/auth policy so the login screen can adapt pre-auth.
+        "registration_enabled": get_bool(session, REGISTRATION_ENABLED, True),
+        # Effective only when email is actually configured (see auth._verification_required).
+        "email_verification_required": mail_on and get_bool(session, EMAIL_VERIFICATION_REQUIRED, True),
+        "email_enabled": mail_on,
     }
