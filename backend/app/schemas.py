@@ -2,7 +2,9 @@ import json
 import re
 from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
 from datetime import datetime, timezone, date
-from pydantic import BaseModel, Field, field_validator, PlainSerializer
+from pydantic import BaseModel, EmailStr, Field, field_validator, PlainSerializer
+
+from app.auth import validate_password_strength
 
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 
@@ -570,8 +572,13 @@ class TranscriptionJobRead(BaseModel):
 # Auth schemas
 class UserCreate(BaseModel):
     username: str
-    email: str
+    email: EmailStr
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def _check_password(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 class UserLogin(BaseModel):
@@ -587,6 +594,8 @@ class UserRead(BaseModel):
     is_admin: bool
     avatar_url: Optional[str]
     created_at: datetime
+    email_verified: bool = True
+    two_factor_method: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -662,3 +671,82 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserRead
+
+
+# ─── Email verification & password reset ──────────────────────────────────────
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password(cls, v: str) -> str:
+        return validate_password_strength(v)
+
+
+class MessageResponse(BaseModel):
+    """Generic {message: ...} acknowledgement for flows that must not leak state."""
+    message: str
+
+
+# ─── Two-factor login (step two) ──────────────────────────────────────────────
+class TwoFactorRequired(BaseModel):
+    """Returned by /auth/login when the account has 2FA enabled — the client must
+    then call /auth/login/2fa with the challenge_token and a code."""
+    two_factor_required: Literal[True] = True
+    method: str                      # "email" | "totp"
+    challenge_token: str
+
+
+class LoginTwoFactorRequest(BaseModel):
+    challenge_token: str
+    code: str
+
+
+# ─── Two-factor management (authenticated) ────────────────────────────────────
+class TwoFactorStatus(BaseModel):
+    enabled: bool
+    method: Optional[str] = None     # "email" | "totp" | None
+    email_available: bool            # whether email 2FA can be offered (SMTP configured)
+
+
+class TotpSetupResponse(BaseModel):
+    secret: str                      # base32, for manual entry
+    otpauth_uri: str
+    qr_data_uri: str                 # data:image/png;base64,...
+
+
+class TotpEnableRequest(BaseModel):
+    secret: str                      # the secret from /2fa/totp/setup, echoed back
+    code: str                        # current authenticator code, proving enrollment
+
+
+class CodeRequest(BaseModel):
+    code: str
+
+
+class TwoFactorDisableRequest(BaseModel):
+    password: str
+
+
+# ─── Admin global settings ────────────────────────────────────────────────────
+class AdminSettings(BaseModel):
+    registration_enabled: bool
+    email_verification_required: bool
+
+
+class AdminSettingsUpdate(BaseModel):
+    registration_enabled: Optional[bool] = None
+    email_verification_required: Optional[bool] = None

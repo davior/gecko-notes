@@ -54,6 +54,8 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Infinite scroll note list with list/card view toggle
 - Light/dark theme and custom background themes (colors, gradients, images)
 - User accounts with registration, JWT-based authentication, and an admin user manager with per-user metrics (note/folder/shared counts, total likes, last login, and on-demand media folder size)
+- Optional email flows (welcome/verification, self-service password reset) and opt-in two-factor authentication via authenticator app (TOTP) or email codes — see [Email & Two-Factor Authentication](#email--two-factor-authentication)
+- Admin control to disable new registrations
 - Reverse-proxy aware (honors `X-Forwarded-*` headers, HTTPS by default behind a proxy)
 
 ## Tech Stack
@@ -120,6 +122,65 @@ Additional optional settings (see `.env.example` for the full list):
 | `NOTE_VERSION_INTERVAL_MINUTES` | How often the editor snapshots a note version while focused (default `5`) |
 | `NOTE_VERSION_MAX_COUNT` | Maximum versions kept per note before older ones are pruned (default `50`) |
 | `COMPOSE_FILE` | Set to `docker-compose.yml:docker-compose.prod.yml` to always include the reverse-proxy overlay |
+| `APP_BASE_URL` | Public origin used to build links in emails (e.g. `https://notes.example.com`) |
+| `SMTP_HOST` / `SMTP_PORT` | SMTP server host and port (default port `587`) |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | SMTP credentials |
+| `SMTP_FROM` | From address on outgoing mail, e.g. `Gecko Notes <admin@geckopico.com>` |
+| `SMTP_STARTTLS` / `SMTP_SSL` | Transport security — STARTTLS (default) or implicit TLS |
+
+## Email & Two-Factor Authentication
+
+Email powers the welcome/verification email sent at sign-up, self-service password
+reset, and email-based two-factor codes. **Email features are optional and stay off
+until both `SMTP_HOST` and `SMTP_FROM` are set.** With no SMTP configured the app
+works exactly as before — new accounts are usable immediately and password reset /
+email-2FA are simply not offered.
+
+When email is configured:
+
+- **Verification** — new sign-ups receive a welcome email with a verification link
+  and cannot sign in until they click it. Admins can turn this requirement off under
+  **Settings → Users → Registration**.
+- **Password reset** — the sign-in screen shows a **Forgot password?** link that
+  emails a one-time reset link.
+- **Two-factor authentication** — each user can enable 2FA from **Settings →
+  Profile**, choosing an **authenticator app (TOTP)** or **email codes**. It's
+  opt-in and off by default.
+
+Admins can also **disable new registrations** entirely under **Settings → Users →
+Registration** (the first account is always allowed, so an instance can bootstrap
+its admin).
+
+### SMTP setup with SMTP2Go + ImprovMX
+
+A concrete recipe for sending as `admin@geckopico.com`:
+
+**Outbound (SMTP2Go)** — create an SMTP user in the [SMTP2Go](https://www.smtp2go.com/)
+dashboard and set in `.env`:
+
+```env
+APP_BASE_URL=https://notes.geckopico.com
+SMTP_HOST=mail.smtp2go.com
+SMTP_PORT=2525            # or 587; use 465/8465 with SMTP_SSL=true
+SMTP_USERNAME=your-smtp2go-user
+SMTP_PASSWORD=your-smtp2go-password
+SMTP_FROM=Gecko Notes <admin@geckopico.com>
+SMTP_STARTTLS=true
+```
+
+In SMTP2Go, **verify the `geckopico.com` sender domain** and add the **SPF + DKIM**
+DNS records it provides so mail isn't spam-filtered.
+
+**Inbound (ImprovMX)** — [ImprovMX](https://improvmx.com/) forwards mail *to* the
+address for free (it does not send). Point the `geckopico.com` **MX records** at
+`mx1.improvmx.com` / `mx2.improvmx.com` and create an alias
+`admin@geckopico.com → your-inbox@example.com`, so replies to the From address reach
+you.
+
+> **DNS note:** a domain may have only **one** SPF (`TXT`) record. If you use both
+> services, merge their includes into a single record (e.g.
+> `v=spf1 include:spf.smtp2go.com include:spf.improvmx.com ~all`) rather than adding
+> two separate SPF lines.
 
 ## AI Providers
 

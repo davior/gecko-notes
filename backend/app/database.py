@@ -508,6 +508,27 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # User email verification. Existing accounts pre-date this flow, so backfill them
+        # to verified in the same try (rides the ALTER, runs exactly once) — otherwise a
+        # deploy of this feature would lock every current user out of login.
+        try:
+            conn.execute(text('ALTER TABLE user ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 0'))
+            conn.execute(text('UPDATE "user" SET email_verified = 1'))
+            conn.commit()
+        except Exception:
+            pass
+        # Two-factor auth columns (opt-in). two_factor_method: null | "email" | "totp".
+        # totp_secret holds the Fernet-encrypted authenticator secret.
+        try:
+            conn.execute(text('ALTER TABLE user ADD COLUMN two_factor_method TEXT'))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text('ALTER TABLE user ADD COLUMN totp_secret TEXT'))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

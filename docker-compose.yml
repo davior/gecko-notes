@@ -12,6 +12,15 @@ services:
       - CORS_ORIGIN=${CORS_ORIGIN:-}
       - NOTE_VERSION_INTERVAL_MINUTES=${NOTE_VERSION_INTERVAL_MINUTES:-5}
       - NOTE_VERSION_MAX_COUNT=${NOTE_VERSION_MAX_COUNT:-50}
+      # Email (optional) — features stay off unless SMTP_HOST and SMTP_FROM are set.
+      - APP_BASE_URL=${APP_BASE_URL:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
+      - SMTP_SSL=${SMTP_SSL:-false}
     expose:
       - "8000"
     healthcheck:

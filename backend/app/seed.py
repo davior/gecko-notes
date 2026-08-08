@@ -14,6 +14,10 @@ DEFAULT_CATEGORIES = [
 
 DEFAULT_SETTINGS = {
     "default_sort_order": '"modified_at"',
+    # Global (admin-managed) registration policy. Stored as JSON in AppSetting;
+    # read/written via /api/admin/settings and surfaced publicly via /api/config.
+    "registration_enabled": "true",
+    "email_verification_required": "true",
 }
 
 DEFAULT_USER_SETTINGS = {

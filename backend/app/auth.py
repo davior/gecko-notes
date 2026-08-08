@@ -1,9 +1,10 @@
 import base64
 import hashlib
-import os
+import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+import os
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
@@ -44,6 +45,65 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+
+# ─── Two-factor login challenge ───────────────────────────────────────────────
+# After a correct password, a user with 2FA enabled gets a short-lived challenge
+# token (not a full access token) that proves the password step passed. Step two
+# (POST /auth/login/2fa) requires it, so the second factor can't be presented
+# without the first. It reuses the JWT machinery with a distinct claim.
+
+TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES = 5
+
+
+def create_challenge_token(user_id: str, method: str) -> str:
+    return create_access_token(
+        {"sub": user_id, "twofa_pending": True, "method": method},
+        expires_delta=timedelta(minutes=TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES),
+    )
+
+
+def decode_challenge_token(token: str) -> dict:
+    """Decode a 2FA challenge token, raising JWTError unless it is a genuine
+    twofa_pending token (a normal access token must not be accepted here)."""
+    payload = decode_token(token)
+    if not payload.get("twofa_pending"):
+        raise JWTError("Not a 2FA challenge token")
+    return payload
+
+
+# ─── Out-of-band token / code helpers ─────────────────────────────────────────
+
+def generate_url_token() -> str:
+    """Opaque, URL-safe secret for email verification / password-reset links."""
+    return secrets.token_urlsafe(32)
+
+
+def generate_numeric_code(digits: int = 6) -> str:
+    """Zero-padded numeric one-time code for email-based 2FA."""
+    return f"{secrets.randbelow(10 ** digits):0{digits}d}"
+
+
+def hash_token(raw: str) -> str:
+    """SHA-256 hex digest — link tokens and email codes are stored hashed, never raw."""
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+class PasswordPolicyError(ValueError):
+    """Raised when a password fails the strength policy."""
+
+
+MIN_PASSWORD_LENGTH = 8
+
+
+def validate_password_strength(password: str) -> str:
+    """Enforce the minimum password policy. Returns the password unchanged so it can
+    be used inline in a pydantic validator; raises PasswordPolicyError otherwise."""
+    if password is None or len(password) < MIN_PASSWORD_LENGTH:
+        raise PasswordPolicyError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+        )
+    return password
 
 
 def _fernet():

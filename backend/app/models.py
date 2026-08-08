@@ -13,6 +13,31 @@ class User(SQLModel, table=True):
     avatar_url: Optional[str] = None
     created_at: datetime
     last_login: Optional[datetime] = None
+    # Email verification: new sign-ups start unverified and cannot log in until they
+    # click the link in their welcome email (when verification is required & email is
+    # configured). Pre-existing accounts are backfilled to verified in _run_migrations.
+    email_verified: bool = Field(default=False)
+    # Two-factor auth (opt-in, per user). None = disabled; "email" = one-time codes sent
+    # by email at login; "totp" = authenticator app. totp_secret is Fernet-encrypted at
+    # rest (see app.auth.encrypt_api_key) and holds the pending secret during TOTP setup
+    # even before two_factor_method is set to "totp".
+    two_factor_method: Optional[str] = None
+    totp_secret: Optional[str] = None
+
+
+class AuthToken(SQLModel, table=True):
+    """Short-lived, single-use secrets for out-of-band auth flows. One table backs
+    three purposes: email verification links, password-reset links, and email-based
+    2FA login codes. The raw token/code is never stored — only its SHA-256 hash
+    (see app.auth.hash_token) — and rows are consumed by setting used_at."""
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    purpose: str = Field(index=True)  # "verify_email" | "password_reset" | "twofa_email"
+    token_hash: str = Field(index=True)
+    expires_at: datetime
+    used_at: Optional[datetime] = None
+    attempts: int = Field(default=0)  # failed-code attempts (email-2FA brute-force cap)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Category(SQLModel, table=True):

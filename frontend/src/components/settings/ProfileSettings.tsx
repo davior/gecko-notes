@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Camera, Loader2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { mediaApi } from '@/api/media'
+import TwoFactorSettings from '@/components/settings/TwoFactorSettings'
 
 export default function ProfileSettings() {
   const navigate = useNavigate()
@@ -121,7 +122,12 @@ export default function ProfileSettings() {
             <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} required minLength={1} />
           </div>
           <div>
-            <label className="label">Email</label>
+            <label className="label">
+              Email
+              {user && (user.email_verified
+                ? <span className="ml-2 text-xs text-green-600 dark:text-green-400 font-normal">verified</span>
+                : <span className="ml-2 text-xs text-amber-600 dark:text-amber-400 font-normal">unverified</span>)}
+            </label>
             <input type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} required />
           </div>
           {profileErr && <p className="text-sm text-red-600 dark:text-red-400">{profileErr}</p>}
@@ -155,6 +161,9 @@ export default function ProfileSettings() {
           </button>
         </form>
       </div>
+
+      {/* Two-factor authentication */}
+      <TwoFactorSettings />
 
       {/* Log out */}
       <div className="card p-5">
