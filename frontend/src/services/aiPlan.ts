@@ -110,6 +110,7 @@ Action types (every action MAY also include an optional "description": one short
 - generate_image:    { "type":"generate_image", "noteId":"<id>", "prompt":"<detailed text-to-image prompt>", "section":"<optional heading to insert under>", "alt":"<optional caption>" }
 
 Rules:
+- Valid JSON only (IMPORTANT): your entire output must be a single, strictly-valid JSON object that JSON.parse accepts. Inside every string value — above all a note "content" — escape each double quote as \\" and each newline as \\n. Safer still, use typographic quotes (“ ” ‘ ’) for any quotation marks you write in prose, since those never need escaping — reserve the straight " for JSON's own delimiters. A SINGLE unescaped straight quote inside a string breaks the entire plan, so it is silently shown to the user as raw text instead of running. For a long note body, or when creating/rewriting several notes, this is a strong extra reason to defer the body with "spec" (see "Deferred body generation" below): a deferred body is written as plain text in a later step and needs no JSON escaping at all.
 - Finding notes (find_notes): Use this ONLY when no notes are listed in context below and you need to locate notes to fulfil the request. Scope a find_notes action by free text, by folder, or both:
   - "query": a concise search string — matched as a substring over note titles AND bodies, so it may return extra notes; pick the right ones yourself by their titles/bodies (e.g. for "title starting with 'Testimony'", keep only notes whose title actually starts with "Testimony").
   - "folderId": scope to one folder — a folder id from the "Folders" list below, "current" (the folder currently being viewed — see the reference block header), or null (the root). Add "recursive":true to also include every folder nested beneath it, however deep — you do NOT need to know the folder hierarchy yourself. Examples: "find the notes in this folder" → {"type":"find_notes","folderId":"current"}; "find all notes in the sub-folders of this folder" → {"type":"find_notes","folderId":"current","recursive":true}; "notes about invoices in this folder" → {"type":"find_notes","folderId":"current","query":"invoices"}.
@@ -347,34 +348,128 @@ function matchBrace(text: string, open: number): number {
   return -1
 }
 
+// Best-effort repair for the one malformation the strict parser can't handle: a double
+// quote left UNESCAPED inside a JSON string value — e.g. a note body that writes
+// `*Note: "Many TIs report…"` with straight ASCII quotes instead of \" or typographic
+// “ ”. The first such quote ends the string early and turns the rest of the object into
+// a syntax error, so the whole plan is lost and the raw reply is shown as text instead.
+// This walks the JSON and escapes any `"` that is clearly interior to a string rather
+// than a real terminator. It runs ONLY as a fallback after strict JSON.parse fails, and
+// its output is used only if it then parses to a plan — so it can rescue an unparseable
+// reply but never alters one that already parsed.
+function repairUnescapedQuotes(src: string): string {
+  const out: string[] = []
+  const stack: string[] = [] // enclosing containers ('{' / '['), tracked outside strings
+  const n = src.length
+
+  const skipWs = (j: number): number => {
+    while (j < n && (src[j] === ' ' || src[j] === '\t' || src[j] === '\n' || src[j] === '\r')) j++
+    return j
+  }
+
+  // Given the index just after a candidate closing quote, is that quote a real string
+  // terminator (vs. a stray quote inside the string)? A terminator is followed by a
+  // structural token: ':' (ends a key), '}'/']' (ends the last value/element), or a ','
+  // that truly separates values. The ',' case is the ambiguous one (`"phrase",` sits
+  // happily inside prose): in an object a real value-close is followed by ',' then the
+  // next KEY (a string followed by ':'), so if what follows the comma isn't such a key
+  // the quote was interior; array elements are always comma-separated, so there a ','
+  // does close the element.
+  const isRealClose = (after: number): boolean => {
+    const k = skipWs(after)
+    if (k >= n) return true
+    const c = src[k]
+    if (c === ':' || c === '}' || c === ']') return true
+    if (c !== ',') return false
+    let m = skipWs(k + 1)
+    if (m >= n) return true
+    const d = src[m]
+    if (d === '}' || d === ']') return true         // tolerated trailing comma
+    if (stack[stack.length - 1] !== '{') return true // array element separator
+    if (d !== '"') return false                      // object value-close needs a key next
+    m++                                              // scan the following (escape-aware) key
+    while (m < n) {
+      if (src[m] === '\\') { m += 2; continue }
+      if (src[m] === '"') break
+      m++
+    }
+    return src[skipWs(m + 1)] === ':'                // …a key is a string followed by ':'
+  }
+
+  let i = 0
+  while (i < n) {
+    const c = src[i]
+    if (c !== '"') {
+      if (c === '{' || c === '[') stack.push(c)
+      else if (c === '}' || c === ']') stack.pop()
+      out.push(c)
+      i++
+      continue
+    }
+    out.push('"') // opening quote — scan the body to its true end, escaping stray quotes
+    i++
+    while (i < n) {
+      const ch = src[i]
+      if (ch === '\\') { out.push(ch); if (i + 1 < n) out.push(src[i + 1]); i += 2; continue }
+      if (ch === '"') {
+        if (isRealClose(i + 1)) { out.push('"'); i++; break }
+        out.push('\\"'); i++
+        continue
+      }
+      out.push(ch)
+      i++
+    }
+  }
+  return out.join('')
+}
+
+// Strict JSON parse of a candidate slice, falling back to a quote-repair pass. Returns
+// the JSON text to use (the original when already valid, the repaired text when repair
+// makes it a valid plan) or null when neither yields a plan.
+function planJsonOrRepair(candidate: string): string | null {
+  try {
+    if (looksLikePlan(JSON.parse(candidate))) return candidate
+  } catch { /* fall through to the repair attempt */ }
+  try {
+    const repaired = repairUnescapedQuotes(candidate)
+    if (repaired !== candidate && looksLikePlan(JSON.parse(repaired))) return repaired
+  } catch { /* unrepairable — give up on this candidate */ }
+  return null
+}
+
 // Locate the plan JSON inside a (possibly prose-wrapped) model response, returning
 // the JSON slice plus the prose before and after it. Prefers a fenced ```json block;
 // otherwise scans for the FIRST brace-balanced slice that parses to a plan — so a
 // stray '{' in prose (e.g. an inline example) doesn't hijack the parse the way the
 // old indexOf('{')…lastIndexOf('}') did, and prose surrounding the JSON is preserved.
+// Each candidate goes through planJsonOrRepair, so a plan carrying an unescaped inner
+// quote (which would otherwise fail JSON.parse and be dumped verbatim as text) is
+// recovered rather than lost.
 interface LocatedPlan { json: string; before: string; after: string }
 function locatePlanJson(text: string): LocatedPlan | null {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fence && fence.index !== undefined) {
     const inner = fence[1].trim()
     if (inner.startsWith('{')) {
-      try {
-        if (looksLikePlan(JSON.parse(inner))) {
-          return { json: inner, before: text.slice(0, fence.index), after: text.slice(fence.index + fence[0].length) }
-        }
-      } catch { /* not a plan — fall through to the brace scan */ }
+      const json = planJsonOrRepair(inner)
+      if (json) return { json, before: text.slice(0, fence.index), after: text.slice(fence.index + fence[0].length) }
     }
   }
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '{') continue
     const end = matchBrace(text, i)
     if (end === -1) continue
-    const slice = text.slice(i, end + 1)
-    try {
-      if (looksLikePlan(JSON.parse(slice))) {
-        return { json: slice, before: text.slice(0, i), after: text.slice(end + 1) }
-      }
-    } catch { /* not valid JSON from here — keep scanning */ }
+    const json = planJsonOrRepair(text.slice(i, end + 1))
+    if (json) return { json, before: text.slice(0, i), after: text.slice(end + 1) }
+  }
+  // Last resort: an unescaped quote can desync matchBrace's string tracking so no
+  // balanced slice is found above. Try the widest {…} span with a repair pass — reached
+  // only when the precise scan found nothing, so it never overrides a cleaner match.
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  if (first !== -1 && last > first) {
+    const json = planJsonOrRepair(text.slice(first, last + 1))
+    if (json) return { json, before: text.slice(0, first), after: text.slice(last + 1) }
   }
   return null
 }
