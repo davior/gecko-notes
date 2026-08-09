@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
-  Check, ChevronDown, LogOut, Settings, Palette, Cpu, Boxes, Bot, Type, Image as ImageIcon,
+  Check, ChevronDown, LogOut, Settings, Palette, Boxes, Bot, Type, Image as ImageIcon,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
@@ -10,15 +10,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useDropdown } from '@/hooks/useDropdown'
 import { settingsApi, type ImageSettings } from '@/api/settings'
 
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  deepseek: 'DeepSeek',
-  ollama: 'Ollama',
-  custom: 'Custom',
-}
-
-type Section = 'theme' | 'provider' | 'model' | 'agent'
+type Section = 'theme' | 'model' | 'agent'
 type ModelGroup = 'text' | 'image'
 
 function swatchStyle(t: { bg_type: string; bg_color1: string; bg_color2: string | null }): React.CSSProperties {
@@ -259,36 +251,6 @@ export default function UserAvatar() {
                 </div>
               )}
 
-              {/* AI Providers */}
-              <CategoryButton
-                icon={Cpu}
-                label="AI Providers"
-                hint={activeProvider?.name ?? 'None'}
-                expanded={openSection === 'provider'}
-                onClick={() => toggleSection('provider')}
-              />
-              {openSection === 'provider' && (
-                <div className="mt-0.5 mb-1 ml-3 pl-1 border-l border-gray-100 dark:border-gray-700 space-y-0.5">
-                  <ManageBar onManage={() => manage('/settings/ai/providers')} />
-                  {enabledProviders.length === 0 ? (
-                    <EmptyNote>No providers configured.</EmptyNote>
-                  ) : (
-                    enabledProviders.map((p) => {
-                      const isActive = p.id === activeProvider?.id
-                      return (
-                        <OptionButton key={p.id} active={isActive} onClick={() => void activateAIProvider(p.id)}>
-                          <span className="truncate flex-1">{p.name}</span>
-                          <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
-                            {PROVIDER_LABELS[p.provider_type] ?? p.provider_type}
-                          </span>
-                          {isActive && <Check className="w-3.5 h-3.5 shrink-0" />}
-                        </OptionButton>
-                      )
-                    })
-                  )}
-                </div>
-              )}
-
               {/* AI Models — Text + Image sub-menus */}
               <CategoryButton
                 icon={Boxes}
@@ -318,8 +280,8 @@ export default function UserAvatar() {
                           return (
                             <OptionButton key={p.id} active={isActive} onClick={() => void activateAIProvider(p.id)}>
                               <div className="min-w-0 flex-1">
-                                <div className="truncate">{p.model || '—'}</div>
-                                <div className="text-xs text-gray-400 dark:text-gray-500 truncate font-normal">{p.name}</div>
+                                <div className="truncate">{p.name}</div>
+                                <div className="text-xs text-gray-400 dark:text-gray-500 truncate font-normal">{p.model || '—'}</div>
                               </div>
                               {isActive && <Check className="w-3.5 h-3.5 shrink-0" />}
                             </OptionButton>
