@@ -3,15 +3,23 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   Check, ChevronDown, LogOut, Settings, Palette, Boxes, Bot, Type, Image as ImageIcon,
+  AudioLines, Volume2, Mic,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useDropdown } from '@/hooks/useDropdown'
-import { settingsApi, type ImageSettings } from '@/api/settings'
+import { settingsApi, type ImageSettings, type SttProvider } from '@/api/settings'
 
-type Section = 'theme' | 'model' | 'agent'
+type Section = 'theme' | 'model' | 'speech' | 'agent'
 type ModelGroup = 'text' | 'image'
+type SpeechGroup = 'tts' | 'stt'
+
+const STT_PROVIDER_LABELS: Record<SttProvider, string> = {
+  auto: 'Automatic',
+  deepgram: 'Deepgram',
+  fal: 'fal.ai',
+}
 
 function swatchStyle(t: { bg_type: string; bg_color1: string; bg_color2: string | null }): React.CSSProperties {
   if (t.bg_type === 'gradient' && t.bg_color2) {
@@ -81,6 +89,15 @@ function EmptyNote({ children }: { children: React.ReactNode }) {
   return <p className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">{children}</p>
 }
 
+// Muted section label used to separate option groups within a sub-menu (e.g. Model / Voice).
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="px-3 pt-1.5 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+      {children}
+    </p>
+  )
+}
+
 export default function UserAvatar() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
@@ -97,10 +114,23 @@ export default function UserAvatar() {
   const systemPrompts = useSettingsStore((s) => s.systemPrompts)
   const activeSystemPrompt = useSettingsStore((s) => s.activeSystemPrompt)
   const activateSystemPrompt = useSettingsStore((s) => s.activateSystemPrompt)
+  const ttsModel = useSettingsStore((s) => s.ttsModel)
+  const ttsModels = useSettingsStore((s) => s.ttsModels)
+  const customTtsModels = useSettingsStore((s) => s.customTtsModels)
+  const voice = useSettingsStore((s) => s.voice)
+  const availableVoices = useSettingsStore((s) => s.availableVoices)
+  const sttModel = useSettingsStore((s) => s.sttModel)
+  const sttModels = useSettingsStore((s) => s.sttModels)
+  const sttProvider = useSettingsStore((s) => s.sttProvider)
+  const deepgramModel = useSettingsStore((s) => s.deepgramModel)
+  const deepgramModels = useSettingsStore((s) => s.deepgramModels)
+  const updateSpeechConfig = useSettingsStore((s) => s.updateSpeechConfig)
+  const updateAppSettings = useSettingsStore((s) => s.updateAppSettings)
 
   // Only one category is open at a time — keeps the menu compact on every screen.
   const [openSection, setOpenSection] = useState<Section | null>(null)
   const [openModelGroup, setOpenModelGroup] = useState<ModelGroup | null>(null)
+  const [openSpeechGroup, setOpenSpeechGroup] = useState<SpeechGroup | null>(null)
   // Image models aren't in the settings store; fetch them lazily the first time the
   // AI Models category is opened, then switch the default in place.
   const [imageSettings, setImageSettings] = useState<ImageSettings | null>(null)
@@ -111,6 +141,7 @@ export default function UserAvatar() {
     if (!open) {
       setOpenSection(null)
       setOpenModelGroup(null)
+      setOpenSpeechGroup(null)
     }
   }, [open])
 
@@ -136,14 +167,20 @@ export default function UserAvatar() {
     ? [...imageSettings.curated_models, ...imageSettings.custom_models.map((id) => ({ id, label: id }))]
     : []
   const activeImageModel = imageModelOptions.find((m) => m.id === imageSettings?.default_model)
+  const allTtsModels = [...ttsModels, ...customTtsModels.map((m) => ({ id: m.id, label: m.id }))]
 
   function toggleSection(s: Section) {
     setOpenSection((cur) => (cur === s ? null : s))
     setOpenModelGroup(null)
+    setOpenSpeechGroup(null)
   }
 
   function toggleModelGroup(g: ModelGroup) {
     setOpenModelGroup((cur) => (cur === g ? null : g))
+  }
+
+  function toggleSpeechGroup(g: SpeechGroup) {
+    setOpenSpeechGroup((cur) => (cur === g ? null : g))
   }
 
   function manage(path: string) {
@@ -161,6 +198,14 @@ export default function UserAvatar() {
       setImageSettings(prev)
     }
   }
+
+  function selectTtsModel(id: string) { void updateSpeechConfig({ tts_model: id }) }
+  // The read-aloud voice is persisted under the app-setting key `tts_model`, the same
+  // convention the Speech settings panel uses.
+  function selectVoice(v: string) { void updateAppSettings({ tts_model: v }) }
+  function selectSttProvider(p: SttProvider) { void updateSpeechConfig({ stt_provider: p }) }
+  function selectDeepgramModel(id: string) { void updateSpeechConfig({ deepgram_model: id }) }
+  function selectSttModel(id: string) { void updateSpeechConfig({ stt_model: id }) }
 
   function handleLogout() {
     setOpen(false)
@@ -316,6 +361,101 @@ export default function UserAvatar() {
                             </OptionButton>
                           )
                         })
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Speech — Text-to-Speech + Speech-to-Text sub-menus */}
+              <CategoryButton
+                icon={AudioLines}
+                label="Speech"
+                hint={voice || undefined}
+                expanded={openSection === 'speech'}
+                onClick={() => toggleSection('speech')}
+              />
+              {openSection === 'speech' && (
+                <div className="mt-0.5 mb-1 ml-3 pl-1 border-l border-gray-100 dark:border-gray-700">
+                  {/* Text-to-Speech: model + voice */}
+                  <CategoryButton
+                    icon={Volume2}
+                    label="Text-to-Speech"
+                    hint={voice || undefined}
+                    expanded={openSpeechGroup === 'tts'}
+                    onClick={() => toggleSpeechGroup('tts')}
+                  />
+                  {openSpeechGroup === 'tts' && (
+                    <div className="mt-0.5 mb-1 ml-3 pl-1 border-l border-gray-100 dark:border-gray-700 space-y-0.5">
+                      <ManageBar onManage={() => manage('/settings/ai/speech')} />
+                      <GroupLabel>Model</GroupLabel>
+                      {allTtsModels.length === 0 ? (
+                        <EmptyNote>No TTS models available.</EmptyNote>
+                      ) : (
+                        allTtsModels.map((m) => (
+                          <OptionButton key={m.id} active={m.id === ttsModel} onClick={() => selectTtsModel(m.id)}>
+                            <span className="truncate flex-1">{m.label}</span>
+                            {m.id === ttsModel && <Check className="w-3.5 h-3.5 shrink-0" />}
+                          </OptionButton>
+                        ))
+                      )}
+                      <GroupLabel>Voice</GroupLabel>
+                      {availableVoices.length === 0 ? (
+                        <EmptyNote>No voices available.</EmptyNote>
+                      ) : (
+                        availableVoices.map((v) => (
+                          <OptionButton key={v} active={v === voice} onClick={() => selectVoice(v)}>
+                            <span className="truncate flex-1">{v}</span>
+                            {v === voice && <Check className="w-3.5 h-3.5 shrink-0" />}
+                          </OptionButton>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {/* Speech-to-Text: provider + per-provider models */}
+                  <CategoryButton
+                    icon={Mic}
+                    label="Speech-to-Text"
+                    hint={STT_PROVIDER_LABELS[sttProvider]}
+                    expanded={openSpeechGroup === 'stt'}
+                    onClick={() => toggleSpeechGroup('stt')}
+                  />
+                  {openSpeechGroup === 'stt' && (
+                    <div className="mt-0.5 mb-1 ml-3 pl-1 border-l border-gray-100 dark:border-gray-700 space-y-0.5">
+                      <ManageBar onManage={() => manage('/settings/ai/speech')} />
+                      <GroupLabel>Provider</GroupLabel>
+                      {(['auto', 'deepgram', 'fal'] as SttProvider[]).map((p) => (
+                        <OptionButton key={p} active={p === sttProvider} onClick={() => selectSttProvider(p)}>
+                          <span className="truncate flex-1">{STT_PROVIDER_LABELS[p]}</span>
+                          {p === sttProvider && <Check className="w-3.5 h-3.5 shrink-0" />}
+                        </OptionButton>
+                      ))}
+                      {sttProvider === 'deepgram' && (
+                        <>
+                          <GroupLabel>Deepgram model</GroupLabel>
+                          {deepgramModels.length === 0 ? (
+                            <EmptyNote>No Deepgram models available.</EmptyNote>
+                          ) : (
+                            deepgramModels.map((m) => (
+                              <OptionButton key={m.id} active={m.id === deepgramModel} onClick={() => selectDeepgramModel(m.id)}>
+                                <span className="truncate flex-1">{m.label}</span>
+                                {m.id === deepgramModel && <Check className="w-3.5 h-3.5 shrink-0" />}
+                              </OptionButton>
+                            ))
+                          )}
+                        </>
+                      )}
+                      <GroupLabel>fal.ai model</GroupLabel>
+                      {sttModels.length === 0 ? (
+                        <EmptyNote>No fal.ai models available.</EmptyNote>
+                      ) : (
+                        sttModels.map((m) => (
+                          <OptionButton key={m.id} active={m.id === sttModel} onClick={() => selectSttModel(m.id)}>
+                            <span className="truncate flex-1">{m.label}</span>
+                            {m.id === sttModel && <Check className="w-3.5 h-3.5 shrink-0" />}
+                          </OptionButton>
+                        ))
                       )}
                     </div>
                   )}
