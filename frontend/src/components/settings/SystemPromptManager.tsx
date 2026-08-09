@@ -65,9 +65,9 @@ export default function SystemPromptManager() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">System Prompts</h3>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">AI Agents</h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Named system prompts that steer AI behaviour. One can be set as the active default.
+            Named agents whose system prompts steer AI behaviour. One can be set as the active default.
           </p>
         </div>
         <button className="btn-primary flex items-center gap-1.5 text-sm py-1.5 px-3" onClick={openAdd}>
@@ -79,7 +79,7 @@ export default function SystemPromptManager() {
       {showForm && (
         <div className="card p-4 mb-4 space-y-3 border-blue-200 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10">
           <h4 className="text-sm font-medium text-gray-800 dark:text-gray-200">
-            {editing ? 'Edit System Prompt' : 'New System Prompt'}
+            {editing ? 'Edit AI Agent' : 'New AI Agent'}
           </h4>
           <div>
             <label className="label">Name</label>
@@ -116,7 +116,7 @@ export default function SystemPromptManager() {
 
       {sorted.length === 0 && !showForm ? (
         <div className="card p-6 text-center text-sm text-gray-400 dark:text-gray-500">
-          No system prompts yet. Add one to customise AI behaviour.
+          No AI agents yet. Add one to customise AI behaviour.
         </div>
       ) : (
         <div className="space-y-2">
