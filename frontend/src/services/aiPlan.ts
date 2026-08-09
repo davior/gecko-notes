@@ -647,7 +647,10 @@ export function buildContentStepInstruction(action: PlanAction, index: number, l
   const spec = actionSpec(action)
   let hint = ''
   if (action.type === 'edit_section') {
-    hint = `\n\nBegin with the section's heading line (e.g. "## ${action.section}") and rewrite that whole section.`
+    // action.section may already carry ATX markers (the model often copies "### Title"
+    // verbatim); strip them so the example heading isn't doubled up ("## ### Title").
+    const bare = action.section.replace(/^#{1,6}\s*/, '').trim()
+    hint = `\n\nBegin with the section's heading line (e.g. "## ${bare}") and rewrite that whole section.`
   } else if (action.type === 'edit_note' && action.mode === 'replace') {
     hint = `\n\nThis is the FULL replacement body for the note.`
   }
