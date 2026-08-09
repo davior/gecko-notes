@@ -61,16 +61,29 @@ function parseBlocks(content: string): unknown[] {
   }
 }
 
-// Heading blocks store only the plain heading text — the level lives in the
-// block's props, so "## Chapter 1" is stored as "Chapter 1". The model is given
-// note bodies as Markdown, so it routinely copies the Markdown form (e.g.
-// "## Chapter 1") into a section field. Strip any leading ATX "#" markers (and a
-// trailing run, for closed ATX headings) so either form matches the stored text.
+// Reduce a heading (from either the model's `section` field or a stored block) to a
+// canonical form for matching. Heading blocks store only the plain text — the level
+// lives in props, so "## Chapter 1" is stored as "Chapter 1" — but the model is given
+// note bodies as Markdown and routinely copies a decorated form into `section`:
+// "## Chapter 1", "**Chapter 1**", or "Chapter 1." with trailing punctuation. Normalise
+// both sides so any of those forms matches the stored text:
+//  - leading ATX "#" markers (and a trailing run, for closed ATX headings)
+//  - Markdown emphasis markers (* and _) — so "**Fixes**" matches a plain "Fixes"
+//    heading, and a plain section matches a bold pseudo-heading (see sectionHeading)
+//  - typographic quotes folded to straight (the planner is told to prefer “ ” ‘ ’,
+//    so a heading stored with a straight ' / " still matches the model's curly form)
+//  - collapsed internal whitespace and a stripped trailing sentence punctuation mark
+//    (?, :, ., …) — so "Which route is most likely?" matches "Which route is most likely"
 function normalizeHeading(s: string): string {
   return s
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[*_]+/g, '')
     .trim()
     .replace(/^#{1,6}\s*/, '')
     .replace(/\s+#+$/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.,:;!?]+$/, '')
     .trim()
     .toLowerCase()
 }
@@ -91,12 +104,36 @@ function atxLevel(text: string): number {
   return m ? m[1].length : 0
 }
 
+// A short, entirely-bold paragraph acts as a visual "heading" even though it is a
+// plain paragraph, not a real heading block — a common pattern in pasted articles
+// that use "**Section title**" lines instead of real headings. Return its text so
+// edit_section can target it; null when the block isn't such a pseudo-heading. The
+// length cap keeps a genuinely long bold sentence inside a section from being read
+// as a heading (which would wrongly cut that section short).
+const PSEUDO_HEADING_MAX_LEN = 100
+function boldPseudoHeadingText(b: unknown): string | null {
+  const rec = b as Record<string, unknown> | null
+  if (!rec || rec.type !== 'paragraph' || !Array.isArray(rec.content) || rec.content.length === 0) return null
+  let text = ''
+  for (const c of rec.content) {
+    const node = c as Record<string, unknown>
+    // Any non-text run (link/mention) or any non-bold run means it isn't a bold line.
+    if (node?.type !== 'text' || (node.styles as Record<string, unknown> | undefined)?.bold !== true) return null
+    text += String(node.text ?? '')
+  }
+  const trimmed = text.trim()
+  return trimmed && trimmed.length <= PSEUDO_HEADING_MAX_LEN ? trimmed : null
+}
+
 // The {level, text} of a block that acts as a section heading, or null if it
 // isn't one. A section heading is normally a real `heading` block (its level lives
 // in props), but a marker can also survive as a literal Markdown "### Title" line
 // inside a non-heading block — e.g. Markdown pasted into a paragraph that was never
-// parsed into a heading. Recognising both forms means edit_section can target a
-// literal "###" line instead of silently appending a duplicate section.
+// parsed into a heading — or as a short, entirely-bold "**Title**" paragraph.
+// Recognising all three forms means edit_section can target a literal "###" line or
+// a bold pseudo-heading instead of silently appending a duplicate section. Bold
+// pseudo-headings get a synthetic level BELOW every real heading (1–6) so a real
+// heading always wins as a section boundary.
 function sectionHeading(b: unknown): { level: number; text: string } | null {
   const text = blockText(b)
   if ((b as Record<string, unknown>)?.type === 'heading') {
@@ -104,7 +141,27 @@ function sectionHeading(b: unknown): { level: number; text: string } | null {
     return { level, text }
   }
   const level = atxLevel(text)
-  return level ? { level, text } : null
+  if (level) return { level, text }
+  const bold = boldPseudoHeadingText(b)
+  return bold ? { level: 7, text: bold } : null
+}
+
+// Index of the block acting as section `section` within top-level `blocks`, or -1.
+// Prefers an exact (normalized) match, then a substring match — both sides run
+// through normalizeHeading + sectionHeading so a Markdown ("## X"), bold ("**X**")
+// or plain heading all match regardless of the decorated form the model emitted.
+// Shared by edit_section, add_reference and generate_image so section targeting
+// behaves identically everywhere.
+function findSectionIndex(blocks: unknown[], section: string): number {
+  const target = normalizeHeading(section)
+  if (!target) return -1
+  const match = (pred: (h: string) => boolean) =>
+    blocks.findIndex((b) => {
+      const info = sectionHeading(b)
+      return info ? pred(normalizeHeading(info.text)) : false
+    })
+  const exact = match((h) => h === target)
+  return exact === -1 ? match((h) => h.includes(target)) : exact
 }
 
 // Embed blocks (childNote / noteReference / diagram) can't be expressed in Markdown,
@@ -228,19 +285,11 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         const blocks = parseBlocks(cur.data.content)
         const newBlocks = await mdToBlocks(action.content)
 
-        // Find the section heading: prefer an exact (case-insensitive) match, else
-        // substring. Both sides are normalized so a Markdown-style section value
-        // ("## Chapter 1") still matches the stored heading text ("Chapter 1"), and
-        // a section stored as a literal "###" line (not a real heading block) is
-        // matched too — sectionHeading() recognises both forms.
-        const target = normalizeHeading(action.section)
-        const matchHeading = (pred: (h: string) => boolean) =>
-          blocks.findIndex((b) => {
-            const info = sectionHeading(b)
-            return info ? pred(normalizeHeading(info.text)) : false
-          })
-        let startIdx = target ? matchHeading((h) => h === target) : -1
-        if (startIdx === -1 && target) startIdx = matchHeading((h) => h.includes(target))
+        // Find the section heading. Matching is delegated to findSectionIndex, which
+        // normalizes both the model's section value and each block's heading text so a
+        // Markdown ("## X"), bold ("**X**"), literal "###" line or plain heading all
+        // match — see normalizeHeading / sectionHeading.
+        const startIdx = findSectionIndex(blocks, action.section)
 
         if (startIdx === -1) {
           // Section not found — append it as a new section rather than failing.
@@ -413,20 +462,10 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           props: { noteId: action.referenceNoteId, noteTitle: action.referenceTitle },
         } as unknown
 
-        // Find insertion point: after section heading if specified, else at end
-        let insertIndex = blocks.length
-        const afterSection = action.insertAfterSection ? normalizeHeading(action.insertAfterSection) : ''
-        if (afterSection) {
-          for (let i = 0; i < blocks.length; i++) {
-            // Match a real heading block or a literal "###" line, normalizing both
-            // sides so a Markdown-style heading ("## Chapter 1") still matches.
-            const info = sectionHeading(blocks[i])
-            if (info && normalizeHeading(info.text).includes(afterSection)) {
-              insertIndex = i + 1
-              break
-            }
-          }
-        }
+        // Find insertion point: after the target section heading if specified, else at
+        // the end. findSectionIndex matches Markdown/bold/literal/plain headings alike.
+        const afterIdx = action.insertAfterSection ? findSectionIndex(blocks, action.insertAfterSection) : -1
+        const insertIndex = afterIdx === -1 ? blocks.length : afterIdx + 1
 
         blocks.splice(insertIndex, 0, referenceBlock)
         await notesApi.update(r.id, { content: JSON.stringify(blocks) })
@@ -572,22 +611,12 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
         const blocks = parseBlocks(cur.data.content)
         const imageBlock = { type: 'image', props: { url: generated.url, caption: action.alt ?? '' } } as unknown
 
-        // Place the image directly under the target heading (prefer exact, else substring
-        // match — mirrors edit_section), or append at the end when no section is given /
-        // the heading isn't found.
-        let insertIndex = blocks.length
-        let placed = false
-        const target = action.section ? normalizeHeading(action.section) : ''
-        if (target) {
-          const findHeading = (pred: (h: string) => boolean) =>
-            blocks.findIndex((b) => {
-              const info = sectionHeading(b)
-              return info ? pred(normalizeHeading(info.text)) : false
-            })
-          let idx = findHeading((h) => h === target)
-          if (idx === -1) idx = findHeading((h) => h.includes(target))
-          if (idx !== -1) { insertIndex = idx + 1; placed = true }
-        }
+        // Place the image directly under the target heading (findSectionIndex matches
+        // Markdown/bold/literal/plain headings alike — mirrors edit_section), or append
+        // at the end when no section is given / the heading isn't found.
+        const sectionIdx = action.section ? findSectionIndex(blocks, action.section) : -1
+        const placed = sectionIdx !== -1
+        const insertIndex = placed ? sectionIdx + 1 : blocks.length
 
         blocks.splice(insertIndex, 0, imageBlock)
         await notesApi.update(r.id, { content: JSON.stringify(blocks) })
