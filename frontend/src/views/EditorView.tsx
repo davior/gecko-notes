@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -32,6 +32,7 @@ import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
 import ImageGenModal from '@/components/ImageGenModal'
 import NoteStatsModal from '@/components/NoteStatsModal'
+import FindReplaceBar from '@/components/FindReplaceBar'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
@@ -158,6 +159,8 @@ export default function EditorView() {
   const [showImageGen, setShowImageGen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showStats, setShowStats] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findShowReplace, setFindShowReplace] = useState(false)
   const [snapshotIntervalMs, setSnapshotIntervalMs] = useState(5 * 60 * 1000)
   const [toastMessage, setToastMessage] = useState('')
   const [suggestedTags, setSuggestedTags] = useState<string[]>([])
@@ -597,6 +600,19 @@ export default function EditorView() {
   // Trigger autosave when title/category/tags change
   useEffect(() => { if (loaded) scheduleAutosave() }, [title, categoryId])
   useEffect(() => { if (loaded) scheduleAutosave() }, [tags])
+
+  // Ctrl/Cmd+F opens find; Ctrl/Cmd+H opens find with the replace row. On the editor
+  // page these take over the browser's native find in favour of in-note find/replace.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+      const k = e.key.toLowerCase()
+      if (k === 'f') { e.preventDefault(); setFindShowReplace(false); setFindOpen(true) }
+      else if (k === 'h') { e.preventDefault(); setFindShowReplace(true); setFindOpen(true) }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
 
   useEffect(() => {
     if (!editor || !loaded) return
@@ -1326,6 +1342,14 @@ export default function EditorView() {
           {note && <ShareMenu note={note} onToast={showToast} onUpdate={setNote} />}
           <button
             className="btn-ghost p-2"
+            title="Find & replace (Ctrl/Cmd+F)"
+            disabled={!showEditorChrome}
+            onClick={() => { setFindShowReplace(false); setFindOpen(true) }}
+          >
+            <Search className="w-4 h-4" />
+          </button>
+          <button
+            className="btn-ghost p-2"
             title="Version history"
             disabled={!note}
             onClick={() => setShowHistory(true)}
@@ -1516,6 +1540,16 @@ export default function EditorView() {
             </div>
           )}
 
+          <div className="relative flex-1 min-h-0 flex flex-col">
+            {showEditorChrome && (
+              <FindReplaceBar
+                editor={editor}
+                scrollContainerRef={editorScrollRef}
+                open={findOpen}
+                showReplace={findShowReplace}
+                onClose={() => setFindOpen(false)}
+              />
+            )}
           <div ref={editorScrollRef} className="editor-area flex-1 min-h-0 overflow-auto px-4 pb-4 print-content">
             {!showEditorChrome ? (
               <div className="flex items-center justify-center h-full">
@@ -1564,6 +1598,7 @@ export default function EditorView() {
                 </EditorNoteContext.Provider>
               </EditorErrorBoundary>
             )}
+          </div>
           </div>
 
           <div className="shrink-0 no-print px-4 py-1.5 border-t border-gray-100 dark:border-gray-700 dark:bg-gray-900 flex items-center justify-between gap-3 flex-wrap">
