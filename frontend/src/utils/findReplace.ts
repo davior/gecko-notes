@@ -32,13 +32,17 @@ export interface FindOptions {
 }
 
 /**
- * One occurrence, in document order. Only the block id is needed: to scroll to and
- * flash the block, and to target a single replace; the array length drives the
- * "N of M" readout. (Block-level flash is the chosen navigation UX, so a sub-block
- * offset isn't required.)
+ * One occurrence, in document order. `blockId` scrolls/flashes the block and targets
+ * a single replace; the array length drives the "N of M" readout. `start`/`end` are
+ * character offsets within the block's inline text — the concatenation of its text
+ * runs (link labels inline, table cells row-major, no separators) — which lines up
+ * with a DOM walk of the block's `.bn-inline-content`, so findHighlight can paint the
+ * exact matched text.
  */
 export interface FindMatch {
   blockId: string
+  start: number
+  end: number
 }
 
 interface TextRun { type: 'text'; text: string; styles: any }
@@ -142,22 +146,25 @@ function eachBlockArray(block: any, fn: (arr: any[]) => void): void {
 }
 
 /**
- * Read-only walk of one inline array, invoking `onMatch` once per occurrence in
- * document order, recursing into link labels at their position. Mirrors
- * transformInArray's traversal exactly so occurrence indices line up between the
- * two (replace-current relies on that alignment).
+ * Read-only walk of one inline array, invoking `onMatch(start, end)` once per
+ * occurrence in document order with block-relative character offsets, recursing into
+ * link labels at their position. `pos` threads the running offset across the whole
+ * block (segments, links, and successive table cells) so offsets are continuous and
+ * line up with a DOM text walk. Mirrors transformInArray's traversal exactly so
+ * occurrence indices line up between the two (replace-current relies on that).
  */
-function collectInArray(arr: any[], regex: RegExp, onMatch: () => void): void {
+function collectInArray(arr: any[], regex: RegExp, pos: { n: number }, onMatch: (start: number, end: number) => void): void {
   let i = 0
   while (i < arr.length) {
     const item = arr[i]
     if (item?.type === 'text') {
+      const segStart = pos.n
       let text = ''
       while (i < arr.length && arr[i]?.type === 'text') { text += String(arr[i].text ?? ''); i++ }
-      const n = findSegmentMatches(text, regex).length
-      for (let k = 0; k < n; k++) onMatch()
+      for (const m of findSegmentMatches(text, regex)) onMatch(segStart + m.start, segStart + m.end)
+      pos.n = segStart + text.length
     } else {
-      if (item?.type === 'link' && Array.isArray(item.content)) collectInArray(item.content, regex, onMatch)
+      if (item?.type === 'link' && Array.isArray(item.content)) collectInArray(item.content, regex, pos, onMatch)
       i++
     }
   }
@@ -175,7 +182,8 @@ export function computeMatches(blocks: any[], opts: FindOptions): { matches: Fin
   const walk = (block: any) => {
     if (typeof block?.id === 'string') {
       const id = block.id
-      eachBlockArray(block, (arr) => collectInArray(arr, regex, () => matches.push({ blockId: id })))
+      const pos = { n: 0 }
+      eachBlockArray(block, (arr) => collectInArray(arr, regex, pos, (start, end) => matches.push({ blockId: id, start, end })))
     }
     if (Array.isArray(block?.children)) for (const c of block.children) walk(c)
   }

@@ -198,6 +198,23 @@
   100% { background-color: transparent; }
 }
 
+/* In-note find/replace highlights (CSS Custom Highlight API). Every match gets a
+   soft amber wash; the current match is painted more strongly. Colours are chosen
+   to read in both light and dark themes. */
+::highlight(find-match) {
+  background-color: rgba(250, 204, 21, 0.4);
+}
+::highlight(find-current) {
+  background-color: #f59e0b;
+  color: #1f2937;
+}
+/* Fallback for browsers without the Custom Highlight API: mark the current block. */
+.find-current-block {
+  background-color: rgba(245, 158, 11, 0.15);
+  box-shadow: inset 2px 0 0 0 rgb(245, 158, 11);
+  border-radius: 2px;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

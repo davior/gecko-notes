@@ -6,6 +6,7 @@ import {
   computeMatches, replaceAll, replaceCurrent,
   type FindMatch, type FindMode, type FindOptions,
 } from '@/utils/findReplace'
+import { paintFindHighlights, clearFindHighlights } from '@/utils/findHighlight'
 
 interface FindReplaceBarProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches DocumentOutline's loose editor typing
@@ -111,6 +112,15 @@ export default function FindReplaceBar({ editor, scrollContainerRef, open, showR
     const t = window.setTimeout(() => setNotice(''), 2500)
     return () => window.clearTimeout(t)
   }, [notice])
+
+  // Paint match highlights (all matches soft, current emphasized) in sync with the
+  // match set / current index; clear them when the bar closes or unmounts.
+  useEffect(() => {
+    if (!open) { clearFindHighlights(); return }
+    const raf = requestAnimationFrame(() => paintFindHighlights(scrollContainerRef.current, matches, currentIndex))
+    return () => cancelAnimationFrame(raf)
+  }, [open, matches, currentIndex, scrollContainerRef])
+  useEffect(() => () => clearFindHighlights(), [])
 
   if (!open) return null
 
