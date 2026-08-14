@@ -31,6 +31,7 @@ import {
   formatNoteMeta,
   PLAN_INSTRUCTIONS,
   VOICE_REPLY_INSTRUCTIONS,
+  WEB_SEARCH_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type PlanAction,
@@ -384,6 +385,12 @@ export default function AIConversationPanel({
   // when unknown (no provider yet) so we never over-block; text-only backends like
   // DeepSeek set this false and the attach flow drops images before they're sent.
   const supportsImages = activeProvider?.supports_images ?? true
+  // Native web search is wired up only for the Anthropic provider path (ai.ts attaches the
+  // web_search_20250305 server tool there; the OpenAI/Ollama paths send no tools). Gate BOTH
+  // the tool and the prompt's mention of it on this: a provider told it has web_search but
+  // given no tool emits the tool call as raw text (<tool_calls><invoke name="web_search">…)
+  // instead of searching — the bug this guards against.
+  const supportsWebSearch = activeProvider?.provider_type === 'anthropic'
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const deepgramKeyConfigured = useSettingsStore((s) => s.deepgramKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)
@@ -1248,20 +1255,28 @@ export default function AIConversationPanel({
       const planOnce = async (): Promise<Plan> => {
         streamBufRef.current = ''
         setStreamingText('')
+        // Compose the planner's system instructions from the static base plus two optional
+        // blocks: the web-search guidance (only when the active provider actually has the
+        // tool — see supportsWebSearch) and, in voice mode, the spoken-reply guidance. Both
+        // are appended only to THIS planning call; deferred note-body generation keeps the
+        // base instructions, so saved note content stays fully formatted Markdown and is
+        // never told about a tool it isn't given. Voice guidance stays last so its "every
+        // rule above is unchanged" wording still refers to everything before it.
+        const planInstructions = [
+          ctx.instructions,
+          ...(supportsWebSearch ? [WEB_SEARCH_INSTRUCTIONS] : []),
+          ...(voiceActiveRef.current ? [VOICE_REPLY_INSTRUCTIONS] : []),
+        ].join('\n\n')
         const req = {
-          // In voice mode the reply is spoken aloud, so steer the planner toward a
-          // concise, natural, Markdown-free "respond" text. Only the planning call is
-          // augmented — deferred note-body generation keeps the base instructions so
-          // saved note content stays fully formatted Markdown.
-          instructions: voiceActiveRef.current
-            ? `${ctx.instructions}\n\n${VOICE_REPLY_INSTRUCTIONS}`
-            : ctx.instructions,
+          instructions: planInstructions,
           referenceBlock: ctx.referenceBlock,
           currentNoteText: ctx.currentNoteText || undefined,
           history,
           userRequest,
           attachments: ctx.attachments.length ? ctx.attachments : undefined,
-          enableWebSearch: true,
+          // Only enable the native web-search tool where it's actually wired up; otherwise
+          // the prompt above never mentions it, so the model won't fake a tool call.
+          enableWebSearch: supportsWebSearch,
         }
         const raw = svc.streamConversation
           ? await svc.streamConversation(req, (t) => { streamBufRef.current += t; scheduleLive() }, abortRef.current?.signal)

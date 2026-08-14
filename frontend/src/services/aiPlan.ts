@@ -83,7 +83,7 @@ export function formatNoteMeta(createdAt?: string | null, modifiedAt?: string | 
 // byte-identical across every turn, note, and session, so it should always be a cache
 // hit. Everything that varies (note lists, note bodies, the conversation) lives after
 // the cache breakpoint, in buildPlanReferenceBlock and the message array.
-export const PLAN_INSTRUCTIONS = `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes. You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfill the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else.
+export const PLAN_INSTRUCTIONS = `You are an AI assistant and research helper for a note-taking app. You help the user in two ways: (1) by ANSWERING questions and discussing their notes in conversation, and (2) ONLY when the user explicitly asks for it, by making changes to their notes (creating, editing, organising, tagging, annotating, etc.). You turn the user's request into a PLAN of sequential actions executed against their notes.
 
 Output format (JSON only — no prose, no markdown code fences):
 { "actions": [ <action>, ... ] }
@@ -132,6 +132,16 @@ Rules:
 - Images (generate_image): Use ONLY when the user explicitly asks to create/generate/add an image, picture, illustration or photo (e.g. "make an image for this article", "add a picture", "create an image for each chapter and put it under each title"). YOU author the "prompt": write a vivid, self-contained text-to-image prompt derived from the relevant article content (describe subject, setting, style, mood, composition) — do NOT just copy the user's request verbatim. Set "section" to a section/chapter heading's text to insert the image directly beneath that heading; omit "section" to append the image at the end of the note. For "an image for each chapter/section", emit ONE generate_image action per chapter — each with that chapter's heading text as "section" and its own prompt tailored to that chapter. Optionally set "alt" to a short caption. Generating images costs money, so create only the images the user asked for and no more.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
+
+// Extra guidance appended to the instructions ONLY for providers whose API actually wires
+// up a native web_search tool — currently just Anthropic (see AnthropicProvider in ai.ts,
+// which attaches the web_search_20250305 server tool). It is deliberately kept OUT of the
+// base PLAN_INSTRUCTIONS: a provider that is TOLD it has a web_search tool but is given no
+// such tool "calls" it the only way it can — by emitting Claude's text tool-call markup
+// (<tool_calls><invoke name="web_search"><parameter …>…) as ordinary output, which then
+// shows up verbatim in the chat instead of running a search. So the promise of the tool and
+// the tool itself are gated together, on the same provider check (see supportsWebSearch).
+export const WEB_SEARCH_INSTRUCTIONS = `You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfil the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else, exactly as specified above.`
 
 // Extra guidance appended to PLAN_INSTRUCTIONS only when the request comes from voice
 // mode. The user is speaking and will HEAR the "respond" text via text-to-speech, so
@@ -519,6 +529,17 @@ export function normalizeActionTags(raw: string): string {
   // reply truncated mid-block, or a stray opener while still streaming) — they are
   // container noise, never content.
   out = out.replace(/<\/?actions\b[^>]*>/gi, '')
+
+  // Strip Claude's TEXT tool-call markup — <function_calls>/<tool_calls> wrapping
+  // <invoke name="…"><parameter …>…. A model that is told it has a tool but whose provider
+  // wired up none "calls" it by emitting this as ordinary output; it is never valid plan
+  // JSON, so without this it renders verbatim in the chat (the web-search bug). Drop the
+  // whole block, preserving any prose the model wrote around it. Providers are no longer
+  // told about tools they lack (see WEB_SEARCH_INSTRUCTIONS), so this is a backstop for any
+  // model that emits the markup regardless — and it keeps it out of the live stream too.
+  out = out.replace(/<(function_calls|tool_calls)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+  // Orphan wrapper tags from a reply truncated mid-call (e.g. while still streaming).
+  out = out.replace(/<\/?(?:function_calls|tool_calls)\b[^>]*>/gi, '')
   return out
 }
 
