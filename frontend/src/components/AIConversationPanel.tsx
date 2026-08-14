@@ -1352,7 +1352,8 @@ export default function AIConversationPanel({
         const responded = [...withUser, assistantMsg(text)]
         setConversation(responded)
         void persistCurrentSession(responded, sessionId)
-        if (voiceActiveRef.current) voice.speak(text)
+        // Keep the formatted text in the chat, but speak it stripped of Markdown.
+        if (voiceActiveRef.current) voice.speak(stripMarkdownForSpeech(text))
       } else if (voiceActiveRef.current) {
         // Voice mode: read the plan back and wait for a spoken confirmation before
         // running it, regardless of the panel's Plan-mode setting.
@@ -1419,18 +1420,24 @@ export default function AIConversationPanel({
     })
   }
 
-  // Reduce a Markdown response to plain-ish prose so read-aloud doesn't voice the
-  // markup (asterisks, backticks, link URLs, cite tags, heading hashes).
+  // Reduce a Markdown response to plain-ish prose so it's read aloud (both the
+  // per-message button and voice mode) without voicing the markup — asterisks,
+  // backticks, link URLs, cite tags, heading hashes, list bullets, table pipes.
   function stripMarkdownForSpeech(md: string): string {
     return md
-      .replace(/<cite[^>]*>([\s\S]*?)<\/cite>/g, '$1')      // cite tags → their text
-      .replace(/```[\s\S]*?```/g, ' ')                       // fenced code blocks
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')              // images → alt text
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')               // links → label
-      .replace(/`([^`]+)`/g, '$1')                           // inline code
-      .replace(/[*_~]+/g, '')                                // emphasis markers
-      .replace(/^\s{0,3}#{1,6}\s+/gm, '')                    // heading hashes
-      .replace(/^\s{0,3}>\s?/gm, '')                         // blockquotes
+      .replace(/<cite[^>]*>([\s\S]*?)<\/cite>/g, '$1')       // cite tags → their text
+      .replace(/```[\s\S]*?```/g, ' ')                        // fenced code blocks
+      .replace(/^\s{0,3}\|?[\s:|-]*-[\s:|-]*$/gm, '')         // table separators / horizontal rules
+      .replace(/\|/g, ' ')                                    // table cell pipes → spaces
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')               // images → alt text
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')                // links → label text
+      .replace(/`([^`]+)`/g, '$1')                            // inline code
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')                     // heading hashes
+      .replace(/^\s{0,3}>\s?/gm, '')                          // blockquotes
+      .replace(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/gm, '')          // list markers (-, *, +, 1., 1))
+      .replace(/[*_~]+/g, '')                                 // bold / italic / strikethrough
+      .replace(/[ \t]{2,}/g, ' ')                             // collapse runs of spaces
+      .replace(/\n{3,}/g, '\n\n')                             // collapse extra blank lines
       .trim()
   }
 
@@ -1464,8 +1471,8 @@ export default function AIConversationPanel({
       .filter((a) => a.type !== 'respond')
       .map((a) => a.description || defaultActionLabel(a, labelMap))
     const list = labels.length ? labels.join(', then ') : 'make some changes'
-    const prefix = respond ? `${stripMarkdownForSpeech(respond)} ` : ''
-    return `${prefix}I'd like to ${list}. Should I go ahead?`
+    const prefix = respond ? `${respond} ` : ''
+    return stripMarkdownForSpeech(`${prefix}I'd like to ${list}. Should I go ahead?`)
   }
 
   async function handleVoiceUserTurn(transcript: string) {
