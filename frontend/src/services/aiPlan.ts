@@ -133,6 +133,19 @@ Rules:
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
 
+// Extra guidance appended to PLAN_INSTRUCTIONS only when the request comes from voice
+// mode. The user is speaking and will HEAR the "respond" text via text-to-speech, so
+// it must sound like natural conversation rather than a written, Markdown-formatted
+// answer. This deliberately constrains ONLY the spoken "respond" text — note bodies
+// (a note action's "content"/"spec") are saved to the user's notes, read on screen,
+// and must stay well-structured Markdown exactly as the rules above require.
+export const VOICE_REPLY_INSTRUCTIONS = `VOICE MODE — the user is talking to you out loud and will HEAR your "respond" text read aloud by text-to-speech. Make every "respond" action sound like a natural spoken reply:
+- Be brief and get to the point: usually 1-3 short sentences. Give the answer first, then offer to say more ("want me to go into detail?") instead of delivering everything at once.
+- Write plain spoken prose, NOT Markdown. In "respond" text do not use headings, bullet or numbered lists, tables, code blocks, links, asterisks, backticks, or emoji. If you need to enumerate, weave it into a sentence ("a couple of things — first…, and then…").
+- Word it the way you'd say it aloud: spell out or skip URLs, file paths, long ids and symbol-heavy strings, use words for small numbers, and keep sentences short and easy to follow by ear.
+- Sound warm, direct and conversational, like a helpful person speaking — not a written report.
+This applies ONLY to spoken "respond" text. Any note "content" or "spec" you write must still be well-structured Markdown exactly as instructed above — those are saved to the user's notes, not read aloud. The JSON plan format and every other rule above are unchanged.`
+
 // Dynamic context block: the id/title/folder/category lists plus the bodies of the
 // *other* in-context notes. Stable within a conversation (it changes only when notes
 // are added/renamed or the scope changes), so it sits behind its own cache breakpoint —

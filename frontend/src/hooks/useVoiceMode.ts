@@ -31,8 +31,13 @@ export interface UseVoiceModeReturn {
   active: boolean
   start: () => Promise<void>
   stop: () => void
-  /** Speak the assistant's reply, then return to listening. */
-  speak: (text: string) => void
+  /**
+   * Speak the assistant's reply, then return to listening. Pass `onEnd` to run a
+   * callback once playback finishes naturally instead of resuming listening — used
+   * to close the session after a spoken sign-off. `onEnd` does NOT fire if the
+   * speech is cut short (barge-in, manual stop, teardown).
+   */
+  speak: (text: string, opts?: { onEnd?: () => void }) => void
   /** Mark the assistant as working (used by the panel before a slow turn). */
   setThinking: () => void
   /** Manually stop the assistant (stop TTS while speaking, or abort while thinking). */
@@ -58,6 +63,9 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const handleRef = useRef<FluxStreamHandle | null>(null)
+  // Pending "speech finished" callback for the current speak() (see speak/opts.onEnd).
+  // Cleared whenever speech is cut short so it can only fire on a natural end.
+  const speakEndRef = useRef<(() => void) | null>(null)
 
   // Keep option callbacks fresh so the long-lived socket handler never calls a
   // stale closure.
@@ -70,6 +78,7 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
   }, [])
 
   const teardown = useCallback(() => {
+    speakEndRef.current = null
     try { recorderRef.current?.stop() } catch { /* already stopped */ }
     recorderRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -91,11 +100,15 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
 
   // Drive speaking → listening off the player's own status (see useTextToSpeech):
   // once playback finishes (or fails) while we're in the speaking state, hand the
-  // turn back to the user.
+  // turn back to the user — unless this speak() carried an onEnd callback (a spoken
+  // sign-off), in which case run that instead of resuming listening.
   useEffect(() => {
     if (!activeRef.current) return
     if (stateRef.current === 'speaking' && (tts.status === 'idle' || tts.status === 'error')) {
-      setStateSafe('listening')
+      const onEnd = speakEndRef.current
+      speakEndRef.current = null
+      if (onEnd) onEnd()
+      else setStateSafe('listening')
     }
   }, [tts.status, setStateSafe])
 
@@ -113,10 +126,17 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
     tracks.forEach((t) => { t.enabled = hot })
   }, [state])
 
-  const speak = useCallback((text: string) => {
+  const speak = useCallback((text: string, opts?: { onEnd?: () => void }) => {
     if (!activeRef.current) return
     const trimmed = (text || '').trim()
-    if (!trimmed) { setStateSafe('listening'); return }
+    const onEnd = opts?.onEnd ?? null
+    if (!trimmed) {
+      // Nothing to say — run the callback (if any) now, else hand back to the user.
+      if (onEnd) onEnd()
+      else setStateSafe('listening')
+      return
+    }
+    speakEndRef.current = onEnd
     setStateSafe('speaking')
     ttsRef.current.play(trimmed)
   }, [setStateSafe])
@@ -128,6 +148,9 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
   const interrupt = useCallback(() => {
     if (!activeRef.current) return
     if (stateRef.current === 'speaking') {
+      // A manual stop is not a natural end — drop any pending sign-off callback so
+      // stopping mid-farewell returns to listening rather than closing the session.
+      speakEndRef.current = null
       // Stop TTS; the tts.status effect above then returns us to listening
       // (which re-enables the mic).
       ttsRef.current.stop()
@@ -144,6 +167,8 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
         // The user began a new turn. If the assistant was mid-reply or mid-think,
         // that's a barge-in: stop the audio and abort in-flight work.
         if (stateRef.current === 'speaking') {
+          // Cut short — drop any pending sign-off callback so it can't fire.
+          speakEndRef.current = null
           ttsRef.current.stop()
           optsRef.current.onBargeIn?.()
           setStateSafe('barge_in')

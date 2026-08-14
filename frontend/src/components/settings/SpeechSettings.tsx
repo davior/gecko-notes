@@ -464,7 +464,7 @@ export default function SpeechSettings() {
             note-changing actions are read back for a spoken confirmation before running. Requires a
             Deepgram API key (above).
           </p>
-          <div className="card p-4">
+          <div className="card p-4 space-y-4">
             <label className="flex items-center justify-between gap-4 cursor-pointer">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Enable voice mode</p>
@@ -479,6 +479,23 @@ export default function SpeechSettings() {
                 onChange={(e) => void updateVoiceMode(e.target.checked)}
               />
             </label>
+
+            <div>
+              <label className="label">Assistant voice</label>
+              <select
+                className="input"
+                value={deepgramTtsModel}
+                onChange={(e) => void updateDeepgramTtsModel(e.target.value)}
+              >
+                {deepgramTtsModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                The Deepgram Aura voice that speaks replies in voice mode. This is the same voice
+                used for Deepgram read-aloud above.
+              </p>
+            </div>
           </div>
         </div>
       )}

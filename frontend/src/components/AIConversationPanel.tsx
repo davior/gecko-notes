@@ -30,6 +30,7 @@ import {
   actionNeedsGeneration,
   formatNoteMeta,
   PLAN_INSTRUCTIONS,
+  VOICE_REPLY_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type PlanAction,
@@ -1248,7 +1249,13 @@ export default function AIConversationPanel({
         streamBufRef.current = ''
         setStreamingText('')
         const req = {
-          instructions: ctx.instructions,
+          // In voice mode the reply is spoken aloud, so steer the planner toward a
+          // concise, natural, Markdown-free "respond" text. Only the planning call is
+          // augmented — deferred note-body generation keeps the base instructions so
+          // saved note content stays fully formatted Markdown.
+          instructions: voiceActiveRef.current
+            ? `${ctx.instructions}\n\n${VOICE_REPLY_INSTRUCTIONS}`
+            : ctx.instructions,
           referenceBlock: ctx.referenceBlock,
           currentNoteText: ctx.currentNoteText || undefined,
           history,
@@ -1462,6 +1469,32 @@ export default function AIConversationPanel({
     return 'unclear'
   }
 
+  // Does the utterance naturally wrap up the conversation ("that'll be all",
+  // "goodbye", "exit voice mode")? Used to let the user end voice mode by speaking
+  // rather than tapping End. Kept deliberately conservative: unambiguous farewells
+  // and explicit "…voice" commands match at any length, while softer "I'm done" /
+  // "that's all" phrasings match only in a short utterance, so a long sentence that
+  // merely contains those words isn't mistaken for a sign-off.
+  function isEndIntent(text: string): boolean {
+    // Drop apostrophes (so contractions collapse: "that's"→"thats") and keep letters/spaces.
+    const norm = text.toLowerCase().replace(/['’]/g, '').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!norm) return false
+    const t = ` ${norm} `
+    // Explicit "exit/stop/close … voice [mode]" commands (verb immediately before "voice").
+    if (/\b(exit|end|close|stop|quit|leave|turn off|shut off)\s+(the\s+)?voice\b/.test(t)) return true
+    // Clear farewells.
+    if (/\b(goodbye|good bye|bye bye|bye now|bye|see ya|good ?night)\b/.test(t)) return true
+    if (/\bsee\s+you\b/.test(t)) return true
+    if (/\b(talk|chat|speak)\s+(to\s+you\s+)?later\b/.test(t)) return true
+    // Softer sign-offs — only when the whole utterance is short.
+    if (norm.split(' ').length <= 6) {
+      if (/\bthat(?:s| is|ll be| will be| would be)\s+(all|it|everything|enough)\b/.test(t)) return true
+      if (/\b(im|i am|we are|were)\s+(all\s+)?(done|finished)\b/.test(t)) return true
+      if (/\b(all done|nothing else|nothing more|no more questions|thats everything)\b/.test(t)) return true
+    }
+    return false
+  }
+
   function describePlanForVoice(plan: Plan, labelMap: Map<string, string>): string {
     const respond = plan.actions
       .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
@@ -1493,6 +1526,13 @@ export default function AIConversationPanel({
       } else {
         voice.speak('Should I go ahead? Please say yes or no.')
       }
+      return
+    }
+    // The user naturally wrapped up ("that'll be all", "goodbye", "exit voice mode"):
+    // acknowledge out loud, then close voice mode once the farewell finishes speaking.
+    // (endVoiceSession tears down TTS immediately, so it must run only after playback.)
+    if (isEndIntent(text)) {
+      voice.speak('Sure, talk to you later!', { onEnd: () => { void endVoiceSession(true) } })
       return
     }
     // Otherwise route the utterance through the same pipeline as typed chat;
