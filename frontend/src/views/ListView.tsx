@@ -63,6 +63,9 @@ export default function ListView() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
+  // The active deep search, if any, lives in the URL (?q=…) so its results are a real
+  // history entry that browser back/forward and refresh can restore. null => not searching.
+  const urlQuery = searchParams.get('q')
 
   const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, archiveNote, createNote } = useNotesStore()
   const foldersStore = useFoldersStore()
@@ -126,6 +129,18 @@ export default function ListView() {
     folder_id: folderId ?? undefined,
   }), [sortOrder, activeCategoryId, folderId])
 
+  // Reflect the active deep search in the URL (?q=…), preserving any folder param.
+  // A blank/null query removes it, returning to the plain folder view.
+  const setUrlQuery = useCallback((q: string | null) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      const trimmed = q?.trim()
+      if (trimmed) next.set('q', trimmed)
+      else next.delete('q')
+      return next
+    })
+  }, [setSearchParams])
+
   const foldersById = useMemo(() => indexById(allFolders), [allFolders])
   const archiveFolder = useMemo(() => findArchiveFolder(allFolders), [allFolders])
   const archiveId = archiveFolder?.id ?? null
@@ -137,22 +152,31 @@ export default function ListView() {
     setTimeout(() => setToast(''), 3000)
   }
 
-  // Reload notes + folder chrome when the folder, sort, or category changes. Also
-  // leaves deep-search-results mode — those controls belong to normal browsing.
+  // Reload notes + folder chrome when the folder, sort, or category changes — but not
+  // while a deep search is active (?q=…), whose results replace the folder view.
   useEffect(() => {
     clearSelection()
+    if (urlQuery !== null) return
     setDeepResults(null)
     loadNotes(buildParams(), true)
     foldersStore.loadContents(folderId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortOrder, activeCategoryId, folderId])
+  }, [sortOrder, activeCategoryId, folderId, urlQuery])
 
-  // As-you-type filtering is purely local (see filterLocally/displayNotes below) — no
-  // network call, so no debounce. Clearing the box back to '' also drops deep-search
-  // results, since the X button and backspacing-to-empty both just set searchQuery('').
+  // The deep-search view lives in the URL (?q=…): whenever that query changes — Enter in
+  // the box, a dynamic-folder click, or browser back/forward/refresh — mirror it into the
+  // box and (re)run the search. No q => not searching, so drop any stale results.
+  useEffect(() => {
+    if (urlQuery === null) { setDeepResults(null); return }
+    setSearchQuery(urlQuery)
+    void runSearch(urlQuery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuery])
+
+  // Changing the search text clears any note selection (local as-you-type filtering
+  // itself happens in filterLocally/displayNotes below — no network call, no debounce).
   useEffect(() => {
     clearSelection()
-    if (searchQuery === '') setDeepResults(null)
   }, [searchQuery])
 
   useEffect(() => {
@@ -227,17 +251,17 @@ export default function ListView() {
     }
   }
 
-  // The "Enter" search tier: run whatever is currently in the search box.
+  // The "Enter" search tier: push the box's query into the URL (?q=…), which drives the
+  // actual search (see the ?q effect) and makes the results a restorable history entry.
   function runDeepSearch() {
-    return runSearch(searchQuery)
+    setUrlQuery(searchQuery.trim() || null)
   }
 
-  // Clicking a dynamic folder fills the search box with its saved query and runs it,
-  // surfacing the results as the usual deep-search overlay (cleared via the box's X).
+  // Clicking a dynamic folder runs its saved query. The query goes into the URL (?q=…),
+  // so the results are a real history entry: pressing Back from a note opened here
+  // returns to this search rather than the note's physical folder.
   function openDynamicFolder(folder: Folder) {
-    const q = folder.search_query ?? ''
-    setSearchQuery(q)
-    void runSearch(q)
+    setUrlQuery(folder.search_query ?? null)
   }
 
   function toggleSelect(id: string) {
@@ -279,7 +303,10 @@ export default function ListView() {
     localStorage.setItem('notesCollapsed', String(next))
   }
 
+  // Opening a folder exits any active search: clear the box and drop ?q by replacing the
+  // params with just the folder (or nothing, for the root "All notes").
   function openFolder(id: string | null) {
+    setSearchQuery('')
     if (id) setSearchParams({ folder: id })
     else setSearchParams({})
   }
@@ -579,7 +606,11 @@ export default function ListView() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value
+                setSearchQuery(v)
+                if (v === '' && urlQuery !== null) setUrlQuery(null)  // emptying the box exits the search
+              }}
               type="text"
               placeholder="Search notes... (press Enter to search everywhere)"
               className="input pl-9 pr-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
@@ -595,7 +626,7 @@ export default function ListView() {
           <div className="flex items-center gap-1.5 px-2 py-1 rounded-full w-fit bg-blue-100 dark:bg-blue-900/40">
             <span className="text-sm font-medium text-blue-800 dark:text-blue-200">Search Results</span>
             <button
-              onClick={() => setSearchQuery('')}
+              onClick={() => { setSearchQuery(''); setDeepResults(null); setUrlQuery(null) }}
               title="Clear search"
               className="p-0.5 rounded-full text-blue-500 dark:text-blue-300 hover:text-blue-700 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
             >

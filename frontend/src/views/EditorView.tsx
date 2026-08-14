@@ -958,7 +958,12 @@ export default function EditorView() {
 
   async function goBack() {
     await flushPendingSave()
-    navigate(folderId ? `/notes?folder=${folderId}` : '/notes')
+    // Prefer real history-back so we return to wherever the user came from — a physical
+    // folder, a dynamic-folder search (?q=…), or another note. location.key === 'default'
+    // means this note was opened directly (deep link / refresh) with no in-app history to
+    // pop, so fall back to the note's own folder.
+    if (location.key !== 'default') navigate(-1)
+    else navigate(folderId ? `/notes?folder=${folderId}` : '/notes')
   }
 
   // Breadcrumb crumb click: flush like goBack, then open that folder's list view
