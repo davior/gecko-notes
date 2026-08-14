@@ -88,8 +88,11 @@ function TreeRow({ node, depth, inArchive, ctx }: { node: FolderNode; depth: num
         title={isDynamic ? folder.search_query ?? undefined : undefined}
       >
         {hasChildren ? (
+          // p-1 makes this button 1.375rem wide (0.25rem×2 padding + 0.875rem icon),
+          // matching the placeholder span below so folder icons line up whether or
+          // not a folder has children.
           <button
-            className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0 text-gray-400"
+            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0 text-gray-400"
             onClick={(e) => { e.stopPropagation(); ctx.toggleExpand(folder.id) }}
             title={isOpen ? 'Collapse' : 'Expand'}
           >
