@@ -1645,6 +1645,7 @@ export default function AIConversationPanel({
           }}
           onCancel={() => { setVoiceConfirmText(null); cancelPlan(); voice.speak('Okay, I cancelled that.') }}
           onEnd={() => void endVoiceSession(true)}
+          onInterrupt={() => voice.interrupt()}
         />
       )}
 

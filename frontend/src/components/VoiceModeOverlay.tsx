@@ -1,4 +1,4 @@
-import { Mic, X, Check, PhoneOff } from 'lucide-react'
+import { Mic, X, Check, PhoneOff, Square } from 'lucide-react'
 import type { VoiceState } from '@/hooks/useVoiceMode'
 
 interface VoiceModeOverlayProps {
@@ -11,6 +11,8 @@ interface VoiceModeOverlayProps {
   onConfirm: () => void
   onCancel: () => void
   onEnd: () => void
+  // Manually stop the assistant: stop playback while speaking, or abort while thinking.
+  onInterrupt: () => void
 }
 
 const STATE_LABEL: Record<VoiceState, string> = {
@@ -35,7 +37,7 @@ const ORB_CLASS: Record<VoiceState, string> = {
 }
 
 export default function VoiceModeOverlay({
-  state, interimText, errorMessage, confirmText, onConfirm, onCancel, onEnd,
+  state, interimText, errorMessage, confirmText, onConfirm, onCancel, onEnd, onInterrupt,
 }: VoiceModeOverlayProps) {
   const pulsing = state === 'listening' || state === 'speaking' || state === 'barge_in' || state === 'connecting'
 
@@ -65,6 +67,17 @@ export default function VoiceModeOverlay({
           <p className="text-xs text-red-500 mt-1 max-w-xs">{errorMessage}</p>
         )}
       </div>
+
+      {/* Manually stop the assistant. The mic stays muted while it speaks, so
+          this button is how you interrupt a read-back. */}
+      {(state === 'speaking' || state === 'thinking') && (
+        <button
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+          onClick={onInterrupt}
+        >
+          <Square className="w-4 h-4" /> {state === 'speaking' ? 'Stop' : 'Cancel'}
+        </button>
+      )}
 
       {/* Live transcript of what the user is saying */}
       {interimText && state !== 'error' && (

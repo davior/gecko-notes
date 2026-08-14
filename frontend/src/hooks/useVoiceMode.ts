@@ -35,6 +35,8 @@ export interface UseVoiceModeReturn {
   speak: (text: string) => void
   /** Mark the assistant as working (used by the panel before a slow turn). */
   setThinking: () => void
+  /** Manually stop the assistant (stop TTS while speaking, or abort while thinking). */
+  interrupt: () => void
 }
 
 export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
@@ -97,6 +99,20 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
     }
   }, [tts.status, setStateSafe])
 
+  // Half-duplex: the mic is only "hot" while we're actively listening. It's muted
+  // during thinking and speaking so Flux hears silence (a disabled track still
+  // yields a continuous, valid WebM stream) and can't (a) mistake the assistant's
+  // own TTS for the user starting a new turn — which was cutting the reply off —
+  // or (b) abort a turn we just started from trailing audio. The user interrupts
+  // the assistant via the on-screen Stop button (interrupt) instead; the mic
+  // re-enables the moment we return to listening.
+  useEffect(() => {
+    const tracks = streamRef.current?.getAudioTracks()
+    if (!tracks) return
+    const hot = state === 'listening'
+    tracks.forEach((t) => { t.enabled = hot })
+  }, [state])
+
   const speak = useCallback((text: string) => {
     if (!activeRef.current) return
     const trimmed = (text || '').trim()
@@ -107,6 +123,18 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
 
   const setThinking = useCallback(() => {
     if (activeRef.current) setStateSafe('thinking')
+  }, [setStateSafe])
+
+  const interrupt = useCallback(() => {
+    if (!activeRef.current) return
+    if (stateRef.current === 'speaking') {
+      // Stop TTS; the tts.status effect above then returns us to listening
+      // (which re-enables the mic).
+      ttsRef.current.stop()
+    } else if (stateRef.current === 'thinking') {
+      optsRef.current.onBargeIn?.()
+      setStateSafe('listening')
+    }
   }, [setStateSafe])
 
   const handleEvent = useCallback((event: FluxStreamEvent) => {
@@ -229,5 +257,6 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
     stop,
     speak,
     setThinking,
+    interrupt,
   }
 }
