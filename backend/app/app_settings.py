@@ -12,6 +12,9 @@ from app.models import AppSetting
 
 REGISTRATION_ENABLED = "registration_enabled"
 EMAIL_VERIFICATION_REQUIRED = "email_verification_required"
+# Instance-wide gate for the opt-in Flux voice mode (default off). Users still
+# need their own per-user toggle + Deepgram key on top of this.
+VOICE_MODE_ENABLED = "voice_mode_enabled"
 
 
 def get_setting(session: Session, key: str, default: Any = None) -> Any:

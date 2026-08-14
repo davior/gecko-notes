@@ -18,6 +18,8 @@ DEFAULT_SETTINGS = {
     # read/written via /api/admin/settings and surfaced publicly via /api/config.
     "registration_enabled": "true",
     "email_verification_required": "true",
+    # Flux voice mode is off by default; an admin opts the instance in.
+    "voice_mode_enabled": "false",
 }
 
 DEFAULT_USER_SETTINGS = {

@@ -2,14 +2,18 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, FilePlus2, History } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, FilePlus2, History, Volume2, Square, AudioLines } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useDictation } from '@/hooks/useDictation'
+import { useTextToSpeech } from '@/hooks/useTextToSpeech'
+import { useVoiceMode } from '@/hooks/useVoiceMode'
+import VoiceModeOverlay from '@/components/VoiceModeOverlay'
 import DictationWaveIcon from '@/components/DictationWaveIcon'
 import NotePickerModal from '@/components/NotePickerModal'
 import { settingsApi } from '@/api/settings'
+import { configApi } from '@/api/config'
 import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
@@ -26,6 +30,7 @@ import {
   actionNeedsGeneration,
   formatNoteMeta,
   PLAN_INSTRUCTIONS,
+  VOICE_REPLY_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type PlanAction,
@@ -380,6 +385,7 @@ export default function AIConversationPanel({
   // DeepSeek set this false and the attach flow drops images before they're sent.
   const supportsImages = activeProvider?.supports_images ?? true
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
+  const deepgramKeyConfigured = useSettingsStore((s) => s.deepgramKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)
   const categories = useCategoriesStore((s) => s.categories)
 
@@ -400,6 +406,8 @@ export default function AIConversationPanel({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  // Read-aloud: which assistant message is currently being spoken (null = none).
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null)
   const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 640 : false))
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     try { return parseInt(localStorage.getItem('ai-panel-width') || '320') } catch { return 320 }
@@ -479,6 +487,39 @@ export default function AIConversationPanel({
     transcribeAudio: falKeyConfigured ? transcribeAudio : undefined,
     sttProvider,
   })
+
+  // Read-aloud for assistant responses. One player instance for the panel — only
+  // one message speaks at a time (tracked by speakingMsgId). The TTS provider
+  // (Deepgram Aura or fal.ai fallback) is resolved server-side.
+  const readAloud = useTextToSpeech()
+  useEffect(() => {
+    if (readAloud.status === 'idle' || readAloud.status === 'error') setSpeakingMsgId(null)
+  }, [readAloud.status])
+
+  // ── Voice mode (Deepgram Flux) ──────────────────────────────────────────────
+  const voiceModeEnabled = useSettingsStore((s) => s.voiceModeEnabled)
+  const [voiceInstanceEnabled, setVoiceInstanceEnabled] = useState(false)
+  useEffect(() => {
+    configApi.get().then((c) => setVoiceInstanceEnabled(c.voice_mode_enabled)).catch(() => { /* pre-auth or older backend */ })
+  }, [])
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  // Read-back text for a note-changing plan awaiting a spoken "yes" (null = none).
+  const [voiceConfirmText, setVoiceConfirmText] = useState<string | null>(null)
+  const voiceActiveRef = useRef(false)
+  const voiceTurnRef = useRef<(t: string) => void>(() => {})
+  // Fresh refs so the socket-driven turn handler never reads stale state.
+  const pendingPlanRef = useRef(pendingPlan)
+  useEffect(() => { pendingPlanRef.current = pendingPlan })
+  const conversationRef = useRef(conversation)
+  useEffect(() => { conversationRef.current = conversation })
+  const voice = useVoiceMode({
+    onUserTurn: (t) => voiceTurnRef.current(t),
+    onBargeIn: () => { abortRef.current?.abort(); genAbortRef.current?.abort() },
+    onError: (msg) => { setError(msg); void endVoiceSession(false) },
+  })
+  // Voice mode is available only when the instance flag, the user's opt-in, and a
+  // Deepgram key are all present.
+  const voiceCapable = voiceInstanceEnabled && voiceModeEnabled && deepgramKeyConfigured
 
   // Send only once a dictation session ends (or Enter is pressed, below) —
   // not after every recognized chunk. `latestSendCtxRef` must be kept fresh
@@ -1208,7 +1249,13 @@ export default function AIConversationPanel({
         streamBufRef.current = ''
         setStreamingText('')
         const req = {
-          instructions: ctx.instructions,
+          // In voice mode the reply is spoken aloud, so steer the planner toward a
+          // concise, natural, Markdown-free "respond" text. Only the planning call is
+          // augmented — deferred note-body generation keeps the base instructions so
+          // saved note content stays fully formatted Markdown.
+          instructions: voiceActiveRef.current
+            ? `${ctx.instructions}\n\n${VOICE_REPLY_INSTRUCTIONS}`
+            : ctx.instructions,
           referenceBlock: ctx.referenceBlock,
           currentNoteText: ctx.currentNoteText || undefined,
           history,
@@ -1312,6 +1359,15 @@ export default function AIConversationPanel({
         const responded = [...withUser, assistantMsg(text)]
         setConversation(responded)
         void persistCurrentSession(responded, sessionId)
+        // Keep the formatted text in the chat, but speak it stripped of Markdown.
+        if (voiceActiveRef.current) voice.speak(stripMarkdownForSpeech(text))
+      } else if (voiceActiveRef.current) {
+        // Voice mode: read the plan back and wait for a spoken confirmation before
+        // running it, regardless of the panel's Plan-mode setting.
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
+        const readback = describePlanForVoice(plan, ctx.labelMap)
+        setVoiceConfirmText(readback)
+        voice.speak(readback)
       } else if (planMode) {
         setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
       } else {
@@ -1331,6 +1387,7 @@ export default function AIConversationPanel({
         // they typed. They can retry by editing the message.
         setConversation(withUser)
         void persistCurrentSession(withUser, sessionId)
+        if (voiceActiveRef.current) voice.speak('Sorry, something went wrong.')
       }
     } finally {
       setLoading(false)
@@ -1368,6 +1425,162 @@ export default function AIConversationPanel({
       setCopiedId(id)
       setTimeout(() => setCopiedId(null), 2000)
     })
+  }
+
+  // Reduce a Markdown response to plain-ish prose so it's read aloud (both the
+  // per-message button and voice mode) without voicing the markup — asterisks,
+  // backticks, link URLs, cite tags, heading hashes, list bullets, table pipes.
+  function stripMarkdownForSpeech(md: string): string {
+    return md
+      .replace(/<cite[^>]*>([\s\S]*?)<\/cite>/g, '$1')       // cite tags → their text
+      .replace(/```[\s\S]*?```/g, ' ')                        // fenced code blocks
+      .replace(/^\s{0,3}\|?[\s:|-]*-[\s:|-]*$/gm, '')         // table separators / horizontal rules
+      .replace(/\|/g, ' ')                                    // table cell pipes → spaces
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')               // images → alt text
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')                // links → label text
+      .replace(/`([^`]+)`/g, '$1')                            // inline code
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')                     // heading hashes
+      .replace(/^\s{0,3}>\s?/gm, '')                          // blockquotes
+      .replace(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/gm, '')          // list markers (-, *, +, 1., 1))
+      .replace(/[*_~]+/g, '')                                 // bold / italic / strikethrough
+      .replace(/[ \t]{2,}/g, ' ')                             // collapse runs of spaces
+      .replace(/\n{3,}/g, '\n\n')                             // collapse extra blank lines
+      .trim()
+  }
+
+  function handleReadAloud(content: string, id: string) {
+    // Toggle: clicking the message that's speaking stops it; clicking any other
+    // starts it (startPlayback cancels any current playback inside the hook).
+    if (speakingMsgId === id && readAloud.isSpeaking) {
+      readAloud.stop()
+      setSpeakingMsgId(null)
+      return
+    }
+    const text = stripMarkdownForSpeech(content)
+    if (!text) return
+    setSpeakingMsgId(id)
+    readAloud.play(text)
+  }
+
+  function interpretYesNo(text: string): 'yes' | 'no' | 'unclear' {
+    const t = ` ${text.toLowerCase().replace(/[^a-z\s']/g, ' ')} `
+    if (/\b(yes|yeah|yep|yup|sure|confirm|go ahead|do it|please do|okay|ok|correct|affirmative)\b/.test(t)) return 'yes'
+    if (/\b(no|nope|nah|cancel|stop|don't|do not|never mind|nevermind|abort|negative)\b/.test(t)) return 'no'
+    return 'unclear'
+  }
+
+  // Does the utterance naturally wrap up the conversation ("that'll be all",
+  // "goodbye", "exit voice mode")? Used to let the user end voice mode by speaking
+  // rather than tapping End. Kept deliberately conservative: unambiguous farewells
+  // and explicit "…voice" commands match at any length, while softer "I'm done" /
+  // "that's all" phrasings match only in a short utterance, so a long sentence that
+  // merely contains those words isn't mistaken for a sign-off.
+  function isEndIntent(text: string): boolean {
+    // Drop apostrophes (so contractions collapse: "that's"→"thats") and keep letters/spaces.
+    const norm = text.toLowerCase().replace(/['’]/g, '').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!norm) return false
+    const t = ` ${norm} `
+    // Explicit "exit/stop/close … voice [mode]" commands (verb immediately before "voice").
+    if (/\b(exit|end|close|stop|quit|leave|turn off|shut off)\s+(the\s+)?voice\b/.test(t)) return true
+    // Clear farewells.
+    if (/\b(goodbye|good bye|bye bye|bye now|bye|see ya|good ?night)\b/.test(t)) return true
+    if (/\bsee\s+you\b/.test(t)) return true
+    if (/\b(talk|chat|speak)\s+(to\s+you\s+)?later\b/.test(t)) return true
+    // Softer sign-offs — only when the whole utterance is short.
+    if (norm.split(' ').length <= 6) {
+      if (/\bthat(?:s| is|ll be| will be| would be)\s+(all|it|everything|enough)\b/.test(t)) return true
+      if (/\b(im|i am|we are|were)\s+(all\s+)?(done|finished)\b/.test(t)) return true
+      if (/\b(all done|nothing else|nothing more|no more questions|thats everything)\b/.test(t)) return true
+    }
+    return false
+  }
+
+  function describePlanForVoice(plan: Plan, labelMap: Map<string, string>): string {
+    const respond = plan.actions
+      .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
+      .filter(Boolean)
+      .join(' ')
+    const labels = plan.actions
+      .filter((a) => a.type !== 'respond')
+      .map((a) => a.description || defaultActionLabel(a, labelMap))
+    const list = labels.length ? labels.join(', then ') : 'make some changes'
+    const prefix = respond ? `${respond} ` : ''
+    return stripMarkdownForSpeech(`${prefix}I'd like to ${list}. Should I go ahead?`)
+  }
+
+  async function handleVoiceUserTurn(transcript: string) {
+    const text = transcript.trim()
+    if (!text) return
+    // A note-changing plan is awaiting a spoken confirmation: interpret yes/no.
+    if (pendingPlanRef.current) {
+      const decision = interpretYesNo(text)
+      if (decision === 'yes') {
+        const pp = pendingPlanRef.current
+        setVoiceConfirmText(null)
+        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+        voice.speak('Done.')
+      } else if (decision === 'no') {
+        setVoiceConfirmText(null)
+        cancelPlan()
+        voice.speak('Okay, I cancelled that.')
+      } else {
+        voice.speak('Should I go ahead? Please say yes or no.')
+      }
+      return
+    }
+    // The user naturally wrapped up ("that'll be all", "goodbye", "exit voice mode"):
+    // acknowledge out loud, then close voice mode once the farewell finishes speaking.
+    // (endVoiceSession tears down TTS immediately, so it must run only after playback.)
+    if (isEndIntent(text)) {
+      voice.speak('Sure, talk to you later!', { onEnd: () => { void endVoiceSession(true) } })
+      return
+    }
+    // Otherwise route the utterance through the same pipeline as typed chat;
+    // handleSend speaks the reply / reads back a plan when voiceActiveRef is set.
+    await handleSend(text, conversationRef.current)
+  }
+  useEffect(() => { voiceTurnRef.current = (t) => { void handleVoiceUserTurn(t) } })
+
+  async function openVoiceSession() {
+    if (!aiService) { setError('Select an AI provider first.'); return }
+    setError('')
+    setVoiceConfirmText(null)
+    setVoiceOpen(true)
+    voiceActiveRef.current = true
+    // Ensure a session exists so the transcript persists into it.
+    if (!currentSessionId && sessionsEnabled) {
+      await autoCreateSession('Voice session')
+    }
+    await voice.start()
+  }
+
+  async function endVoiceSession(withSummary: boolean) {
+    const wasActive = voiceActiveRef.current
+    voiceActiveRef.current = false
+    setVoiceConfirmText(null)
+    voice.stop()
+    setVoiceOpen(false)
+    if (withSummary && wasActive) await appendVoiceSummary()
+  }
+
+  async function appendVoiceSummary() {
+    const svc = aiService
+    if (!svc) return
+    const convo = conversationRef.current
+    if (convo.length === 0) return
+    try {
+      const transcript = convo
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n')
+      const summary = await svc.generateSummary(transcript, 'Summarize this voice conversation in 2-3 sentences.')
+      if (summary && summary.trim()) {
+        const withSummary = [...conversationRef.current, assistantMsg(`**Voice session summary**\n\n${summary.trim()}`)]
+        setConversation(withSummary)
+        void persistCurrentSession(withSummary)
+      }
+    } catch {
+      /* summary is best-effort — never block closing the session */
+    }
   }
 
   function handleDelete(idx: number) {
@@ -1430,6 +1643,15 @@ export default function AIConversationPanel({
           AI Assistant
         </div>
         <div className="flex items-center gap-1">
+          {voiceCapable && (
+            <button
+              onClick={() => (voiceOpen ? void endVoiceSession(true) : void openVoiceSession())}
+              className={`btn-ghost p-1 ${voiceOpen ? 'text-indigo-500' : ''}`}
+              title={voiceOpen ? 'End voice mode' : 'Start voice mode'}
+            >
+              <AudioLines className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={() => void handleNewSession()}
             className="btn-ghost p-1"
@@ -1451,6 +1673,28 @@ export default function AIConversationPanel({
           </button>
         </div>
       </div>
+
+      {/* Voice mode overlay (Deepgram Flux) */}
+      {voiceOpen && (
+        <VoiceModeOverlay
+          state={voice.state}
+          interimText={voice.interimText}
+          errorMessage={voice.errorMessage}
+          confirmText={voiceConfirmText}
+          onConfirm={() => {
+            const pp = pendingPlanRef.current
+            if (!pp) return
+            setVoiceConfirmText(null)
+            void (async () => {
+              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+              voice.speak('Done.')
+            })()
+          }}
+          onCancel={() => { setVoiceConfirmText(null); cancelPlan(); voice.speak('Okay, I cancelled that.') }}
+          onEnd={() => void endVoiceSession(true)}
+          onInterrupt={() => voice.interrupt()}
+        />
+      )}
 
       {/* Session history panel */}
       {showHistory && (
@@ -1639,6 +1883,19 @@ export default function AIConversationPanel({
                     <><Copy className="w-3 h-3" />Copy</>
                   )}
                 </button>
+                {(falKeyConfigured || deepgramKeyConfigured) && (
+                  <button
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors px-1.5 py-0.5 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                    title={speakingMsgId === msg.id && readAloud.isSpeaking ? 'Stop reading' : 'Read aloud'}
+                    onClick={() => handleReadAloud(msg.content, msg.id)}
+                  >
+                    {speakingMsgId === msg.id && readAloud.isSpeaking ? (
+                      <><Square className="w-3 h-3" />{readAloud.status === 'loading' ? 'Loading…' : 'Stop'}</>
+                    ) : (
+                      <><Volume2 className="w-3 h-3" />Read aloud</>
+                    )}
+                  </button>
+                )}
                 {!isList && (
                   <button
                     className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"

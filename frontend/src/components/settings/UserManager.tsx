@@ -167,6 +167,17 @@ export default function UserManager() {
                 onChange={(v) => updateSetting({ email_verification_required: v })}
               />
             </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Voice mode (Deepgram Flux)</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Enables the opt-in hands-free voice assistant. Each user must still turn it on in their Speech settings and configure a Deepgram key.</p>
+              </div>
+              <Toggle
+                checked={adminSettings.voice_mode_enabled}
+                disabled={savingSetting}
+                onChange={(v) => updateSetting({ voice_mode_enabled: v })}
+              />
+            </div>
           </div>
         </div>
       )}

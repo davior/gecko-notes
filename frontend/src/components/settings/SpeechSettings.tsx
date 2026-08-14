@@ -1,8 +1,9 @@
-import { useState } from 'react'
-import { Volume2, Square, Plus, Trash2, X, Eye, EyeOff } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Volume2, Square, Plus, Trash2, X, Eye, EyeOff, Mic } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settings'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
-import type { SttProvider } from '@/api/settings'
+import { configApi } from '@/api/config'
+import type { SttProvider, TtsProvider } from '@/api/settings'
 
 function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: string[]) => string | void; onClose: () => void }) {
   const [modelId, setModelId] = useState('')
@@ -83,9 +84,16 @@ export default function SpeechSettings() {
   const {
     falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels,
     sttModel, sttModels, sttProvider, deepgramModel, deepgramModels, deepgramKeyConfigured,
+    ttsProvider, deepgramTtsModel, deepgramTtsModels, voiceModeEnabled,
     updateAppSettings, updateSpeechConfig,
   } = useSettingsStore()
   const [error, setError] = useState<string | null>(null)
+  // Whether the instance-wide voice-mode feature flag is on (admin-controlled).
+  // The per-user toggle below is only meaningful — and only shown — when it is.
+  const [voiceInstanceEnabled, setVoiceInstanceEnabled] = useState(false)
+  useEffect(() => {
+    configApi.get().then((c) => setVoiceInstanceEnabled(c.voice_mode_enabled)).catch(() => {})
+  }, [])
   const [showAddModal, setShowAddModal] = useState(false)
   const [deepgramKeyInput, setDeepgramKeyInput] = useState('')
   const [showDeepgramKey, setShowDeepgramKey] = useState(false)
@@ -131,6 +139,33 @@ export default function SpeechSettings() {
     }
   }
 
+  async function updateTtsProvider(provider: TtsProvider) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ tts_provider: provider })
+    } catch {
+      setError('Failed to save read-aloud provider selection')
+    }
+  }
+
+  async function updateDeepgramTtsModel(model: string) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ deepgram_tts_model: model })
+    } catch {
+      setError('Failed to save Deepgram voice selection')
+    }
+  }
+
+  async function updateVoiceMode(enabled: boolean) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ voice_mode_enabled: enabled })
+    } catch {
+      setError('Failed to save voice mode preference')
+    }
+  }
+
   async function saveDeepgramKey(value: string) {
     setSavingDeepgramKey(true)
     setError(null)
@@ -170,11 +205,10 @@ export default function SpeechSettings() {
       <div>
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Read-aloud and the fal.ai speech-to-text provider run on fal.ai and share the same API key
-          as image generation. Set that key on the <span className="font-medium">Providers</span> tab,
-          under <span className="font-medium">Media Provider</span>; once it's configured, dictation
-          works in all browsers and notes can be read aloud. Deepgram realtime streaming dictation uses
-          its own separate API key, set directly below.
+          Read-aloud can run on Deepgram Aura (streaming) or fal.ai. The fal.ai key is shared with
+          image generation — set it on the <span className="font-medium">Providers</span> tab, under{' '}
+          <span className="font-medium">Media Provider</span>. Deepgram (used for both realtime dictation
+          and Aura read-aloud) uses its own separate API key, set directly below.
         </p>
       </div>
 
@@ -188,13 +222,47 @@ export default function SpeechSettings() {
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       <div>
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">TTS Model &amp; Voice</h3>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Read-aloud (TTS)</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Choose the TTS model and voice used when reading notes aloud.
+          Choose the provider and voice used when reading assistant responses and notes aloud.
+          Deepgram Aura streams the audio; fal.ai is kept as a fallback (and provides its own voices).
         </p>
         <div className="card p-4 space-y-4">
           <div>
-            <label className="label">Model</label>
+            <label className="label">Provider</label>
+            <select
+              className="input"
+              value={ttsProvider}
+              onChange={(e) => void updateTtsProvider(e.target.value as TtsProvider)}
+            >
+              <option value="auto">Automatic (Deepgram if configured, else fal.ai)</option>
+              <option value="deepgram">Deepgram (Aura streaming)</option>
+              <option value="fal">fal.ai</option>
+            </select>
+          </div>
+
+          {ttsProvider !== 'fal' && (
+            <div>
+              <label className="label">Deepgram voice</label>
+              <select
+                className="input"
+                value={deepgramTtsModel}
+                onChange={(e) => void updateDeepgramTtsModel(e.target.value)}
+              >
+                {deepgramTtsModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+              {!deepgramKeyConfigured && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  Add a Deepgram API key below to use Deepgram read-aloud; until then fal.ai is used.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="label">fal.ai model</label>
             <select
               className="input"
               value={ttsModel}
@@ -207,7 +275,7 @@ export default function SpeechSettings() {
           </div>
 
           <div>
-            <label className="label">Voice</label>
+            <label className="label">fal.ai voice</label>
             <select
               className="input"
               value={voice}
@@ -222,7 +290,7 @@ export default function SpeechSettings() {
           <div className="flex items-center gap-3">
             <button
               className="btn-primary text-sm flex items-center gap-1.5"
-              disabled={!falKeyConfigured}
+              disabled={!falKeyConfigured && !deepgramKeyConfigured}
               onClick={() => {
                 if (tts.isSpeaking) tts.stop()
                 else tts.play('Hello, this is a preview of the selected voice.')
@@ -384,6 +452,53 @@ export default function SpeechSettings() {
           </div>
         </div>
       </div>
+
+      {voiceInstanceEnabled && (
+        <div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1 flex items-center gap-2">
+            <Mic className="w-4 h-4" /> Voice mode (Deepgram Flux)
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            A hands-free, conversational voice assistant. When on, a voice-mode toggle appears in the
+            AI Assistant. Speech is transcribed by Deepgram Flux and spoken back with Deepgram Aura;
+            note-changing actions are read back for a spoken confirmation before running. Requires a
+            Deepgram API key (above).
+          </p>
+          <div className="card p-4 space-y-4">
+            <label className="flex items-center justify-between gap-4 cursor-pointer">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Enable voice mode</p>
+                {!deepgramKeyConfigured && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Add a Deepgram API key above to use voice mode.</p>
+                )}
+              </div>
+              <input
+                type="checkbox"
+                className="h-5 w-5 accent-indigo-600"
+                checked={voiceModeEnabled}
+                onChange={(e) => void updateVoiceMode(e.target.checked)}
+              />
+            </label>
+
+            <div>
+              <label className="label">Assistant voice</label>
+              <select
+                className="input"
+                value={deepgramTtsModel}
+                onChange={(e) => void updateDeepgramTtsModel(e.target.value)}
+              >
+                {deepgramTtsModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                The Deepgram Aura voice that speaks replies in voice mode. This is the same voice
+                used for Deepgram read-aloud above.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddModal && (
         <AddCustomModelModal onAdd={addCustomModel} onClose={() => setShowAddModal(false)} />

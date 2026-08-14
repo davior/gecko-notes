@@ -745,8 +745,10 @@ class TwoFactorDisableRequest(BaseModel):
 class AdminSettings(BaseModel):
     registration_enabled: bool
     email_verification_required: bool
+    voice_mode_enabled: bool = False
 
 
 class AdminSettingsUpdate(BaseModel):
     registration_enabled: Optional[bool] = None
     email_verification_required: Optional[bool] = None
+    voice_mode_enabled: Optional[bool] = None

@@ -6,6 +6,7 @@ export interface AppConfig {
   registration_enabled: boolean
   email_verification_required: boolean
   email_enabled: boolean
+  voice_mode_enabled: boolean
 }
 
 export const configApi = {

@@ -12,7 +12,7 @@ from app.database import get_session
 from app.models import User
 from app.schemas import AdminSettings, AdminSettingsUpdate
 from app.app_settings import (
-    get_bool, set_setting, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED,
+    get_bool, set_setting, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED, VOICE_MODE_ENABLED,
 )
 
 router = APIRouter()
@@ -32,6 +32,7 @@ def _current(session: Session) -> AdminSettings:
     return AdminSettings(
         registration_enabled=get_bool(session, REGISTRATION_ENABLED, True),
         email_verification_required=get_bool(session, EMAIL_VERIFICATION_REQUIRED, True),
+        voice_mode_enabled=get_bool(session, VOICE_MODE_ENABLED, False),
     )
 
 
@@ -49,5 +50,7 @@ def update_admin_settings(payload: AdminSettingsUpdate, request: Request,
         set_setting(session, REGISTRATION_ENABLED, payload.registration_enabled)
     if payload.email_verification_required is not None:
         set_setting(session, EMAIL_VERIFICATION_REQUIRED, payload.email_verification_required)
+    if payload.voice_mode_enabled is not None:
+        set_setting(session, VOICE_MODE_ENABLED, payload.voice_mode_enabled)
     session.commit()
     return _current(session)

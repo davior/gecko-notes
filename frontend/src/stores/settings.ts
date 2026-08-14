@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, DEFAULT_DEEPGRAM_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate, type SttProvider } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, DEFAULT_DEEPGRAM_MODEL, DEFAULT_DEEPGRAM_TTS_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate, type SttProvider, type TtsProvider } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -35,6 +35,12 @@ interface SettingsState {
   sttProvider: SttProvider
   deepgramModel: string
   deepgramModels: STTModel[]
+  // Read-aloud (TTS) provider — Deepgram Aura streaming with fal.ai fallback.
+  ttsProvider: TtsProvider
+  deepgramTtsModel: string
+  deepgramTtsModels: STTModel[]
+  // Per-user opt-in for Flux voice mode.
+  voiceModeEnabled: boolean
   updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
@@ -152,6 +158,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sttProvider: 'auto',
   deepgramModel: DEFAULT_DEEPGRAM_MODEL,
   deepgramModels: [],
+  ttsProvider: 'auto',
+  deepgramTtsModel: DEFAULT_DEEPGRAM_TTS_MODEL,
+  deepgramTtsModels: [],
+  voiceModeEnabled: false,
 
   async loadSettings() {
     set({ loading: true })
@@ -201,6 +211,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         sttProvider: speechSettings.stt_provider,
         deepgramModel: speechSettings.deepgram_model,
         deepgramModels: speechSettings.deepgram_models,
+        ttsProvider: speechSettings.tts_provider,
+        deepgramTtsModel: speechSettings.deepgram_tts_model,
+        deepgramTtsModels: speechSettings.deepgram_tts_models,
+        voiceModeEnabled: speechSettings.voice_mode_enabled,
       })
     } catch {
       // no speech endpoint — falKeyConfigured stays false, fall back to the
@@ -253,6 +267,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       sttModel: updated.stt_model,
       sttProvider: updated.stt_provider,
       deepgramModel: updated.deepgram_model,
+      ttsProvider: updated.tts_provider,
+      deepgramTtsModel: updated.deepgram_tts_model,
+      voiceModeEnabled: updated.voice_mode_enabled,
       deepgramKeyConfigured: updated.has_deepgram_key,
     })
     if (config.tts_model && voice !== state.voice) {
@@ -433,6 +450,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       sttProvider: 'auto',
       deepgramModel: DEFAULT_DEEPGRAM_MODEL,
       deepgramModels: [],
+      ttsProvider: 'auto',
+      deepgramTtsModel: DEFAULT_DEEPGRAM_TTS_MODEL,
+      deepgramTtsModels: [],
+      voiceModeEnabled: false,
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })
   },

@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import ipaddress
 import json
+from pathlib import Path
 import logging
 import urllib.parse
 import uuid
@@ -1291,6 +1293,21 @@ DEEPGRAM_STT_MODELS = [
 ]
 _STT_PROVIDERS = {"auto", "deepgram", "fal"}
 
+# Deepgram streaming TTS (Aura) — an alternative read-aloud provider to fal.ai,
+# selectable per-user via `tts_provider`. Shares the same encrypted Deepgram key
+# as realtime STT. Voice ids are Aura model ids (not fal.run endpoint paths), so
+# — like DEEPGRAM_STT_MODELS — they're hardcoded rather than in the fal catalog.
+DEFAULT_DEEPGRAM_TTS_MODEL = "aura-2-thalia-en"
+DEEPGRAM_TTS_MODELS = [
+    {"id": "aura-2-thalia-en", "label": "Thalia — female, US (Aura 2)"},
+    {"id": "aura-2-andromeda-en", "label": "Andromeda — female, US (Aura 2)"},
+    {"id": "aura-2-apollo-en", "label": "Apollo — male, US (Aura 2)"},
+    {"id": "aura-2-arcas-en", "label": "Arcas — male, US (Aura 2)"},
+    {"id": "aura-asteria-en", "label": "Asteria — female, US (Aura 1)"},
+    {"id": "aura-orion-en", "label": "Orion — male, US (Aura 1)"},
+]
+_TTS_PROVIDERS = {"auto", "deepgram", "fal"}
+
 # Curated ElevenLabs voices offered in the read-aloud picker. Values are passed
 # straight to fal's `voice` field — edit this list to expose different voices.
 FAL_TTS_VOICES = [
@@ -1302,7 +1319,7 @@ FAL_TTS_VOICES = [
 # Curated TTS/STT model lists now live in ModelCatalogEntry (admin-editable via
 # /model-catalog, seeded in seed.py) — see _load_catalog() above.
 
-_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model}
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model, tts_provider, deepgram_tts_model, voice_mode_enabled}
 _DEEPGRAM_KEY = "deepgram_api_key"     # encrypted; separate from fal's key
 
 _TTS_MAX_CHARS = 2000
@@ -1325,12 +1342,20 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
     stt_provider = cfg.get("stt_provider") or "auto"
     if stt_provider not in _STT_PROVIDERS:
         stt_provider = "auto"
+    tts_provider = cfg.get("tts_provider") or "auto"
+    if tts_provider not in _TTS_PROVIDERS:
+        tts_provider = "auto"
     return {
         "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
         "custom_tts_models": custom,
         "stt_model": cfg.get("stt_model") or DEFAULT_STT_MODEL,
         "stt_provider": stt_provider,
         "deepgram_model": cfg.get("deepgram_model") or DEFAULT_DEEPGRAM_MODEL,
+        "tts_provider": tts_provider,
+        "deepgram_tts_model": cfg.get("deepgram_tts_model") or DEFAULT_DEEPGRAM_TTS_MODEL,
+        # Per-user opt-in for Flux voice mode (only usable when the instance-wide
+        # feature flag is also on and a Deepgram key is configured).
+        "voice_mode_enabled": bool(cfg.get("voice_mode_enabled", False)),
     }
 
 
@@ -1399,6 +1424,10 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
         "stt_provider": cfg["stt_provider"],
         "deepgram_model": cfg["deepgram_model"],
         "deepgram_models": DEEPGRAM_STT_MODELS,
+        "tts_provider": cfg["tts_provider"],
+        "deepgram_tts_model": cfg["deepgram_tts_model"],
+        "deepgram_tts_models": DEEPGRAM_TTS_MODELS,
+        "voice_mode_enabled": cfg["voice_mode_enabled"],
     }
 
 
@@ -1491,6 +1520,9 @@ class SpeechConfigUpdate(BaseModel):
     stt_model: Optional[str] = None
     stt_provider: Optional[str] = None  # "auto" | "deepgram" | "fal"
     deepgram_model: Optional[str] = None
+    tts_provider: Optional[str] = None  # "auto" | "deepgram" | "fal"
+    deepgram_tts_model: Optional[str] = None
+    voice_mode_enabled: Optional[bool] = None
     # Tri-state, same convention as ImageSettingsUpdate.api_key: omitted/None leaves
     # the stored key untouched; "" removes it; a non-empty value replaces it.
     deepgram_api_key: Optional[str] = None
@@ -1523,6 +1555,12 @@ def update_speech_config(
         cfg["stt_provider"] = payload.stt_provider
     if payload.deepgram_model is not None:
         cfg["deepgram_model"] = payload.deepgram_model
+    if payload.tts_provider is not None and payload.tts_provider in _TTS_PROVIDERS:
+        cfg["tts_provider"] = payload.tts_provider
+    if payload.deepgram_tts_model is not None:
+        cfg["deepgram_tts_model"] = payload.deepgram_tts_model
+    if payload.voice_mode_enabled is not None:
+        cfg["voice_mode_enabled"] = payload.voice_mode_enabled
 
     # Persist to database
     _upsert_user_setting(session, user_id, _SPEECH_CONFIG, json.dumps(cfg))
@@ -1534,35 +1572,86 @@ def update_speech_config(
         "stt_model": cfg["stt_model"],
         "stt_provider": cfg["stt_provider"],
         "deepgram_model": cfg["deepgram_model"],
+        "tts_provider": cfg["tts_provider"],
+        "deepgram_tts_model": cfg["deepgram_tts_model"],
+        "voice_mode_enabled": cfg["voice_mode_enabled"],
         "has_deepgram_key": bool(load_deepgram_api_key(session, user_id)),
     }
 
 
-@router.post("/speech/tts")
-async def synthesize_speech(
-    payload: TTSRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    user_id = _get_user_id(request)
-    api_key = load_fal_api_key(session, user_id)
-    if not api_key:
-        raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
+# ─── Read-aloud TTS cache ─────────────────────────────────────────────────────
+# Optional per-response cache: hash-named mp3 files so replaying a response (or
+# re-synthesising an identical chunk) never re-bills the provider. Keyed by
+# provider+voice+text and bounded by a simple oldest-first prune. Entirely
+# best-effort — any filesystem error just falls through to a live synthesis.
+_TTS_CACHE_DIR = Path(_MEDIA_ROOT) / "_tts_cache"
+_TTS_CACHE_MAX_FILES = 500
 
-    text = (payload.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
-    if len(text) > _TTS_MAX_CHARS:
-        raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
 
-    # Load user's selected TTS model and its available voices
+def _tts_cache_key(provider: str, voice: str, text: str) -> str:
+    return hashlib.sha256(f"{provider}\x00{voice}\x00{text}".encode("utf-8")).hexdigest()
+
+
+def _tts_cache_get(key: str) -> Optional[bytes]:
+    try:
+        path = _TTS_CACHE_DIR / f"{key}.mp3"
+        if path.is_file():
+            return path.read_bytes()
+    except Exception:
+        pass
+    return None
+
+
+def _tts_cache_put(key: str, data: bytes) -> None:
+    try:
+        _TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (_TTS_CACHE_DIR / f"{key}.mp3").write_bytes(data)
+        files = sorted(_TTS_CACHE_DIR.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+        for old in files[:-_TTS_CACHE_MAX_FILES]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+async def _deepgram_tts(api_key: str, voice_model: str, text: str) -> bytes:
+    """Synthesise `text` via Deepgram's REST TTS (Aura) and return mp3 bytes.
+
+    /v1/speak returns mp3 by default; we pin encoding=mp3 so the returned bytes
+    are byte-for-byte compatible with the existing fal path (audio/mpeg blobs the
+    frontend player already handles). Raises HTTPException on any failure so the
+    caller can decide whether to fall back to fal."""
+    url = f"https://api.deepgram.com/v1/speak?model={urllib.parse.quote(voice_model)}&encoding=mp3"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            resp = await http.post(
+                url,
+                headers={"Authorization": f"Token {api_key}", "Content-Type": "application/json"},
+                json={"text": text},
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": f"Deepgram request failed: {type(e).__name__}"})
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail={"code": "deepgram_error", "message": resp.text[:500]})
+    data = resp.content
+    if len(data) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
+    return data
+
+
+async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voice_hint: Optional[str] = None) -> Response:
+    """Synthesise `text` via the user's selected fal.ai TTS model and return the audio.
+    This is the original read-aloud path, unchanged; the provider router below calls
+    it directly, or as the fallback when Deepgram is unavailable under `auto`."""
     speech_cfg = load_speech_config(session, user_id)
     tts_model = speech_cfg["tts_model"]
     available_voices = get_voices_for_model(session, tts_model, speech_cfg["custom_tts_models"])
 
     # Coerce unknown/legacy voices (e.g. a stale value persisted for a different
     # model) to one this model actually supports, so fal never rejects the voice.
-    voice = (payload.model or "").strip()
+    voice = (voice_hint or "").strip()
     if voice not in available_voices:
         voice = available_voices[0] if available_voices else DEFAULT_TTS_VOICE
 
@@ -1604,6 +1693,66 @@ async def synthesize_speech(
     )
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
     return Response(content=data, media_type=media_type)
+
+
+@router.post("/speech/tts")
+async def synthesize_speech(
+    payload: TTSRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
+    if len(text) > _TTS_MAX_CHARS:
+        raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
+
+    speech_cfg = load_speech_config(session, user_id)
+    tts_provider = speech_cfg["tts_provider"]
+    deepgram_key = load_deepgram_api_key(session, user_id)
+    fal_key = load_fal_api_key(session, user_id)
+
+    # Resolve the effective provider. "auto" prefers Deepgram when its key is set,
+    # otherwise fal.ai; explicit "deepgram"/"fal" are honoured as chosen.
+    if tts_provider == "deepgram":
+        use_deepgram = True
+    elif tts_provider == "fal":
+        use_deepgram = False
+    else:  # auto
+        use_deepgram = bool(deepgram_key)
+
+    if use_deepgram and not deepgram_key:
+        raise HTTPException(status_code=400, detail={"code": "no_deepgram_key", "message": "Deepgram API key is not configured"})
+    if not use_deepgram and not fal_key:
+        raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
+
+    # ── Deepgram (Aura) path ──────────────────────────────────────────────────
+    if use_deepgram:
+        dg_voice = speech_cfg["deepgram_tts_model"] or DEFAULT_DEEPGRAM_TTS_MODEL
+        cache_key = _tts_cache_key("deepgram", dg_voice, text)
+        cached = _tts_cache_get(cache_key)
+        if cached is not None:
+            return Response(content=cached, media_type="audio/mpeg")
+        try:
+            data = await _deepgram_tts(deepgram_key, dg_voice, text)
+        except HTTPException:
+            # Under "auto", degrade gracefully to fal rather than failing the
+            # read-aloud outright; an explicit "deepgram" choice surfaces the error.
+            if tts_provider == "auto" and fal_key:
+                logger.warning("Deepgram TTS failed for user %s; falling back to fal.ai", user_id)
+                return await _fal_tts(session, user_id, fal_key, text, voice_hint=payload.model)
+            raise
+        _tts_cache_put(cache_key, data)
+        _record_usage(
+            session, user_id, "tts", dg_voice, len(text), "chars",
+            provider="deepgram", cost=None, cost_estimated=True,
+        )
+        return Response(content=data, media_type="audio/mpeg")
+
+    # ── fal.ai path (unchanged) ───────────────────────────────────────────────
+    return await _fal_tts(session, user_id, fal_key, text, voice_hint=payload.model)
 
 
 @router.get("/usage")
