@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
-from app.routers import notes, categories, media, settings, folders, annotations, transcription, images, stt_stream
+from app.routers import notes, categories, media, settings, folders, annotations, transcription, images, stt_stream, flux_stream
 from app.thumbnails import backfill_thumbnails
 from app.routers import auth as auth_router
 from app.routers import users as users_router
@@ -27,7 +27,7 @@ from app.routers import shared as shared_router
 from app.routers import ai_sessions as ai_sessions_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.mail import email_enabled
-from app.app_settings import get_bool, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED
+from app.app_settings import get_bool, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED, VOICE_MODE_ENABLED
 from app.models import AIProvider
 from sqlmodel import Session, select
 
@@ -149,6 +149,7 @@ app.include_router(folders.router, prefix="/api/folders", tags=["folders"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(transcription.router, prefix="/api/transcription", tags=["transcription"])
 app.include_router(stt_stream.router, prefix="/api/stt-stream", tags=["stt-stream"])
+app.include_router(flux_stream.router, prefix="/api/flux-stream", tags=["flux-stream"])
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])
@@ -183,4 +184,6 @@ def app_config(session: Session = Depends(get_session)):
         # Effective only when email is actually configured (see auth._verification_required).
         "email_verification_required": mail_on and get_bool(session, EMAIL_VERIFICATION_REQUIRED, True),
         "email_enabled": mail_on,
+        # Instance-wide gate for the opt-in Flux voice mode.
+        "voice_mode_enabled": get_bool(session, VOICE_MODE_ENABLED, False),
     }

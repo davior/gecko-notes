@@ -3,6 +3,7 @@ import client from './client'
 export interface AdminSettings {
   registration_enabled: boolean
   email_verification_required: boolean
+  voice_mode_enabled: boolean
 }
 
 export const adminApi = {
