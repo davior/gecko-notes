@@ -427,6 +427,13 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Dynamic folders: a non-null search_query turns a folder into a saved search
+        # that runs its query on click instead of opening a directory.
+        try:
+            conn.execute(text("ALTER TABLE folder ADD COLUMN search_query TEXT"))
+            conn.commit()
+        except Exception:
+            pass
         # Backfill stt_model into existing users' speech_gen_config, so the stored
         # JSON blob is materialized consistently with the new tts_model/stt_model
         # shape (load_speech_config already defaults a missing key at read time —

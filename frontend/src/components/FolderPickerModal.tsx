@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Home } from 'lucide-react'
 import { foldersApi, type Folder } from '@/api/folders'
 import { resolveFolderIcon } from '@/utils/folderIcons'
-import { buildTree } from '@/utils/folderTree'
+import { buildTree, isDynamicFolder } from '@/utils/folderTree'
 
 interface Props {
   title?: string
@@ -25,7 +25,9 @@ export default function FolderPickerModal({ title = 'Move to folder', disabledId
     return () => { active = false }
   }, [])
 
-  const tree = useMemo(() => buildTree(folders), [folders])
+  // Dynamic (saved-search) folders are leaves that hold nothing, so they can't be a
+  // move destination.
+  const tree = useMemo(() => buildTree(folders.filter((f) => !isDynamicFolder(f))), [folders])
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>

@@ -89,6 +89,8 @@ class FolderCreate(BaseModel):
     icon_type: Optional[Literal["emoji", "lucide"]] = None
     icon_value: Optional[str] = Field(default=None, max_length=64)
     color: Optional[str] = None
+    # Non-null => a dynamic folder that runs this saved query on click.
+    search_query: Optional[str] = None
 
     _validate_color = field_validator("color")(_validate_hex_color)
 
@@ -100,6 +102,7 @@ class FolderUpdate(BaseModel):
     icon_type: Optional[Literal["emoji", "lucide"]] = None
     icon_value: Optional[str] = Field(default=None, max_length=64)
     color: Optional[str] = None
+    search_query: Optional[str] = None  # edit a dynamic folder's saved query
 
     _validate_color = field_validator("color")(_validate_hex_color)
 
@@ -113,6 +116,7 @@ class FolderRead(BaseModel):
     icon_value: Optional[str] = None
     color: Optional[str] = None
     system_key: Optional[str] = None  # 'archive' => the Archive Bin; null => normal folder
+    search_query: Optional[str] = None  # non-null => a dynamic (saved-search) folder
     created_at: UTCDatetime
     modified_at: UTCDatetime
 

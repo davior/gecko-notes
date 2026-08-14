@@ -1,7 +1,7 @@
 import {
   Folder, FolderOpen, Star, Heart, Briefcase, BookOpen, Archive, Tag, Image, Music, Code, Home,
   Calendar, MapPin, Users, Gift, Palette, Lightbulb, Rocket, Trophy, Wallet, Coffee, Leaf, Sun,
-  Moon, Cloud, Flame, Shield, Lock, Camera, Plane, Dumbbell,
+  Moon, Cloud, Flame, Shield, Lock, Camera, Plane, Dumbbell, Search,
   type LucideIcon,
 } from 'lucide-react'
 import type { Folder as FolderType } from '@/api/folders'
@@ -9,7 +9,7 @@ import type { Folder as FolderType } from '@/api/folders'
 // Curated set of icons offered in the folder customization picker. Keys are the
 // stable names persisted to Folder.icon_value when icon_type === 'lucide'.
 export const FOLDER_ICON_CATALOGUE: Record<string, LucideIcon> = {
-  Folder, FolderOpen, Star, Heart, Briefcase, BookOpen, Archive, Tag, Image, Music, Code, Home,
+  Folder, FolderOpen, Search, Star, Heart, Briefcase, BookOpen, Archive, Tag, Image, Music, Code, Home,
   Calendar, MapPin, Users, Gift, Palette, Lightbulb, Rocket, Trophy, Wallet, Coffee, Leaf, Sun,
   Moon, Cloud, Flame, Shield, Lock, Camera, Plane, Dumbbell,
 }

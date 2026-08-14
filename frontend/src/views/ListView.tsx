@@ -63,6 +63,9 @@ export default function ListView() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
+  // The active deep search, if any, lives in the URL (?q=…) so its results are a real
+  // history entry that browser back/forward and refresh can restore. null => not searching.
+  const urlQuery = searchParams.get('q')
 
   const { notes, loading, hasMore, loadNotes, loadMore, pinNote, deleteNote, archiveNote, createNote } = useNotesStore()
   const foldersStore = useFoldersStore()
@@ -89,7 +92,7 @@ export default function ListView() {
     { type: 'note'; label: string } | { type: 'folder'; folder: Folder } | null
   >(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
-  const [folderModal, setFolderModal] = useState<{ folder: Folder | null; parentId: string | null } | null>(null)
+  const [folderModal, setFolderModal] = useState<{ folder: Folder | null; parentId: string | null; isDynamic?: boolean } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [noteMoveOpen, setNoteMoveOpen] = useState(false)
   const [noteDeleteOpen, setNoteDeleteOpen] = useState(false)
@@ -126,6 +129,18 @@ export default function ListView() {
     folder_id: folderId ?? undefined,
   }), [sortOrder, activeCategoryId, folderId])
 
+  // Reflect the active deep search in the URL (?q=…), preserving any folder param.
+  // A blank/null query removes it, returning to the plain folder view.
+  const setUrlQuery = useCallback((q: string | null) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      const trimmed = q?.trim()
+      if (trimmed) next.set('q', trimmed)
+      else next.delete('q')
+      return next
+    })
+  }, [setSearchParams])
+
   const foldersById = useMemo(() => indexById(allFolders), [allFolders])
   const archiveFolder = useMemo(() => findArchiveFolder(allFolders), [allFolders])
   const archiveId = archiveFolder?.id ?? null
@@ -137,22 +152,31 @@ export default function ListView() {
     setTimeout(() => setToast(''), 3000)
   }
 
-  // Reload notes + folder chrome when the folder, sort, or category changes. Also
-  // leaves deep-search-results mode — those controls belong to normal browsing.
+  // Reload notes + folder chrome when the folder, sort, or category changes — but not
+  // while a deep search is active (?q=…), whose results replace the folder view.
   useEffect(() => {
     clearSelection()
+    if (urlQuery !== null) return
     setDeepResults(null)
     loadNotes(buildParams(), true)
     foldersStore.loadContents(folderId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortOrder, activeCategoryId, folderId])
+  }, [sortOrder, activeCategoryId, folderId, urlQuery])
 
-  // As-you-type filtering is purely local (see filterLocally/displayNotes below) — no
-  // network call, so no debounce. Clearing the box back to '' also drops deep-search
-  // results, since the X button and backspacing-to-empty both just set searchQuery('').
+  // The deep-search view lives in the URL (?q=…): whenever that query changes — Enter in
+  // the box, a dynamic-folder click, or browser back/forward/refresh — mirror it into the
+  // box and (re)run the search. No q => not searching, so drop any stale results.
+  useEffect(() => {
+    if (urlQuery === null) { setDeepResults(null); return }
+    setSearchQuery(urlQuery)
+    void runSearch(urlQuery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuery])
+
+  // Changing the search text clears any note selection (local as-you-type filtering
+  // itself happens in filterLocally/displayNotes below — no network call, no debounce).
   useEffect(() => {
     clearSelection()
-    if (searchQuery === '') setDeepResults(null)
   }, [searchQuery])
 
   useEffect(() => {
@@ -192,12 +216,13 @@ export default function ListView() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
   }
 
-  // The "Enter" search tier: always tries the AI-generated structured filter (any
-  // query length or syntax — no word-count/advanced-syntax gating), searching across
-  // ALL of the user's notes. Falls back to the existing global keyword search when no
-  // AI provider is configured, or if generation/execution fails for any reason.
-  async function runDeepSearch() {
-    const query = searchQuery.trim()
+  // Runs a query across ALL of the user's notes: always tries the AI-generated
+  // structured filter (any query length or syntax — no word-count/advanced-syntax
+  // gating), falling back to the existing global keyword search when no AI provider is
+  // configured, or if generation/execution fails for any reason. Shared by the search
+  // box (Enter) and by dynamic folders, which run their saved query on click.
+  async function runSearch(rawQuery: string) {
+    const query = rawQuery.trim()
     if (!query) { setDeepResults(null); return }
     clearSelection()
     setDeepLoading(true)
@@ -224,6 +249,19 @@ export default function ListView() {
     } finally {
       setDeepLoading(false)
     }
+  }
+
+  // The "Enter" search tier: push the box's query into the URL (?q=…), which drives the
+  // actual search (see the ?q effect) and makes the results a restorable history entry.
+  function runDeepSearch() {
+    setUrlQuery(searchQuery.trim() || null)
+  }
+
+  // Clicking a dynamic folder runs its saved query. The query goes into the URL (?q=…),
+  // so the results are a real history entry: pressing Back from a note opened here
+  // returns to this search rather than the note's physical folder.
+  function openDynamicFolder(folder: Folder) {
+    setUrlQuery(folder.search_query ?? null)
   }
 
   function toggleSelect(id: string) {
@@ -265,7 +303,10 @@ export default function ListView() {
     localStorage.setItem('notesCollapsed', String(next))
   }
 
+  // Opening a folder exits any active search: clear the box and drop ?q by replacing the
+  // params with just the folder (or nothing, for the root "All notes").
   function openFolder(id: string | null) {
+    setSearchQuery('')
     if (id) setSearchParams({ folder: id })
     else setSearchParams({})
   }
@@ -276,6 +317,10 @@ export default function ListView() {
 
   function handleNewSubfolder(parentId: string | null) {
     setFolderModal({ folder: null, parentId })
+  }
+
+  function handleNewDynamicFolder(parentId: string | null) {
+    setFolderModal({ folder: null, parentId, isDynamic: true })
   }
 
   function handleNewNoteInFolder(id: string | null) {
@@ -541,6 +586,7 @@ export default function ListView() {
   const folderBarProps = {
     folders: visibleSubfolders,
     onOpen: openFolder,
+    onOpenDynamic: openDynamicFolder,
     onMove: (f: Folder) => setMoveTarget({ id: f.id }),
     onCustomize: handleCustomizeFolder,
     onDelete: handleDeleteFolder,
@@ -560,7 +606,11 @@ export default function ListView() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value
+                setSearchQuery(v)
+                if (v === '' && urlQuery !== null) setUrlQuery(null)  // emptying the box exits the search
+              }}
               type="text"
               placeholder="Search notes... (press Enter to search everywhere)"
               className="input pl-9 pr-9 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400"
@@ -576,7 +626,7 @@ export default function ListView() {
           <div className="flex items-center gap-1.5 px-2 py-1 rounded-full w-fit bg-blue-100 dark:bg-blue-900/40">
             <span className="text-sm font-medium text-blue-800 dark:text-blue-200">Search Results</span>
             <button
-              onClick={() => setSearchQuery('')}
+              onClick={() => { setSearchQuery(''); setDeepResults(null); setUrlQuery(null) }}
               title="Clear search"
               className="p-0.5 rounded-full text-blue-500 dark:text-blue-300 hover:text-blue-700 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
             >
@@ -681,7 +731,9 @@ export default function ListView() {
         folders={allFolders}
         currentFolderId={folderId}
         onOpenFolder={openFolder}
+        onOpenDynamic={openDynamicFolder}
         onNewSubfolder={handleNewSubfolder}
+        onNewDynamicFolder={handleNewDynamicFolder}
         onNewNote={handleNewNoteInFolder}
         onImport={handleImportToFolder}
         onMove={(f) => setMoveTarget({ id: f.id })}
@@ -832,6 +884,7 @@ export default function ListView() {
         <FolderCustomizeModal
           folder={folderModal.folder}
           parentFolderId={folderModal.parentId}
+          isDynamicFolder={folderModal.isDynamic}
           onClose={() => setFolderModal(null)}
         />
       )}
@@ -897,6 +950,13 @@ export default function ListView() {
             >
               <FolderPlus className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               New Folder
+            </button>
+            <button
+              onClick={() => { setFabMenuOpen(false); handleNewDynamicFolder(folderId) }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
+            >
+              <Search className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              New Dynamic Folder
             </button>
             <button
               onClick={() => { setFabMenuOpen(false); importTargetRef.current = folderId; importInputRef.current?.click() }}

@@ -68,6 +68,19 @@ def _reject_if_system(folder: Folder) -> None:
         )
 
 
+def _reject_if_dynamic_parent(session: Session, parent_id: Optional[str], user_id: str) -> None:
+    """A dynamic (saved-search) folder is a leaf — it holds no notes or subfolders, so
+    nothing may be nested inside it."""
+    if not parent_id:
+        return
+    parent = session.get(Folder, parent_id)
+    if parent and parent.user_id == user_id and parent.search_query is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "dynamic_folder", "message": "A dynamic folder can't contain items"},
+        )
+
+
 def _delete_note_hard(session: Session, note: Note) -> None:
     """Permanently delete a note plus its versions/annotations, orphaning any child
     notes — mirrors the note router's delete_note cleanup."""
@@ -159,6 +172,7 @@ def create_folder(payload: FolderCreate, request: Request, session: Session = De
     user_id = _get_user_id(request)
     if payload.parent_folder_id:
         _get_owned_folder(session, payload.parent_folder_id, user_id)
+        _reject_if_dynamic_parent(session, payload.parent_folder_id, user_id)
     now = datetime.now(timezone.utc)
     folder = Folder(
         id=str(uuid.uuid4()),
@@ -169,6 +183,7 @@ def create_folder(payload: FolderCreate, request: Request, session: Session = De
         icon_type=payload.icon_type,
         icon_value=payload.icon_value,
         color=payload.color,
+        search_query=payload.search_query,
         created_at=now,
         modified_at=now,
     )
@@ -194,6 +209,8 @@ def update_folder(folder_id: str, payload: FolderUpdate, request: Request, sessi
         folder.icon_value = payload.icon_value
     if payload.color is not None:
         folder.color = payload.color
+    if payload.search_query is not None:
+        folder.search_query = payload.search_query
     # Move: re-parent, guarding against cycles.
     if "parent_folder_id" in payload.model_fields_set:
         new_parent = payload.parent_folder_id or None
@@ -204,6 +221,7 @@ def update_folder(folder_id: str, payload: FolderUpdate, request: Request, sessi
             )
         if new_parent:
             _get_owned_folder(session, new_parent, user_id)
+            _reject_if_dynamic_parent(session, new_parent, user_id)
         folder.parent_folder_id = new_parent
 
     folder.modified_at = datetime.now(timezone.utc)
