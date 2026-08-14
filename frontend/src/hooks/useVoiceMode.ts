@@ -43,6 +43,13 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
   const [errorMessage, setErrorMessage] = useState('')
 
   const tts = useTextToSpeech()
+  // useTextToSpeech returns a fresh object every render, so hold it in a ref and
+  // have the lifecycle callbacks below read tts.stop()/tts.play() through it.
+  // Depending on the `tts` object directly would recreate teardown() every render,
+  // which would make the unmount-cleanup effect tear the socket down on every
+  // re-render (e.g. the setState('listening') right after connecting).
+  const ttsRef = useRef(tts)
+  useEffect(() => { ttsRef.current = tts })
 
   const activeRef = useRef(false)
   const stateRef = useRef<VoiceState>('idle')
@@ -67,8 +74,8 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
     streamRef.current = null
     handleRef.current?.close()
     handleRef.current = null
-    tts.stop()
-  }, [tts])
+    ttsRef.current.stop()
+  }, [])
 
   const stop = useCallback(() => {
     if (!activeRef.current && stateRef.current === 'idle') return
@@ -95,8 +102,8 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
     const trimmed = (text || '').trim()
     if (!trimmed) { setStateSafe('listening'); return }
     setStateSafe('speaking')
-    tts.play(trimmed)
-  }, [tts, setStateSafe])
+    ttsRef.current.play(trimmed)
+  }, [setStateSafe])
 
   const setThinking = useCallback(() => {
     if (activeRef.current) setStateSafe('thinking')
@@ -109,7 +116,7 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
         // The user began a new turn. If the assistant was mid-reply or mid-think,
         // that's a barge-in: stop the audio and abort in-flight work.
         if (stateRef.current === 'speaking') {
-          tts.stop()
+          ttsRef.current.stop()
           optsRef.current.onBargeIn?.()
           setStateSafe('barge_in')
         } else if (stateRef.current === 'thinking') {
@@ -150,7 +157,7 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
         optsRef.current.onError?.(event.message)
         break
     }
-  }, [tts, setStateSafe, teardown])
+  }, [setStateSafe, teardown])
 
   const handleClose = useCallback((code: number, reason: string) => {
     if (!activeRef.current) return
