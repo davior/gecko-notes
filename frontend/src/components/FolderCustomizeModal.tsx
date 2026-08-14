@@ -7,6 +7,7 @@ import FolderTile from './FolderTile'
 interface Props {
   folder?: Folder | null       // present => editing an existing folder; absent => creating
   parentFolderId?: string | null  // used only when creating
+  isDynamicFolder?: boolean    // create a dynamic (saved-search) folder; ignored when editing
   onClose: () => void
 }
 
@@ -15,15 +16,21 @@ const DEFAULT_EMOJI = '📁'
 const DEFAULT_ICON_NAME = 'Folder'
 const ICON_NAMES = Object.keys(FOLDER_ICON_CATALOGUE)
 
-export default function FolderCustomizeModal({ folder, parentFolderId = null, onClose }: Props) {
+export default function FolderCustomizeModal({ folder, parentFolderId = null, isDynamicFolder = false, onClose }: Props) {
   const { createFolder, updateFolder } = useFoldersStore()
   const isEdit = !!folder
+  // A dynamic folder runs a saved search on click. When editing, the folder's own
+  // search_query decides; when creating, the caller opts in via isDynamicFolder.
+  const isDynamic = folder ? folder.search_query != null : isDynamicFolder
 
   const [name, setName] = useState(folder?.name ?? '')
+  const [query, setQuery] = useState(folder?.search_query ?? '')
   const [iconTab, setIconTab] = useState<'icon' | 'emoji'>(folder?.icon_type === 'emoji' ? 'emoji' : 'icon')
   const [emoji, setEmoji] = useState(folder?.icon_type === 'emoji' && folder.icon_value ? folder.icon_value : DEFAULT_EMOJI)
   const [iconName, setIconName] = useState(
-    folder?.icon_type === 'lucide' && folder.icon_value ? folder.icon_value : DEFAULT_ICON_NAME,
+    folder?.icon_type === 'lucide' && folder.icon_value
+      ? folder.icon_value
+      : isDynamic && !folder ? 'Search' : DEFAULT_ICON_NAME,
   )
   const [color, setColor] = useState(folder?.color ?? DEFAULT_COLOR)
   const [saving, setSaving] = useState(false)
@@ -31,15 +38,23 @@ export default function FolderCustomizeModal({ folder, parentFolderId = null, on
 
   const iconType: FolderIconType = iconTab === 'emoji' ? 'emoji' : 'lucide'
   const iconValue = iconTab === 'emoji' ? emoji : iconName
-  const previewFolder = { name: name.trim() || 'New Folder', icon_type: iconType, icon_value: iconValue, color }
+  const previewName = name.trim() || (isDynamic ? 'New Dynamic Folder' : 'New Folder')
+  const previewFolder = { name: previewName, icon_type: iconType, icon_value: iconValue, color }
+  const canSave = !!name.trim() && !(isDynamic && !query.trim())
 
   async function handleSave() {
+    if (!canSave) return
     const trimmed = name.trim()
-    if (!trimmed) return
     setSaving(true)
     setError('')
     try {
-      const payload = { name: trimmed, icon_type: iconType, icon_value: iconValue, color }
+      const payload = {
+        name: trimmed,
+        icon_type: iconType,
+        icon_value: iconValue,
+        color,
+        ...(isDynamic ? { search_query: query.trim() } : {}),
+      }
       if (folder) {
         await updateFolder(folder.id, payload)
       } else {
@@ -56,7 +71,9 @@ export default function FolderCustomizeModal({ folder, parentFolderId = null, on
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white dark:bg-gray-800 rounded-xl p-5 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
-          {isEdit ? 'Customize Folder' : 'New Folder'}
+          {isEdit
+            ? (isDynamic ? 'Customize Dynamic Folder' : 'Customize Folder')
+            : (isDynamic ? 'New Dynamic Folder' : 'New Folder')}
         </h3>
 
         <div className="flex justify-center mb-4">
@@ -71,11 +88,28 @@ export default function FolderCustomizeModal({ folder, parentFolderId = null, on
               onChange={(e) => setName(e.target.value)}
               type="text"
               className="input"
-              placeholder="Folder name"
+              placeholder={isDynamic ? 'e.g. Last seven days' : 'Folder name'}
               autoFocus
               onKeyDown={(e) => { if (e.key === 'Enter') void handleSave() }}
             />
           </div>
+
+          {isDynamic && (
+            <div>
+              <label className="label">Search query</label>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                type="text"
+                className="input"
+                placeholder="e.g. all notes from the last week"
+                onKeyDown={(e) => { if (e.key === 'Enter') void handleSave() }}
+              />
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                Runs this search when you open the folder.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="label">Icon</label>
@@ -162,7 +196,7 @@ export default function FolderCustomizeModal({ folder, parentFolderId = null, on
         {error && <p className="text-sm text-red-500 mt-3">{error}</p>}
 
         <div className="flex gap-3 mt-5">
-          <button className="btn-primary flex-1" disabled={!name.trim() || saving} onClick={handleSave}>
+          <button className="btn-primary flex-1" disabled={!canSave || saving} onClick={handleSave}>
             {saving ? 'Saving…' : 'Save'}
           </button>
           <button className="btn-secondary flex-1" onClick={onClose}>Cancel</button>

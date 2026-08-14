@@ -56,6 +56,12 @@ export function findArchiveFolder(folders: Folder[]): Folder | null {
   return folders.find((f) => f.system_key === ARCHIVE_SYSTEM_KEY) ?? null
 }
 
+/** True if the folder is a dynamic (saved-search) folder: clicking it runs its query
+ *  instead of opening a directory, and it holds no notes/subfolders. */
+export function isDynamicFolder(folder: Pick<Folder, 'search_query'>): boolean {
+  return folder.search_query != null
+}
+
 /** Ancestor ids of a folder (excluding itself), nearest parent first — for auto-expand. */
 export function ancestorIds(folderId: string, byId: Map<string, Folder>, maxDepth = 100): string[] {
   const out: string[] = []

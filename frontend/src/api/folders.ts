@@ -11,6 +11,7 @@ export interface Folder {
   icon_value: string | null
   color: string | null
   system_key: string | null   // 'archive' => the Archive Bin; null => normal folder
+  search_query: string | null // non-null => a dynamic folder that runs this saved query on click
   created_at: string
   modified_at: string
 }
@@ -28,6 +29,7 @@ export interface FolderCreate {
   icon_type?: FolderIconType | null
   icon_value?: string | null
   color?: string | null
+  search_query?: string | null
 }
 
 export interface FolderUpdate {
@@ -37,6 +39,7 @@ export interface FolderUpdate {
   icon_type?: FolderIconType | null
   icon_value?: string | null
   color?: string | null
+  search_query?: string | null
 }
 
 export const foldersApi = {

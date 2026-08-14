@@ -2,18 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Home, ChevronDown, MoreVertical, FolderPlus, Plus, Upload, FolderInput, Palette, Trash2,
-  PanelLeftClose, Folder as FolderIcon,
+  PanelLeftClose, Folder as FolderIcon, Search,
   type LucideIcon,
 } from 'lucide-react'
 import type { Folder } from '@/api/folders'
 import { resolveFolderIcon } from '@/utils/folderIcons'
-import { buildForest, indexById, findArchiveFolder, ancestorIds, type FolderNode } from '@/utils/folderTree'
+import { buildForest, indexById, findArchiveFolder, ancestorIds, isDynamicFolder, type FolderNode } from '@/utils/folderTree'
 
 interface Props {
   folders: Folder[]
   currentFolderId: string | null
   onOpenFolder: (id: string | null) => void
+  onOpenDynamic: (folder: Folder) => void  // clicking a dynamic folder runs its saved search
   onNewSubfolder: (parentId: string | null) => void
+  onNewDynamicFolder: (parentId: string | null) => void
   onNewNote: (folderId: string | null) => void
   onImport: (folderId: string | null) => void
   onMove: (folder: Folder) => void
@@ -39,7 +41,7 @@ function readStoredSize(key: string, fallback: number): number {
   }
 }
 
-type MenuKind = 'root' | 'normal' | 'archived' | 'bin'
+type MenuKind = 'root' | 'normal' | 'archived' | 'bin' | 'dynamic'
 interface MenuTarget { kind: MenuKind; folder: Folder | null }
 interface MenuState { target: MenuTarget; top: number; left: number }
 
@@ -52,6 +54,7 @@ interface RowCtx {
   toggleExpand: (id: string) => void
   openMenu: (target: MenuTarget, btn: HTMLElement) => void
   onOpenFolder: (id: string | null) => void
+  onOpenDynamic: (folder: Folder) => void
 }
 
 const ROW_BASE = 'group flex items-center gap-1 pr-1 rounded-md cursor-pointer select-none'
@@ -68,19 +71,21 @@ const ACTION_BTN =
 function TreeRow({ node, depth, inArchive, ctx }: { node: FolderNode; depth: number; inArchive: boolean; ctx: RowCtx }) {
   const { folder } = node
   const isBin = folder.id === ctx.archiveId
-  const hasChildren = node.children.length > 0
+  const isDynamic = isDynamicFolder(folder)
+  const hasChildren = !isDynamic && node.children.length > 0
   const isOpen = ctx.expanded.has(folder.id)
   const isActive = ctx.currentFolderId === folder.id
   const resolved = resolveFolderIcon(folder)
   const btnRef = useRef<HTMLButtonElement>(null)
-  const kind: MenuKind = isBin ? 'bin' : inArchive ? 'archived' : 'normal'
+  const kind: MenuKind = isBin ? 'bin' : isDynamic ? 'dynamic' : inArchive ? 'archived' : 'normal'
 
   return (
     <>
       <div
         className={rowClasses(isActive)}
         style={{ paddingLeft: `${0.25 + depth * 0.85}rem` }}
-        onClick={() => ctx.onOpenFolder(folder.id)}
+        onClick={() => (isDynamic ? ctx.onOpenDynamic(folder) : ctx.onOpenFolder(folder.id))}
+        title={isDynamic ? folder.search_query ?? undefined : undefined}
       >
         {hasChildren ? (
           <button
@@ -122,7 +127,9 @@ export default function FolderTreePanel({
   folders,
   currentFolderId,
   onOpenFolder,
+  onOpenDynamic,
   onNewSubfolder,
+  onNewDynamicFolder,
   onNewNote,
   onImport,
   onMove,
@@ -246,7 +253,7 @@ export default function FolderTreePanel({
     window.addEventListener('mouseup', onMouseUp)
   }
 
-  const ctx: RowCtx = { currentFolderId, archiveId, expanded, toggleExpand, openMenu, onOpenFolder }
+  const ctx: RowCtx = { currentFolderId, archiveId, expanded, toggleExpand, openMenu, onOpenFolder, onOpenDynamic }
   const rootBtnRef = useRef<HTMLButtonElement>(null)
 
   function menuItem(key: string, Icon: LucideIcon, label: string, onClick: () => void, danger = false) {
@@ -275,9 +282,18 @@ export default function FolderTreePanel({
         menuItem('delete', Trash2, 'Delete permanently', () => onDelete(folder), true),
       ]
     }
+    // Dynamic (saved-search) folder: a leaf, so no "new child" actions.
+    if (kind === 'dynamic' && folder) {
+      return [
+        menuItem('move', FolderInput, 'Move to…', () => onMove(folder)),
+        menuItem('customize', Palette, 'Customize', () => onCustomize(folder)),
+        menuItem('delete', Trash2, 'Delete', () => onDelete(folder), true),
+      ]
+    }
     if (kind === 'root') {
       return [
         menuItem('new-folder', FolderPlus, 'New folder', () => onNewSubfolder(null)),
+        menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(null)),
         menuItem('new-note', Plus, 'New note', () => onNewNote(null)),
         menuItem('import', Upload, 'Import Markdown', () => onImport(null)),
       ]
@@ -286,6 +302,7 @@ export default function FolderTreePanel({
     if (!folder) return null
     return [
       menuItem('new-sub', FolderPlus, 'New subfolder', () => onNewSubfolder(fid)),
+      menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(fid)),
       menuItem('new-note', Plus, 'New note', () => onNewNote(fid)),
       menuItem('import', Upload, 'Import Markdown', () => onImport(fid)),
       <div key="sep" className="my-1 border-t border-gray-100 dark:border-gray-700" />,

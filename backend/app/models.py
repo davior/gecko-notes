@@ -61,6 +61,10 @@ class Folder(SQLModel, table=True):
     # Marks special, app-managed folders. 'archive' identifies the per-user Archive
     # Bin (where deleted folders are moved); null for ordinary user folders.
     system_key: Optional[str] = Field(default=None, index=True)
+    # Saved search query. When non-null, this is a "dynamic folder": clicking it in the
+    # tree runs the query against the note search instead of opening a directory. It
+    # holds no notes/subfolders. Null for ordinary container folders.
+    search_query: Optional[str] = None
     created_at: datetime
     modified_at: datetime
 

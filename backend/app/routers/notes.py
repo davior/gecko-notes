@@ -639,6 +639,8 @@ def move_note(note_id: str, payload: MoveNoteRequest, request: Request, session:
         folder = session.get(Folder, payload.folder_id)
         if not folder or folder.user_id != user_id:
             raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Folder not found"})
+        if folder.search_query is not None:
+            raise HTTPException(status_code=400, detail={"code": "dynamic_folder", "message": "A dynamic folder can't contain notes"})
     note.folder_id = payload.folder_id or None
     note.modified_at = datetime.now(timezone.utc)
     session.add(note)

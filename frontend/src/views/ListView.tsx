@@ -89,7 +89,7 @@ export default function ListView() {
     { type: 'note'; label: string } | { type: 'folder'; folder: Folder } | null
   >(null)
   const [moveTarget, setMoveTarget] = useState<{ id: string } | null>(null)
-  const [folderModal, setFolderModal] = useState<{ folder: Folder | null; parentId: string | null } | null>(null)
+  const [folderModal, setFolderModal] = useState<{ folder: Folder | null; parentId: string | null; isDynamic?: boolean } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [noteMoveOpen, setNoteMoveOpen] = useState(false)
   const [noteDeleteOpen, setNoteDeleteOpen] = useState(false)
@@ -192,12 +192,13 @@ export default function ListView() {
     setSortOrder((o) => (o === 'modified_at' ? 'created_at' : 'modified_at'))
   }
 
-  // The "Enter" search tier: always tries the AI-generated structured filter (any
-  // query length or syntax — no word-count/advanced-syntax gating), searching across
-  // ALL of the user's notes. Falls back to the existing global keyword search when no
-  // AI provider is configured, or if generation/execution fails for any reason.
-  async function runDeepSearch() {
-    const query = searchQuery.trim()
+  // Runs a query across ALL of the user's notes: always tries the AI-generated
+  // structured filter (any query length or syntax — no word-count/advanced-syntax
+  // gating), falling back to the existing global keyword search when no AI provider is
+  // configured, or if generation/execution fails for any reason. Shared by the search
+  // box (Enter) and by dynamic folders, which run their saved query on click.
+  async function runSearch(rawQuery: string) {
+    const query = rawQuery.trim()
     if (!query) { setDeepResults(null); return }
     clearSelection()
     setDeepLoading(true)
@@ -224,6 +225,19 @@ export default function ListView() {
     } finally {
       setDeepLoading(false)
     }
+  }
+
+  // The "Enter" search tier: run whatever is currently in the search box.
+  function runDeepSearch() {
+    return runSearch(searchQuery)
+  }
+
+  // Clicking a dynamic folder fills the search box with its saved query and runs it,
+  // surfacing the results as the usual deep-search overlay (cleared via the box's X).
+  function openDynamicFolder(folder: Folder) {
+    const q = folder.search_query ?? ''
+    setSearchQuery(q)
+    void runSearch(q)
   }
 
   function toggleSelect(id: string) {
@@ -276,6 +290,10 @@ export default function ListView() {
 
   function handleNewSubfolder(parentId: string | null) {
     setFolderModal({ folder: null, parentId })
+  }
+
+  function handleNewDynamicFolder(parentId: string | null) {
+    setFolderModal({ folder: null, parentId, isDynamic: true })
   }
 
   function handleNewNoteInFolder(id: string | null) {
@@ -541,6 +559,7 @@ export default function ListView() {
   const folderBarProps = {
     folders: visibleSubfolders,
     onOpen: openFolder,
+    onOpenDynamic: openDynamicFolder,
     onMove: (f: Folder) => setMoveTarget({ id: f.id }),
     onCustomize: handleCustomizeFolder,
     onDelete: handleDeleteFolder,
@@ -681,7 +700,9 @@ export default function ListView() {
         folders={allFolders}
         currentFolderId={folderId}
         onOpenFolder={openFolder}
+        onOpenDynamic={openDynamicFolder}
         onNewSubfolder={handleNewSubfolder}
+        onNewDynamicFolder={handleNewDynamicFolder}
         onNewNote={handleNewNoteInFolder}
         onImport={handleImportToFolder}
         onMove={(f) => setMoveTarget({ id: f.id })}
@@ -832,6 +853,7 @@ export default function ListView() {
         <FolderCustomizeModal
           folder={folderModal.folder}
           parentFolderId={folderModal.parentId}
+          isDynamicFolder={folderModal.isDynamic}
           onClose={() => setFolderModal(null)}
         />
       )}
@@ -897,6 +919,13 @@ export default function ListView() {
             >
               <FolderPlus className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               New Folder
+            </button>
+            <button
+              onClick={() => { setFabMenuOpen(false); handleNewDynamicFolder(folderId) }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
+            >
+              <Search className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              New Dynamic Folder
             </button>
             <button
               onClick={() => { setFabMenuOpen(false); importTargetRef.current = folderId; importInputRef.current?.click() }}
