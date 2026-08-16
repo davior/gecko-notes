@@ -789,6 +789,9 @@ export default function ListView() {
                 </>
               ) : (
                 <>
+                  {/* Folders lead the root view, ahead of Pinned and Notes — same as
+                      inside a folder, so the bar sits in one place everywhere. */}
+                  <FolderIconBar {...folderBarProps} />
                   {pinnedNotes.length > 0 && (
                     <>
                       <button
@@ -805,7 +808,6 @@ export default function ListView() {
                       )}
                     </>
                   )}
-                  <FolderIconBar {...folderBarProps} />
                   {unpinnedNotes.length > 0 && (
                     <>
                       <button
