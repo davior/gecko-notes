@@ -7,10 +7,16 @@ interface Props {
   onNavigate: (folderId: string | null) => void
   /** Extra classes for the <nav> spacing slot; defaults to `mb-2` for stacked layouts. */
   className?: string
+  /**
+   * Make the final crumb clickable too. Set where the trail leads to something other
+   * than the folder itself (e.g. a note inside it), so its folder stays reachable.
+   * Defaults to false, where the last crumb is the current folder.
+   */
+  lastCrumbClickable?: boolean
 }
 
 /** Breadcrumb trail for the current folder: Home / Parent / … / Current. */
-export default function FolderBreadcrumb({ breadcrumb, onNavigate, className }: Props) {
+export default function FolderBreadcrumb({ breadcrumb, onNavigate, className, lastCrumbClickable }: Props) {
   return (
     <nav className={`flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 overflow-x-auto ${className ?? 'mb-2'}`}>
       <button
@@ -22,18 +28,25 @@ export default function FolderBreadcrumb({ breadcrumb, onNavigate, className }: 
       </button>
       {breadcrumb.map((folder, i) => {
         const isLast = i === breadcrumb.length - 1
+        // Only a last crumb that *is* the current view is inert; otherwise it navigates.
+        const isCurrent = isLast && !lastCrumbClickable
         const resolved = resolveFolderIcon(folder)
         return (
           <span key={folder.id} className="flex items-center gap-1 shrink-0">
             <ChevronRight className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
             <button
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors max-w-[12rem] ${
-                isLast
-                  ? 'font-semibold text-gray-800 dark:text-gray-100'
-                  : 'hover:text-gray-700 dark:hover:text-gray-200'
+                isLast ? 'font-semibold text-gray-800 dark:text-gray-100' : ''
+              } ${
+                isCurrent
+                  ? ''
+                  : isLast
+                    ? 'hover:text-gray-900 dark:hover:text-white'
+                    : 'hover:text-gray-700 dark:hover:text-gray-200'
               }`}
               onClick={() => onNavigate(folder.id)}
-              disabled={isLast}
+              disabled={isCurrent}
+              title={isCurrent ? undefined : `Open ${folder.name}`}
             >
               {resolved.kind === 'emoji' ? (
                 <span className="text-sm leading-none shrink-0">{resolved.emoji}</span>

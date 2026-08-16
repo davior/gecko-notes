@@ -1293,6 +1293,9 @@ export default function EditorView() {
               breadcrumb={folderBreadcrumb}
               onNavigate={navigateToFolder}
               className="min-w-0"
+              // The trail ends at this note, not at a folder — so the note's own
+              // folder stays clickable.
+              lastCrumbClickable
             />
           )}
           {note?.parent_note_id && (
