@@ -206,8 +206,12 @@ def _thumbnail_url_for(first_image_url: Optional[str]) -> Optional[str]:
     """Derive the `.thumb.` sibling URL for a note's first image. Purely a
     filename transform — the frontend falls back to first_image_url via
     onError if the thumbnail isn't actually on disk yet (or never will be,
-    e.g. HEIC/AVIF), so no filesystem check is needed here."""
-    if not first_image_url:
+    e.g. HEIC/AVIF), so no filesystem check is needed here.
+
+    Only uploads under /media/ have thumbnails. A note whose first image lives on
+    someone else's server — a URL import that linked its images rather than
+    downloading them — would otherwise get a `.thumb.` URL that always 404s."""
+    if not first_image_url or not first_image_url.startswith("/media/"):
         return None
     base, ext = os.path.splitext(first_image_url)
     return f"{base}.thumb{ext}"

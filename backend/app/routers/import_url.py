@@ -93,36 +93,76 @@ def _fetch_error(exc: FetchError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
 
 
+def _descriptor_score(descriptor: str) -> float:
+    """Rank a srcset descriptor: `1456w` -> 1456.0, `2x` -> 2.0, anything else -> 1.0.
+
+    Width and density descriptors never appear in the same srcset, so the two scales
+    only ever get compared against their own kind.
+    """
+    value = descriptor.strip().lower()
+    if value.endswith(("w", "x")):
+        try:
+            return float(value[:-1])
+        except ValueError:
+            return 1.0
+    return 1.0
+
+
+def _parse_srcset(srcset: str) -> List[Tuple[str, float]]:
+    """Split a srcset attribute into (url, score) candidates, per the HTML spec.
+
+    Splitting on commas is the obvious implementation and it is wrong: a candidate URL
+    may itself contain commas, which Cloudinary-style transform URLs are full of —
+    `.../image/fetch/$s_!x!,w_1456,c_limit,f_auto/https%3A%2F%2F...` is what Substack
+    serves. Comma-splitting shreds those into fragments, and the fragment that happens
+    to carry the width descriptor then gets resolved against the page as a relative
+    path, producing a URL that 404s.
+
+    The spec delimits the URL by *whitespace*; a comma only separates candidates once
+    the URL has ended.
+    """
+    candidates: List[Tuple[str, float]] = []
+    index, length = 0, len(srcset)
+
+    while index < length:
+        while index < length and (srcset[index].isspace() or srcset[index] == ","):
+            index += 1
+        if index >= length:
+            break
+
+        start = index
+        while index < length and not srcset[index].isspace():
+            index += 1
+        url = srcset[start:index]
+
+        # A URL ending in commas is the spec's marker for "no descriptor follows".
+        trimmed = url.rstrip(",")
+        if trimmed != url:
+            if trimmed:
+                candidates.append((trimmed, 1.0))
+            continue
+
+        while index < length and srcset[index].isspace():
+            index += 1
+        descriptor_start = index
+        while index < length and srcset[index] != ",":
+            index += 1
+        candidates.append((url, _descriptor_score(srcset[descriptor_start:index])))
+        index += 1  # step over the separating comma
+
+    return candidates
+
+
 def _best_from_srcset(srcset: str) -> Optional[str]:
     """Pick the highest-resolution candidate out of a srcset attribute.
 
     Without this the importer saves thumbnails: trafilatura reads `src`, which on a
     responsive image is the smallest fallback, so a 1600w hero arrives as a 400w crop.
     """
-    best_url: Optional[str] = None
-    best_score = -1.0
-    for candidate in srcset.split(","):
-        parts = candidate.split()
-        if not parts:
-            continue
-        url = parts[0].strip()
-        if not url:
-            continue
-        score = 1.0
-        if len(parts) > 1:
-            descriptor = parts[1].strip().lower()
-            try:
-                if descriptor.endswith("w"):
-                    score = float(descriptor[:-1])
-                elif descriptor.endswith("x"):
-                    # Density descriptors never coexist with width ones; scale them so a
-                    # 2x beats a 1x without outranking a genuine pixel width.
-                    score = float(descriptor[:-1])
-            except ValueError:
-                score = 1.0
-        if score > best_score:
-            best_url, best_score = url, score
-    return best_url
+    candidates = _parse_srcset(srcset)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[1])[0]
 
 
 def _normalise_images(tree: lxml_html.HtmlElement) -> None:
@@ -133,13 +173,16 @@ def _normalise_images(tree: lxml_html.HtmlElement) -> None:
     the extractor emit useless images, so normalise before handing the tree over.
     """
     for picture in tree.iter("picture"):
-        # <source srcset> beats the inner <img src> for quality; hoist the best one.
+        # <source srcset> beats the inner <img src> for quality; hoist the largest one
+        # across every source, since source order is format/media priority rather than
+        # size and the biggest variant may sit under any of them.
         best: Optional[str] = None
         best_score = -1.0
         for source in picture.iter("source"):
-            candidate = _best_from_srcset(source.get("srcset") or source.get("data-srcset") or "")
-            if candidate and best_score < 1:
-                best, best_score = candidate, 1
+            attribute = source.get("srcset") or source.get("data-srcset") or ""
+            for url, score in _parse_srcset(attribute):
+                if score > best_score:
+                    best, best_score = url, score
         if best:
             for img in picture.iter("img"):
                 img.set("src", best)
