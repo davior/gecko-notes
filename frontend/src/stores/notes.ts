@@ -36,7 +36,7 @@ interface NotesState {
   loadNotes: (params?: ListNotesParams, reset?: boolean) => Promise<void>
   loadMore: (params?: ListNotesParams) => Promise<void>
   loadNote: (id: string) => Promise<Note>
-  createNote: (payload: { title: string; content?: string; category_id: string; folder_id?: string | null; tags?: string[] }) => Promise<Note>
+  createNote: (payload: { title: string; content?: string; category_id: string; folder_id?: string | null; tags?: string[]; summary?: string | null }) => Promise<Note>
   updateNote: (id: string, payload: { title?: string; content?: string; category_id?: string; folder_id?: string | null; tags?: string[]; summary?: string | null }) => Promise<Note>
   pinNote: (id: string) => Promise<Note>
   shareNote: (id: string) => Promise<Note>

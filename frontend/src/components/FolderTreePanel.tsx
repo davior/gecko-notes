@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Home, ChevronDown, MoreVertical, FolderPlus, Plus, Upload, FolderInput, Palette, Trash2,
-  PanelLeftClose, Folder as FolderIcon, Search,
+  PanelLeftClose, Folder as FolderIcon, Search, Globe,
   type LucideIcon,
 } from 'lucide-react'
 import type { Folder } from '@/api/folders'
@@ -18,6 +18,7 @@ interface Props {
   onNewDynamicFolder: (parentId: string | null) => void
   onNewNote: (folderId: string | null) => void
   onImport: (folderId: string | null) => void
+  onImportUrl: (folderId: string | null) => void
   onMove: (folder: Folder) => void
   onCustomize: (folder: Folder) => void
   onDelete: (folder: Folder) => void       // parent decides archive vs. permanent delete
@@ -135,6 +136,7 @@ export default function FolderTreePanel({
   onNewDynamicFolder,
   onNewNote,
   onImport,
+  onImportUrl,
   onMove,
   onCustomize,
   onDelete,
@@ -299,6 +301,7 @@ export default function FolderTreePanel({
         menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(null)),
         menuItem('new-note', Plus, 'New note', () => onNewNote(null)),
         menuItem('import', Upload, 'Import Markdown', () => onImport(null)),
+        menuItem('import-url', Globe, 'Import URL', () => onImportUrl(null)),
       ]
     }
     // normal folder
@@ -308,6 +311,7 @@ export default function FolderTreePanel({
       menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(fid)),
       menuItem('new-note', Plus, 'New note', () => onNewNote(fid)),
       menuItem('import', Upload, 'Import Markdown', () => onImport(fid)),
+      menuItem('import-url', Globe, 'Import URL', () => onImportUrl(fid)),
       <div key="sep" className="my-1 border-t border-gray-100 dark:border-gray-700" />,
       menuItem('move', FolderInput, 'Move to…', () => onMove(folder)),
       menuItem('customize', Palette, 'Customize', () => onCustomize(folder)),
