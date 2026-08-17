@@ -102,6 +102,30 @@ export function extractHeadings(blocks: unknown[]): OutlineHeading[] {
   return out
 }
 
+/**
+ * Repoint image blocks at newly stored copies, given a remote-URL -> /media-URL map.
+ * Used by the URL importer after downloading a page's images: the note is built from
+ * the page's own image URLs, then swapped over to the local ones. URLs with no entry
+ * in the map (a download that failed) are left pointing at the original.
+ *
+ * Mutates in place and returns the same array — the caller owns freshly parsed blocks.
+ */
+export function rewriteImageUrls(blocks: unknown[], mapping: Record<string, string>): unknown[] {
+  if (Object.keys(mapping).length === 0) return blocks
+  function walk(block: Record<string, unknown>) {
+    if (block.type === 'image') {
+      const props = block.props as Record<string, unknown> | undefined
+      const url = props?.url
+      if (typeof url === 'string' && mapping[url]) props!.url = mapping[url]
+    }
+    if (Array.isArray(block.children)) {
+      for (const child of block.children) walk(child as Record<string, unknown>)
+    }
+  }
+  for (const block of blocks) walk(block as Record<string, unknown>)
+  return blocks
+}
+
 export function extractLinkedFileUrls(blocks: unknown[]): string[] {
   const urls: string[] = []
   function walk(block: Record<string, unknown>) {

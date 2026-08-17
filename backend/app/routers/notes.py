@@ -570,6 +570,7 @@ def create_note(payload: NoteCreate, request: Request, session: Session = Depend
         category_id=payload.category_id,
         folder_id=payload.folder_id,
         tags=json.dumps(payload.tags),
+        summary=payload.summary,
         created_at=now,
         modified_at=now,
         user_id=user_id,

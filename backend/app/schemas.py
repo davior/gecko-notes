@@ -141,6 +141,7 @@ class NoteCreate(BaseModel):
     category_id: str
     folder_id: Optional[str] = None
     tags: List[str] = []
+    summary: Optional[str] = None
 
 
 class CreateChildRequest(BaseModel):
@@ -562,6 +563,33 @@ class MediaUploadResponse(BaseModel):
     filename: str
     mime_type: str
     size: int
+
+
+# URL import schemas (web page -> note)
+class UrlExtractRequest(BaseModel):
+    url: str
+
+
+class UrlExtractResult(BaseModel):
+    url: str                          # final URL, after redirects
+    title: str
+    byline: Optional[str] = None      # author, when the page declares one
+    published: Optional[str] = None   # ISO date, when the page declares one
+    site_name: Optional[str] = None
+    excerpt: Optional[str] = None     # meta description, used as the note summary
+    hostname: str                     # bare domain, used as the note's tag
+    markdown: str                     # main content; links and images already absolute
+    image_urls: List[str] = []        # unique http(s) images referenced by the markdown
+
+
+class ResourceFetchRequest(BaseModel):
+    urls: List[str]
+    page_url: Optional[str] = None    # sent as Referer; hotlink protection is common
+
+
+class ResourceFetchResult(BaseModel):
+    mapping: dict[str, str] = {}      # remote URL -> stored /media/... URL
+    failed: List[str] = []
 
 
 # Transcription job schemas (async video/audio -> transcript pipeline)

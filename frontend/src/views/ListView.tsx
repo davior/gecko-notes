@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   Search, Plus, ArrowUpDown, LayoutList, LayoutGrid, X, FolderPlus, FolderInput, Trash2,
-  ChevronDown, Upload, CheckCircle2, Circle, Loader2,
+  ChevronDown, Upload, CheckCircle2, Circle, Loader2, Globe,
 } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
@@ -15,6 +15,7 @@ import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import FolderCustomizeModal from '@/components/FolderCustomizeModal'
 import FolderTreePanel from '@/components/FolderTreePanel'
+import ImportUrlModal from '@/components/ImportUrlModal'
 import BulkExportMenu from '@/components/BulkExportMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import { noteSchema } from '@/blocks/childNoteBlock'
@@ -23,7 +24,9 @@ import { useNotesStore } from '@/stores/notes'
 import { useFoldersStore } from '@/stores/folders'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
-import { parseMarkdownFrontmatter } from '@/utils/markdown'
+import { parseMarkdownFrontmatter, buildImportedMarkdown } from '@/utils/markdown'
+import { rewriteImageUrls } from '@/utils/blocks'
+import { importUrlApi, type UrlExtractResult } from '@/api/importUrl'
 import { resolveFolderIcon } from '@/utils/folderIcons'
 import { indexById, findArchiveFolder, isInArchive, ancestorIds } from '@/utils/folderTree'
 import { notesApi } from '@/api/notes'
@@ -110,6 +113,9 @@ export default function ListView() {
   // the tree panel (a specific folder) just before opening the file picker.
   const importTargetRef = useRef<string | null>(null)
   const [importing, setImporting] = useState(false)
+  // Folder the open Import URL modal will drop its note into; undefined = modal closed
+  // (null is a real value here, meaning the root folder).
+  const [importUrlTarget, setImportUrlTarget] = useState<string | null | undefined>(undefined)
 
   // Headless BlockNote editor: powers the list-view AI Assistant's markdown↔blocks
   // conversion for context building and plan execution (there is no on-screen editor here).
@@ -371,6 +377,44 @@ export default function ListView() {
           : `Imported ${imported} note${imported !== 1 ? 's' : ''}, ${failed} failed`,
       )
     }
+  }
+
+  // Turns an extracted web page into a note in targetFolderId. Images are downloaded
+  // into the media library first when asked for, so the note's image blocks can point
+  // at local copies; anything that fails to download stays pointed at the original.
+  async function handleImportUrl(
+    result: UrlExtractResult,
+    downloadResources: boolean,
+    targetFolderId: string | null,
+  ) {
+    let mapping: Record<string, string> = {}
+    let failedCount = 0
+    if (downloadResources && result.image_urls.length > 0) {
+      const resources = await importUrlApi.fetchResources(result.image_urls, result.url)
+      mapping = resources.mapping
+      failedCount = resources.failed.length
+    }
+
+    const blocks = rewriteImageUrls(
+      await aiEditor.tryParseMarkdownToBlocks(buildImportedMarkdown(result)),
+      mapping,
+    )
+
+    await createNote({
+      title: result.title || result.hostname || 'Untitled',
+      content: JSON.stringify(blocks.length > 0 ? blocks : [{ type: 'paragraph' }]),
+      category_id: defaultCategoryId,
+      folder_id: targetFolderId,
+      tags: result.hostname ? [result.hostname] : [],
+      summary: result.excerpt ?? null,
+    })
+
+    loadNotes(buildParams(), true)
+    showToast(
+      failedCount === 0
+        ? `Imported “${result.title}”`
+        : `Imported “${result.title}” — ${failedCount} image${failedCount !== 1 ? 's' : ''} couldn't be saved`,
+    )
   }
 
   function handleCustomizeFolder(folder: Folder) {
@@ -736,6 +780,7 @@ export default function ListView() {
         onNewDynamicFolder={handleNewDynamicFolder}
         onNewNote={handleNewNoteInFolder}
         onImport={handleImportToFolder}
+        onImportUrl={(id) => setImportUrlTarget(id)}
         onMove={(f) => setMoveTarget({ id: f.id })}
         onCustomize={handleCustomizeFolder}
         onDelete={handleDeleteFolder}
@@ -882,6 +927,14 @@ export default function ListView() {
         />
       )}
 
+      {importUrlTarget !== undefined && (
+        <ImportUrlModal
+          onImport={(result, downloadResources) =>
+            handleImportUrl(result, downloadResources, importUrlTarget)}
+          onClose={() => setImportUrlTarget(undefined)}
+        />
+      )}
+
       {folderModal && (
         <FolderCustomizeModal
           folder={folderModal.folder}
@@ -967,6 +1020,13 @@ export default function ListView() {
             >
               <Upload className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               {importing ? 'Importing…' : 'Import Markdown'}
+            </button>
+            <button
+              onClick={() => { setFabMenuOpen(false); setImportUrlTarget(folderId) }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
+            >
+              <Globe className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              Import URL
             </button>
           </div>
         )}

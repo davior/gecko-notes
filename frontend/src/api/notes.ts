@@ -40,6 +40,7 @@ export interface NoteCreate {
   category_id: string
   folder_id?: string | null
   tags?: string[]
+  summary?: string | null
 }
 
 export interface NoteUpdate {
