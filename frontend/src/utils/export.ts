@@ -7,7 +7,7 @@ import { renderMermaid, svgToDataUri, noteIdFromHref } from '@/utils/diagram'
 // which can't display SVG. Sized from the SVG's own width/height attributes (falling
 // back to the viewBox's width/height if Mermaid omits explicit attributes), drawn at 2×
 // for crisp output on a white background.
-async function svgToPngData(svg: string): Promise<{ data: Uint8Array; width: number; height: number }> {
+export async function svgToPngData(svg: string): Promise<{ data: Uint8Array; width: number; height: number }> {
   const m = svg.match(/^<svg[^>]*\swidth="([\d.]+)"[^>]*\sheight="([\d.]+)"/)
   let width = m ? Math.round(parseFloat(m[1])) : 0
   let height = m ? Math.round(parseFloat(m[2])) : 0
@@ -1115,7 +1115,7 @@ export async function copyAsRichText(note: Note): Promise<void> {
 
 // ─── Download helpers ─────────────────────────────────────────────────────────
 
-function downloadBlob(blob: Blob, filename: string): void {
+export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

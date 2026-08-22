@@ -203,6 +203,37 @@ class TranscriptionJob(SQLModel, table=True):
     updated_at: datetime
 
 
+class VideoRenderJob(SQLModel, table=True):
+    """One "generate video from article" render.
+
+    Follows TranscriptionJob's shape — a queued row a background worker picks up
+    and writes results into the user's media dir — with the progress fields a
+    multi-minute render needs, and the render options kept as one JSON blob so
+    a saved-preset feature never needs a schema change.
+    """
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    note_id: str = Field(index=True)
+    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
+    stage: str = Field(default="")         # "Narrating" | "Rendering" | "Stitching"
+    progress: int = Field(default=0)       # 0-100
+    detail: str = Field(default="")        # e.g. "shot 7 of 19"
+    options: str = Field(default="{}")     # RenderOptions, JSON as text
+    quality: str = Field(default="full")   # "preview" | "full"
+    note_title: str = Field(default="")    # snapshot, for download filenames
+    result_filename: Optional[str] = None      # rendered .mp4
+    subtitle_filename: Optional[str] = None    # .srt sidecar
+    thumbnail_filename: Optional[str] = None   # poster .jpg
+    duration_seconds: Optional[float] = None
+    size_bytes: Optional[int] = None
+    # True once the worker has appended the result to the note, so neither side
+    # inserts it twice.
+    inserted: bool = Field(default=False)
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class Theme(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

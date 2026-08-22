@@ -1585,7 +1585,7 @@ def update_speech_config(
 # provider+voice+text and bounded by a simple oldest-first prune. Entirely
 # best-effort — any filesystem error just falls through to a live synthesis.
 _TTS_CACHE_DIR = Path(_MEDIA_ROOT) / "_tts_cache"
-_TTS_CACHE_MAX_FILES = 500
+_TTS_CACHE_MAX_FILES = 2000
 
 
 def _tts_cache_key(provider: str, voice: str, text: str) -> str:
@@ -1641,10 +1641,12 @@ async def _deepgram_tts(api_key: str, voice_model: str, text: str) -> bytes:
     return data
 
 
-async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voice_hint: Optional[str] = None) -> Response:
-    """Synthesise `text` via the user's selected fal.ai TTS model and return the audio.
-    This is the original read-aloud path, unchanged; the provider router below calls
-    it directly, or as the fallback when Deepgram is unavailable under `auto`."""
+async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voice_hint: Optional[str] = None) -> Tuple[bytes, str]:
+    """Synthesise `text` via the user's selected fal.ai TTS model.
+
+    Returns `(audio_bytes, media_type)` rather than a Response so non-HTTP
+    callers — the article-to-video renderer runs in a worker thread — can reuse
+    the same path as read-aloud."""
     speech_cfg = load_speech_config(session, user_id)
     tts_model = speech_cfg["tts_model"]
     available_voices = get_voices_for_model(session, tts_model, speech_cfg["custom_tts_models"])
@@ -1654,6 +1656,15 @@ async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voic
     voice = (voice_hint or "").strip()
     if voice not in available_voices:
         voice = available_voices[0] if available_voices else DEFAULT_TTS_VOICE
+
+    # Cache on the model as well as the voice — the same words in the same voice
+    # sound different from a different model. Rendering a video re-reads whole
+    # sections (a 480p preview then a 1080p final), and this is what keeps the
+    # second pass from billing for the narration all over again.
+    cache_key = _tts_cache_key(f"fal:{tts_model}", voice, text)
+    cached = _tts_cache_get(cache_key)
+    if cached is not None:
+        return cached, "audio/mpeg"
 
     # 1) Ask fal to synthesise the audio (blocking synchronous endpoint).
     resp = await _post_upstream(
@@ -1692,18 +1703,25 @@ async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voic
         cost_estimated=cost_estimated,
     )
     media_type = (body.get("audio") or {}).get("content_type") or audio_resp.headers.get("content-type") or "audio/mpeg"
-    return Response(content=data, media_type=media_type)
+    if "mpeg" in media_type or "mp3" in media_type:
+        _tts_cache_put(cache_key, data)
+    return data, media_type
 
 
-@router.post("/speech/tts")
-async def synthesize_speech(
-    payload: TTSRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    user_id = _get_user_id(request)
+async def synthesize_tts_bytes(
+    session: Session, user_id: str, text: str, *, voice: Optional[str] = None,
+) -> Tuple[bytes, str]:
+    """Synthesise one piece of text with the account's TTS settings.
 
-    text = (payload.text or "").strip()
+    The shared core behind both read-aloud and the article-to-video renderer:
+    it resolves the provider, honours the disk cache, records usage, and returns
+    `(audio_bytes, media_type)`. Callers outside a request (the render worker
+    runs on its own thread) drive it with `asyncio.run`.
+
+    Raises HTTPException on failure — the HTTP endpoint surfaces that directly,
+    and the worker turns it into a job error.
+    """
+    text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
     if len(text) > _TTS_MAX_CHARS:
@@ -1734,7 +1752,7 @@ async def synthesize_speech(
         cache_key = _tts_cache_key("deepgram", dg_voice, text)
         cached = _tts_cache_get(cache_key)
         if cached is not None:
-            return Response(content=cached, media_type="audio/mpeg")
+            return cached, "audio/mpeg"
         try:
             data = await _deepgram_tts(deepgram_key, dg_voice, text)
         except HTTPException:
@@ -1742,17 +1760,28 @@ async def synthesize_speech(
             # read-aloud outright; an explicit "deepgram" choice surfaces the error.
             if tts_provider == "auto" and fal_key:
                 logger.warning("Deepgram TTS failed for user %s; falling back to fal.ai", user_id)
-                return await _fal_tts(session, user_id, fal_key, text, voice_hint=payload.model)
+                return await _fal_tts(session, user_id, fal_key, text, voice_hint=voice)
             raise
         _tts_cache_put(cache_key, data)
         _record_usage(
             session, user_id, "tts", dg_voice, len(text), "chars",
             provider="deepgram", cost=None, cost_estimated=True,
         )
-        return Response(content=data, media_type="audio/mpeg")
+        return data, "audio/mpeg"
 
-    # ── fal.ai path (unchanged) ───────────────────────────────────────────────
-    return await _fal_tts(session, user_id, fal_key, text, voice_hint=payload.model)
+    # ── fal.ai path ───────────────────────────────────────────────────────────
+    return await _fal_tts(session, user_id, fal_key, text, voice_hint=voice)
+
+
+@router.post("/speech/tts")
+async def synthesize_speech(
+    payload: TTSRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    data, media_type = await synthesize_tts_bytes(session, user_id, payload.text, voice=payload.model)
+    return Response(content=data, media_type=media_type)
 
 
 @router.get("/usage")

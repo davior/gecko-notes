@@ -42,8 +42,16 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Recorded video is saved into the note as a playable video block
 - Optional **async transcript generation** — the audio track is extracted and sent to fal.ai in the background, and the resulting transcript is attached to the note as a file once ready, without blocking the editor
 
+### Article to video
+- **Generate video from article** — turns a note into a narrated MP4: each image or video in the document becomes the background for the text beneath it, read aloud in your chosen TTS voice
+- Videos in the article play with their own audio (the narration waits for them) or loop silently under the narration when they have no sound
+- **Aspect presets** for 16:9 (YouTube), 9:16 (Shorts/TikTok) and 1:1 (Instagram) at 720p/1080p/4K, with a fast 480p preview pass — narration is cached, so a full render afterwards costs no extra speech
+- Optional **animated waveform** (style, colour, position, height), **watermark** with an uploaded icon and caption, and a **fixed text overlay**
+- **Title screens**, optional chapter screens, chapter markers embedded in the MP4, an automatic thumbnail, and **subtitles** as an `.srt` sidecar, a track inside the MP4, or burned into the picture
+- Renders in the background with progress in the header and the browser tab, and can be cancelled mid-render — the finished video is attached to the note by the server, so it arrives even if you close the tab
+
 ### Sharing & export
-- Export to PDF, Word (.docx), Markdown, HTML, MP3, or clipboard
+- Export to PDF, Word (.docx), Markdown, HTML, MP3, MP4 video, or clipboard
 - Public note sharing with social-media preview metadata (Open Graph / Twitter cards)
 - Shared pages include social share + like buttons (with optional Umami analytics) and a print option
 - Share via Email, Facebook, X (Twitter), or Substack
@@ -121,6 +129,10 @@ Additional optional settings (see `.env.example` for the full list):
 | `UPLOAD_MAX_SIZE` | Maximum upload size in nginx format (default `1g`) |
 | `NOTE_VERSION_INTERVAL_MINUTES` | How often the editor snapshots a note version while focused (default `5`) |
 | `NOTE_VERSION_MAX_COUNT` | Maximum versions kept per note before older ones are pruned (default `50`) |
+| `RENDER_MAX_CONCURRENCY` | How many article-to-video renders may run at once (default `1`) |
+| `VIDEO_MAX_SHOTS` | Refuse a render needing more segments than this (default `200`) |
+| `VIDEO_MAX_NARRATION_CHARS` | Refuse a render with more narration than this (default `60000`) |
+| `VIDEO_JOB_RETENTION_DAYS` | Delete render artefacts older than this, unless the video was added to a note (default `14`; `0` keeps everything) |
 | `COMPOSE_FILE` | Set to `docker-compose.yml:docker-compose.prod.yml` to always include the reverse-proxy overlay |
 | `APP_BASE_URL` | Public origin used to build links in emails (e.g. `https://notes.example.com`) |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP server host and port (default port `587`) |
@@ -235,7 +247,9 @@ uvicorn app.main:app --reload --port 8000
 
 Use Python 3.12 for local backend development. The current backend dependency stack may not start cleanly on newer Python releases such as 3.14.
 
-`ffmpeg` must be on `PATH` for video transcript generation (extracts the audio track before sending it to fal.ai). Install it with your OS package manager, e.g. `apt install ffmpeg` or `brew install ffmpeg`. The Docker image installs it automatically.
+`ffmpeg` must be on `PATH` for video transcript generation (extracts the audio track before sending it to fal.ai) and for article-to-video rendering. Install it with your OS package manager, e.g. `apt install ffmpeg` or `brew install ffmpeg`. The Docker image installs it automatically.
+
+Article-to-video also uses `ffprobe` (shipped alongside ffmpeg) and the `showwaves`, `gblur` and `subtitles` filters. The backend probes for these at startup and degrades gracefully — the waveform is skipped, and burned-in subtitles fall back to an `.srt` sidecar — logging a warning rather than failing a render partway through.
 
 Local backend runs and Docker Compose both use the same persistent paths by default:
 `./data/db/notes.db` and `./data/media/`.
@@ -276,7 +290,9 @@ gecko-notes/
     │   ├── limiter.py
     │   ├── seed.py
     │   └── routers/    # notes, annotations, ai_sessions, categories, folders,
-    │   │               #   media, settings, transcription, data, shared, auth, users
+    │   │               #   media, settings, transcription, video, data, shared, auth, users
+    │   ├── video/      # Article-to-video: segmenter, narration, ffmpeg builders,
+    │   │               #   Pillow composition, renderer, render worker
     └── Dockerfile
 ```
 

@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -26,17 +26,21 @@ import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
-import { starterFor, newDiagramId, markPendingOpen, type DiagramKind } from '@/utils/diagram'
+import { starterFor, newDiagramId, markPendingOpen, renderMermaid, type DiagramKind } from '@/utils/diagram'
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
 import ImageGenModal from '@/components/ImageGenModal'
+import VideoGenModal from '@/components/VideoGenModal'
+import VideoJobIndicator from '@/components/VideoJobIndicator'
 import NoteStatsModal from '@/components/NoteStatsModal'
 import FindReplaceBar from '@/components/FindReplaceBar'
 
 import { useNotesStore } from '@/stores/notes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
+import { useVideoJobsStore } from '@/stores/videoJobs'
+import type { RenderOptions, VideoRenderJob } from '@/api/videoGen'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { transcriptionApi } from '@/api/transcription'
@@ -46,7 +50,7 @@ import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation, type DictationMode } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
-import { noteToMarkdownBody } from '@/utils/export'
+import { noteToMarkdownBody, svgToPngData } from '@/utils/export'
 import { ARCHIVE_SYSTEM_KEY } from '@/utils/folderTree'
 
 const EMPTY_DOCUMENT: PartialBlock[] = [{ type: 'paragraph' }]
@@ -157,6 +161,8 @@ export default function EditorView() {
   const [showNotePicker, setShowNotePicker] = useState(false)
   const [showVideoRecorder, setShowVideoRecorder] = useState(false)
   const [showImageGen, setShowImageGen] = useState(false)
+  const [showVideoGen, setShowVideoGen] = useState(false)
+  const [diagramImages, setDiagramImages] = useState<Record<string, string>>({})
   const [showHistory, setShowHistory] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [findOpen, setFindOpen] = useState(false)
@@ -856,6 +862,90 @@ export default function EditorView() {
     tts.play(text)
   }
 
+  const startVideoJob = useVideoJobsStore((s) => s.start)
+
+  /**
+   * Open the render dialog, rasterising any Mermaid diagrams first.
+   *
+   * Diagrams live in the note as Mermaid source and are drawn by the browser, so
+   * the server can't use one as a background. Rendering them here — with the
+   * same SVG-to-PNG path the PDF and HTML exporters use — and uploading the
+   * result lets the backend treat them as ordinary images.
+   */
+  async function openVideoGen() {
+    const id = createdNoteId.current || latestNoteId.current
+    if (!id) return
+    if (hasPendingChanges.current) await doSave(true)
+
+    const rasterised: Record<string, string> = {}
+    const blocks = (editor?.document ?? []) as { id?: string; type?: string; props?: { source?: string } }[]
+    for (const block of blocks) {
+      const source = block.type === 'diagram' ? block.props?.source : undefined
+      if (!block.id || !source) continue
+      try {
+        const { svg } = await renderMermaid(source)
+        if (!svg) continue
+        const { data } = await svgToPngData(svg)
+        const file = new File([new Blob([data as BlobPart], { type: 'image/png' })], `diagram-${block.id}.png`, { type: 'image/png' })
+        const uploaded = await mediaApi.upload(file)
+        rasterised[block.id] = uploaded.data.url
+      } catch {
+        // A diagram that won't render just isn't used as a background.
+      }
+    }
+    setDiagramImages(rasterised)
+    setShowVideoGen(true)
+  }
+
+  async function runVideoGen(options: RenderOptions, quality: 'preview' | 'full') {
+    const id = createdNoteId.current || latestNoteId.current
+    if (!id) throw new Error('Save the note first')
+    await startVideoJob(id, options, quality)
+    showToast(quality === 'preview' ? 'Rendering a preview…' : 'Rendering your video…')
+  }
+
+  /** Drop a finished render into the open note as a playable block.
+   *
+   * The server appends the block to the stored note when the render finishes, so
+   * a video still arrives if the tab was closed. But an editor that is open on
+   * that note holds its own document and would overwrite that append on its next
+   * autosave — so the live document gets the block too, guarded by the URL so it
+   * can only ever land once.
+   */
+  const insertRenderedVideo = useCallback((job: VideoRenderJob) => {
+    if (!job.result_url || !editor) return false
+    const already = editor.document.some(
+      (b) => (b.props as { url?: string } | undefined)?.url === job.result_url,
+    )
+    if (already) return false
+    insertBlocksAtCursor([{
+      id: `video-${job.id}`,
+      type: 'videoFile',
+      props: { url: job.result_url, name: `Video — ${job.note_title || title || 'note'}` },
+    } as unknown as PartialBlock])
+    return true
+  }, [editor, insertBlocksAtCursor, title])
+
+  // Reconcile finished renders with the open editor. Runs for every completed
+  // job on this note, whether it finished while the user watched or while the
+  // tab was closed and the server attached it on their behalf.
+  const videoJobs = useVideoJobsStore((s) => s.jobs)
+  const reconciledVideos = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const openNoteId = createdNoteId.current || latestNoteId.current
+    if (!openNoteId || !editor) return
+    for (const job of Object.values(videoJobs)) {
+      if (job.status !== 'done' || !job.result_url) continue
+      if (job.note_id !== openNoteId || !job.auto_insert) continue
+      if (reconciledVideos.current.has(job.id)) continue
+      reconciledVideos.current.add(job.id)
+      if (insertRenderedVideo(job)) {
+        showToast('Video added to this note')
+        void doSave(true)
+      }
+    }
+  }, [videoJobs, editor, insertRenderedVideo])
+
   async function handleExportAudio() {
     const text = speechText()
     if (!text) { showToast('Nothing to read'); return }
@@ -1249,6 +1339,14 @@ export default function EditorView() {
       icon: <ImageIcon className="w-4 h-4" />,
       onItemClick: () => setShowImageGen(true),
     }
+    const videoGenItem: DefaultReactSuggestionItem = {
+      title: 'Generate video',
+      subtext: 'Narrate this article over its images as an MP4',
+      aliases: ['video', 'mp4', 'render', 'presentation', 'narrate'],
+      group: 'Basic blocks',
+      icon: <Clapperboard className="w-4 h-4" />,
+      onItemClick: () => { void openVideoGen() },
+    }
     const diagramItems: DefaultReactSuggestionItem[] = [
       { kind: 'flowchart' as const, title: 'Flow chart', subtext: 'Insert a flow chart diagram', aliases: ['flowchart', 'flow chart', 'flow', 'process'], icon: <Workflow className="w-4 h-4" /> },
       { kind: 'mindmap' as const, title: 'Mind map', subtext: 'Insert a mind map diagram', aliases: ['mindmap', 'mind map', 'brainstorm'], icon: <Network className="w-4 h-4" /> },
@@ -1264,7 +1362,8 @@ export default function EditorView() {
       onItemClick: () => insertDiagram(kind),
     }))
     return filterSuggestionItems(
-      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, imageGenItem, ...diagramItems],
+      [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, imageGenItem,
+       ...(falKeyConfigured ? [videoGenItem] : []), ...diagramItems],
       query,
     )
   }
@@ -1342,9 +1441,21 @@ export default function EditorView() {
           >
             <FolderInput className="w-4 h-4" />
           </button>
+          <VideoJobIndicator
+            onInsert={(job) => {
+              if (insertRenderedVideo(job)) { showToast('Video inserted'); void doSave(true) }
+              else showToast('That video is already in this note')
+            }}
+          />
           {note && (
             <span ref={exportAnchorRef}>
-              <ExportMenu note={note} onToast={showToast} onExportAudio={falKeyConfigured ? handleExportAudio : undefined} onPublishSubstack={substackConfigured ? handlePublishSubstack : undefined} />
+              <ExportMenu
+                note={note}
+                onToast={showToast}
+                onExportAudio={falKeyConfigured ? handleExportAudio : undefined}
+                onPublishSubstack={substackConfigured ? handlePublishSubstack : undefined}
+                onGenerateVideo={falKeyConfigured ? openVideoGen : undefined}
+              />
             </span>
           )}
           {note && <ShareMenu note={note} onToast={showToast} onUpdate={setNote} />}
@@ -1742,6 +1853,15 @@ export default function EditorView() {
         />
       )}
 
+      {showVideoGen && (
+        <VideoGenModal
+          noteId={createdNoteId.current || latestNoteId.current || ''}
+          noteTitle={title || 'Untitled'}
+          diagramImages={diagramImages}
+          onGenerate={runVideoGen}
+          onClose={() => setShowVideoGen(false)}
+        />
+      )}
       {showImageGen && (
         <ImageGenModal
           onInsert={(url, caption) => insertBlocksAtCursor([{ type: 'image', props: { url, caption } } as unknown as PartialBlock])}
