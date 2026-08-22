@@ -154,6 +154,28 @@ erDiagram
         datetime updated_at
     }
 
+    VideoRenderJob {
+        string   id                 PK
+        string   user_id            "app-level ref to User.id"
+        string   note_id            "app-level ref to Note.id"
+        string   status             "queued / processing / done / error / cancelled"
+        string   stage              "Narrating / Rendering / Stitching"
+        int      progress           "0-100"
+        string   detail             "e.g. segment 7 of 19"
+        string   options            "RenderOptions, JSON as text"
+        string   quality            "preview / full"
+        string   note_title         "snapshot, for download filenames"
+        string   result_filename    "rendered .mp4 in user media dir"
+        string   subtitle_filename  ".srt sidecar"
+        string   thumbnail_filename "poster .jpg"
+        float    duration_seconds
+        int      size_bytes
+        bool     inserted           "appended to the note when done"
+        string   error_message
+        datetime created_at
+        datetime updated_at
+    }
+
     Theme {
         string   id             PK
         string   name
@@ -215,12 +237,16 @@ erDiagram
     %% -- Note-scoped AI sessions (note_id nullable -> global sessions) --
     Note |o--o{ AISession       : "scopes"
 
+    %% -- Article-to-video renders (app-level note_id, not a DB FK) --
+    Note ||--o{ VideoRenderJob  : "renders"
+
     %% -- Application-level ownership (user_id columns; not DB FKs) --
     User ||--o{ NoteVersion      : "authors"
     User ||--o{ UserSetting      : "has"
     User ||--o{ UsageEvent       : "generates"
     User ||--o{ AISession        : "runs"
     User ||--o{ TranscriptionJob : "requests"
+    User ||--o{ VideoRenderJob   : "requests"
     User |o--o{ Note             : "owns"
     User |o--o{ Folder           : "owns"
     User |o--o{ Annotation       : "writes"
@@ -258,4 +284,4 @@ So `Category ||--o{ Note` reads "one Category classifies zero-or-many Notes; eve
 - **Per-user vs. global rows.** `Category`, `AppSetting`, and `ModelCatalogEntry` are global (no `user_id`). `Theme` is global when `user_id` is null (`is_global = true`), otherwise per-user. Everything else is scoped to a `user_id`.
 - **Denormalized snapshots.** `NoteVersion` stores `category_id` and `tags` as copied values at snapshot time — they are not live foreign keys, so they are intentionally left unlinked.
 - **JSON stored as text.** Following the codebase convention, several columns hold JSON serialized into a text column rather than a related table: `Note.content` / `tags` / `conversation`, `AISession.messages`, `NoteVersion.content` / `tags`, `AppSetting.value`, `UserSetting.value`, and the TTS override fields on `ModelCatalogEntry`.
-- **Media lives on disk, not in the database.** Uploaded images, generated audio/images, and recorded video referenced by `Theme.bg_image_url`, `TranscriptionJob.source_filename` / `result_filename`, and note attachments are stored in the bind-mounted `data/media/` volume — there is no media table.
+- **Media lives on disk, not in the database.** Uploaded images, generated audio/images, recorded video, and rendered article videos referenced by `Theme.bg_image_url`, `TranscriptionJob.source_filename` / `result_filename`, `VideoRenderJob.result_filename` / `subtitle_filename` / `thumbnail_filename`, and note attachments are stored in the bind-mounted `data/media/` volume — there is no media table. Render artefacts are the one kind swept on startup (see `VIDEO_JOB_RETENTION_DAYS`), and only when the video was never added to a note.

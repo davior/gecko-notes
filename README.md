@@ -48,7 +48,10 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - **Aspect presets** for 16:9 (YouTube), 9:16 (Shorts/TikTok) and 1:1 (Instagram) at 720p/1080p/4K, with a fast 480p preview pass — narration is cached, so a full render afterwards costs no extra speech
 - Optional **animated waveform** (style, colour, position, height), **watermark** with an uploaded icon and caption, and a **fixed text overlay**
 - **Title screens**, optional chapter screens, chapter markers embedded in the MP4, an automatic thumbnail, and **subtitles** as an `.srt` sidecar, a track inside the MP4, or burned into the picture
+- A chapter screen reads its own heading while the words are on screen; with chapter screens off, the heading is read inside the section it introduces
+- **Every text size is adjustable** — title screen, chapter screen, watermark icon and caption, and the fixed overlay — set as a percentage of the frame height, so one choice holds at every resolution and aspect ratio
 - Renders in the background with progress in the header and the browser tab, and can be cancelled mid-render — the finished video is attached to the note by the server, so it arrives even if you close the tab
+- Choice of TTS voice and speaking rate per video, and options are remembered between renders
 
 ### Sharing & export
 - Export to PDF, Word (.docx), Markdown, HTML, MP3, MP4 video, or clipboard
