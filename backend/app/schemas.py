@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Optional, Any, List, Generic, TypeVar, Literal, Annotated
+from typing import Optional, Any, Dict, List, Generic, TypeVar, Literal, Annotated
 from datetime import datetime, timezone, date
 from pydantic import BaseModel, EmailStr, Field, field_validator, PlainSerializer
 
@@ -599,6 +599,43 @@ class TranscriptionJobRead(BaseModel):
     filename: Optional[str] = None
     result_url: Optional[str] = None
     error_message: Optional[str] = None
+
+
+class VideoRenderJobRead(BaseModel):
+    id: str
+    note_id: str
+    status: str
+    stage: str = ""
+    progress: int = 0
+    detail: str = ""
+    quality: str = "full"
+    note_title: str = ""
+    result_url: Optional[str] = None
+    subtitle_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    size_bytes: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    # Whether the worker appended (or will append) the result to the note, so an
+    # open editor knows not to insert a second copy.
+    auto_insert: bool = False
+    inserted: bool = False
+
+
+class VideoRenderRequest(BaseModel):
+    note_id: str
+    # RenderOptions; validated by app.video.options rather than here so the
+    # option schema lives in one place next to the renderer that consumes it.
+    options: Dict[str, Any] = {}
+    quality: str = "full"  # "preview" renders small and fast, reusing cached narration
+
+
+class VideoEstimateRead(BaseModel):
+    shots: int
+    narration_chars: int
+    estimated_seconds: float
+    warnings: List[str] = []
 
 
 # Auth schemas

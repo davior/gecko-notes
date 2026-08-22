@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, FileText, FileDown, Code, Clipboard, ChevronDown, FileAudio, FileArchive, Send } from 'lucide-react'
+import { Download, FileText, FileDown, Code, Clipboard, ChevronDown, FileAudio, FileArchive, Send, Clapperboard } from 'lucide-react'
 import type { Note } from '@/api/notes'
 import {
   exportToPDF,
@@ -21,11 +21,14 @@ interface Props {
   onExportAudio?: () => Promise<void>
   // When provided (i.e. Substack is configured), a "Publish to Substack" item is shown.
   onPublishSubstack?: () => Promise<void>
+  // When provided (i.e. a speech provider is configured), a "Video (MP4)" item
+  // is shown, which opens the render options dialog.
+  onGenerateVideo?: () => Promise<void>
 }
 
-type ExportKey = 'pdf' | 'word' | 'md' | 'mdzip' | 'html' | 'htmlzip' | 'plain' | 'rich' | 'audio' | 'substack'
+type ExportKey = 'pdf' | 'word' | 'md' | 'mdzip' | 'html' | 'htmlzip' | 'plain' | 'rich' | 'audio' | 'video' | 'substack'
 
-export default function ExportMenu({ note, onToast, onExportAudio, onPublishSubstack }: Props) {
+export default function ExportMenu({ note, onToast, onExportAudio, onPublishSubstack, onGenerateVideo }: Props) {
   const { open, setOpen, triggerRef, dropdownRef, style } = useDropdown('right')
   const [loading, setLoading] = useState<ExportKey | null>(null)
 
@@ -37,6 +40,7 @@ export default function ExportMenu({ note, onToast, onExportAudio, onPublishSubs
     { key: 'html', label: 'HTML', icon: Code, action: () => exportToHTML(note) },
     { key: 'htmlzip', label: 'HTML with Resources', icon: FileArchive, action: () => exportToHTMLWithResources(note) },
     ...(onExportAudio ? [{ key: 'audio' as const, label: 'Audio (MP3)', icon: FileAudio, action: onExportAudio }] : []),
+    ...(onGenerateVideo ? [{ key: 'video' as const, label: 'Video (MP4)', icon: Clapperboard, action: onGenerateVideo }] : []),
     ...(onPublishSubstack ? [{ key: 'substack' as const, label: 'Publish to Substack', icon: Send, action: onPublishSubstack }] : []),
     { key: 'plain', label: 'Copy plain text', icon: Clipboard, action: async () => { await copyAsPlainText(note); onToast('Copied to clipboard') } },
     { key: 'rich', label: 'Copy rich text', icon: Clipboard, action: async () => { await copyAsRichText(note); onToast('Copied to clipboard') } },
