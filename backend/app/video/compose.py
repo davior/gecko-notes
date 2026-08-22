@@ -155,6 +155,27 @@ def truncate_to_width(
     return (trimmed.rstrip() + ellipsis) if trimmed else ""
 
 
+def _edge_of(position: str) -> str:
+    """Which horizontal band a position sits in — top, centre or bottom.
+
+    Two overlays only compete for width when they're in the same band; one at
+    the bottom and one at the top are free to use the full frame each.
+    """
+    if position.startswith("top"):
+        return "top"
+    if position.startswith("bottom"):
+        return "bottom"
+    return "center"
+
+
+def _side_of(position: str) -> str:
+    if position.endswith("left"):
+        return "left"
+    if position.endswith("right"):
+        return "right"
+    return "center"
+
+
 def _anchor_xy(position: str, width: int, height: int, box_w: int, box_h: int, margin: int) -> Tuple[int, int]:
     if position == "top-left":
         return (margin, margin)
@@ -183,8 +204,8 @@ def card_image(
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
-    title_font = load_font(SEMIBOLD, max(18, int(height * 0.085)))
-    sub_font = load_font(REGULAR, max(12, int(height * 0.035)))
+    title_font = load_font(SEMIBOLD, max(14, int(height * 0.068)))
+    sub_font = load_font(REGULAR, max(10, int(height * 0.029)))
     max_width = int(width * 0.82)
 
     title_lines = wrap_text(draw, title or "", title_font, max_width)[:4]
@@ -192,7 +213,7 @@ def card_image(
 
     line_h = int(title_font.size * 1.22)
     sub_h = int(sub_font.size * 1.35)
-    gap = int(height * 0.035) if sub_lines else 0
+    gap = int(height * 0.030) if sub_lines else 0
     block_h = len(title_lines) * line_h + gap + len(sub_lines) * sub_h
     y = (height - block_h) // 2
 
@@ -235,20 +256,41 @@ def overlay_layer(
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
+    # An overlay only has to share the frame's width when something else sits in
+    # the same band. Alone on the bottom edge it gets the whole bottom edge, and
+    # only wraps when the text genuinely doesn't fit across it.
+    shares_edge = (
+        wants_watermark and wants_text
+        and _edge_of(overlay_text.position) == _edge_of(watermark.position)
+    )
+    # ...and if they're also on the same side, splitting the width wouldn't
+    # separate them at all, so the watermark is stacked clear of the text instead.
+    stacked = shares_edge and _side_of(overlay_text.position) == _side_of(watermark.position)
+
+    def _budget(margin: int, taken: int = 0) -> int:
+        usable = width - margin * 2 - taken
+        if shares_edge and not stacked:
+            usable = (usable - margin) // 2
+        return max(1, usable)
+
+    # Where the fixed text ended up, so a stacked watermark can avoid it.
+    text_rect: Optional[Tuple[int, int, int, int]] = None
+
     if wants_text:
         margin = int(min(width, height) * max(0, min(25, overlay_text.margin_pct)) / 100)
         colour = parse_colour(overlay_text.color, (255, 255, 255))
-        text_budget = max(1, int(width * 0.45) if wants_watermark else width - margin * 2)
+        text_budget = _budget(margin)
         font = fit_font(
             draw, overlay_text.text, SEMIBOLD,
-            max(11, int(height * max(1, min(20, overlay_text.size_pct)) / 100)),
-            text_budget, min_size=max(9, height // 90),
+            max(9, int(height * max(1, min(20, overlay_text.size_pct)) / 100)),
+            text_budget, min_size=max(8, height // 110),
         )
         lines = wrap_text(draw, overlay_text.text, font, text_budget)[:4]
         line_h = int(font.size * 1.3)
         box_w = int(max((draw.textlength(l, font=font) for l in lines), default=0))
         box_h = line_h * len(lines)
         x, y = _anchor_xy(overlay_text.position, width, height, box_w, box_h, margin)
+        text_rect = (x, y, box_w, box_h)
         for line in lines:
             lw = draw.textlength(line, font=font)
             # Right-aligned corners look wrong if the wrapped lines are ragged left.
@@ -274,18 +316,26 @@ def overlay_layer(
                 logger.warning("Could not load watermark icon %s: %s", watermark_icon, exc)
 
         caption = watermark.text.strip()
-        font = load_font(REGULAR, max(10, int(icon_h * 0.42)))
-        # Keep the mark inside its own corner. A caption defaulting to the note
-        # title can easily be wider than a 9:16 frame, which would push it across
-        # the whole bottom edge and collide with the fixed text in the opposite one.
+        font = load_font(REGULAR, max(9, int(icon_h * 0.38)))
+        # A caption defaulting to the note title can easily be wider than a 9:16
+        # frame, so it is trimmed to whatever width this edge actually offers.
         icon_w = icon.width if icon is not None else 0
-        budget = int(width * (0.45 if wants_text else 0.8)) - icon_w - margin
-        caption = truncate_to_width(draw, caption, font, budget)
-        cap_w = int(draw.textlength(caption, font=font)) if caption else 0
         gap = int(icon_h * 0.35) if (icon is not None and caption) else 0
+        caption = truncate_to_width(draw, caption, font, _budget(margin, icon_w + gap))
+        cap_w = int(draw.textlength(caption, font=font)) if caption else 0
+        if not caption:
+            gap = 0
         box_w = icon_w + gap + cap_w
         box_h = max(icon_h if icon is not None else 0, font.size)
         x, y = _anchor_xy(watermark.position, width, height, box_w, box_h, margin)
+
+        if stacked and text_rect is not None:
+            # Same edge and same side as the fixed text: sit clear of it rather
+            # than on top of it. Bottom stacks upward, everything else downward.
+            tx, ty, _tw, th = text_rect
+            spacing = max(4, int(height * 0.012))
+            y = ty - box_h - spacing if _edge_of(watermark.position) == "bottom" else ty + th + spacing
+            y = max(0, min(height - box_h, y))
 
         mark = Image.new("RGBA", (max(1, box_w), max(1, box_h)), (0, 0, 0, 0))
         mdraw = ImageDraw.Draw(mark)

@@ -92,7 +92,7 @@ class WatermarkSpec(BaseModel):
     position: Position = "bottom-right"
     opacity: float = 0.85
     # Icon height as a percentage of the frame height.
-    scale_pct: int = 7
+    scale_pct: int = 6
     margin_pct: int = 4
 
 
@@ -104,7 +104,7 @@ class OverlayTextSpec(BaseModel):
     position: Position = "bottom-left"
     color: str = "#ffffff"
     # Font size as a percentage of the frame height.
-    size_pct: int = 4
+    size_pct: int = 3
     margin_pct: int = 5
     shadow: bool = True
 
