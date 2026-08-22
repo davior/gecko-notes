@@ -50,6 +50,26 @@ function loadStoredOptions(): RenderOptions {
   return base
 }
 
+/** A size control. Every text size in a render is a percentage of the frame
+ *  height, so one setting looks the same at 720p, 1080p and 4K. */
+function SizeSlider({ label, value, min, max, onChange }: {
+  label: string
+  value: number
+  min: number
+  max: number
+  onChange: (next: number) => void
+}) {
+  return (
+    <div>
+      <label className="label">{label} — {value.toFixed(1)}%</label>
+      <input
+        type="range" min={min} max={max} step={0.1} className="w-full"
+        value={value} onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </div>
+  )
+}
+
 const ASPECTS: { id: AspectRatio; label: string; hint: string }[] = [
   { id: '16:9', label: '16:9', hint: 'YouTube' },
   { id: '9:16', label: '9:16', hint: 'Shorts / TikTok' },
@@ -106,9 +126,9 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   function patch(changes: Partial<RenderOptions>) {
     setOptions((prev) => ({ ...prev, ...changes }))
   }
-  function patchGroup<K extends 'waveform' | 'watermark' | 'overlay_text' | 'fallback'>(
-    group: K, changes: Partial<RenderOptions[K]>,
-  ) {
+  type GroupKey = 'waveform' | 'watermark' | 'overlay_text' | 'fallback'
+    | 'title_card_text' | 'chapter_card_text'
+  function patchGroup<K extends GroupKey>(group: K, changes: Partial<RenderOptions[K]>) {
     setOptions((prev) => ({ ...prev, [group]: { ...prev[group], ...changes } }))
   }
 
@@ -314,6 +334,12 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                     </select>
                   </div>
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <SizeSlider label="Icon size" min={1} max={20} value={options.watermark.scale_pct}
+                              onChange={(v) => patchGroup('watermark', { scale_pct: v })} />
+                  <SizeSlider label="Caption size" min={0.5} max={10} value={options.watermark.caption_pct}
+                              onChange={(v) => patchGroup('watermark', { caption_pct: v })} />
+                </div>
               </div>
             )}
           </section>
@@ -347,6 +373,10 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                   <label className="label">Colour</label>
                   <input type="color" className="input h-9 p-1" value={options.overlay_text.color}
                          onChange={(e) => patchGroup('overlay_text', { color: e.target.value })} />
+                </div>
+                <div className="col-span-2">
+                  <SizeSlider label="Text size" min={0.5} max={12} value={options.overlay_text.size_pct}
+                              onChange={(v) => patchGroup('overlay_text', { size_pct: v })} />
                 </div>
               </div>
             )}
@@ -382,6 +412,27 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                 Add the video to this note
               </label>
             </div>
+
+            {options.title_card && (
+              <div className="grid grid-cols-2 gap-3 pl-6">
+                <SizeSlider label="Title screen — title" min={1} max={20}
+                            value={options.title_card_text.title_pct}
+                            onChange={(v) => patchGroup('title_card_text', { title_pct: v })} />
+                <SizeSlider label="Title screen — subtitle" min={0.5} max={12}
+                            value={options.title_card_text.subtitle_pct}
+                            onChange={(v) => patchGroup('title_card_text', { subtitle_pct: v })} />
+              </div>
+            )}
+            {options.chapter_screens && (
+              <div className="grid grid-cols-2 gap-3 pl-6">
+                <SizeSlider label="Chapter screen — heading" min={1} max={20}
+                            value={options.chapter_card_text.title_pct}
+                            onChange={(v) => patchGroup('chapter_card_text', { title_pct: v })} />
+                <SizeSlider label="Chapter screen — subtitle" min={0.5} max={12}
+                            value={options.chapter_card_text.subtitle_pct}
+                            onChange={(v) => patchGroup('chapter_card_text', { subtitle_pct: v })} />
+              </div>
+            )}
 
             <div className="grid grid-cols-3 gap-3 pt-1">
               <div>

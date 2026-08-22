@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
-from app.video.options import OverlayTextSpec, Position, WatermarkSpec
+from app.video.options import CardTextSpec, OverlayTextSpec, Position, WatermarkSpec
 
 logger = logging.getLogger(__name__)
 
@@ -192,8 +192,14 @@ def card_image(
     width: int, height: int, *,
     title: str, subtitle: str = "",
     background: Optional[Image.Image] = None,
+    sizes: Optional[CardTextSpec] = None,
 ) -> Image.Image:
-    """A title or chapter screen: large centred text over a dimmed background."""
+    """A title or chapter screen: large centred text over a dimmed background.
+
+    `sizes` gives the title and subtitle as percentages of the frame height, so
+    one setting holds at every resolution and aspect ratio.
+    """
+    spec = sizes or CardTextSpec()
     base = (background.copy() if background is not None
             else gradient_background(width, height, ["#1e293b", "#0f172a"], 135)).convert("RGB")
 
@@ -204,8 +210,8 @@ def card_image(
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
-    title_font = load_font(SEMIBOLD, max(14, int(height * 0.068)))
-    sub_font = load_font(REGULAR, max(10, int(height * 0.029)))
+    title_font = load_font(SEMIBOLD, max(10, int(height * spec.title_pct / 100)))
+    sub_font = load_font(REGULAR, max(8, int(height * spec.subtitle_pct / 100)))
     max_width = int(width * 0.82)
 
     title_lines = wrap_text(draw, title or "", title_font, max_width)[:4]
@@ -213,7 +219,10 @@ def card_image(
 
     line_h = int(title_font.size * 1.22)
     sub_h = int(sub_font.size * 1.35)
-    gap = int(height * 0.030) if sub_lines else 0
+    # Spacing follows the type rather than the frame, so the block stays in
+    # proportion when the sizes are turned down. The multipliers reproduce the
+    # default layout exactly.
+    gap = int(sub_font.size * 1.05) if sub_lines else 0
     block_h = len(title_lines) * line_h + gap + len(sub_lines) * sub_h
     y = (height - block_h) // 2
 
@@ -229,7 +238,7 @@ def card_image(
 
     # A short rule under the block, purely so a bare title doesn't float.
     rule_w = int(width * 0.12)
-    rule_y = y + int(height * 0.05)
+    rule_y = y + int(title_font.size * 0.75)
     draw.rounded_rectangle(
         [(width - rule_w) // 2, rule_y, (width + rule_w) // 2, rule_y + max(2, height // 400)],
         radius=max(1, height // 600), fill=(129, 140, 248, 210),
@@ -282,8 +291,8 @@ def overlay_layer(
         text_budget = _budget(margin)
         font = fit_font(
             draw, overlay_text.text, SEMIBOLD,
-            max(9, int(height * max(1, min(20, overlay_text.size_pct)) / 100)),
-            text_budget, min_size=max(8, height // 110),
+            max(8, int(height * overlay_text.size_pct / 100)),
+            text_budget, min_size=8,
         )
         lines = wrap_text(draw, overlay_text.text, font, text_budget)[:4]
         line_h = int(font.size * 1.3)
@@ -305,7 +314,7 @@ def overlay_layer(
     if wants_watermark:
         margin = int(min(width, height) * max(0, min(25, watermark.margin_pct)) / 100)
         icon: Optional[Image.Image] = None
-        icon_h = int(height * max(2, min(25, watermark.scale_pct)) / 100)
+        icon_h = max(2, int(height * watermark.scale_pct / 100))
         if watermark_icon:
             try:
                 with Image.open(watermark_icon) as raw:
@@ -316,7 +325,9 @@ def overlay_layer(
                 logger.warning("Could not load watermark icon %s: %s", watermark_icon, exc)
 
         caption = watermark.text.strip()
-        font = load_font(REGULAR, max(9, int(icon_h * 0.38)))
+        # Sized off the frame rather than off the icon, so the two can be
+        # balanced independently — a large mark beside small type, or the reverse.
+        font = load_font(REGULAR, max(8, int(height * watermark.caption_pct / 100)))
         # A caption defaulting to the note title can easily be wider than a 9:16
         # frame, so it is trimmed to whatever width this edge actually offers.
         icon_w = icon.width if icon is not None else 0

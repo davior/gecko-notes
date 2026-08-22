@@ -100,6 +100,8 @@ def _background_png(
             title=shot.card_title or note_title or "Untitled",
             subtitle=shot.card_subtitle or "",
             background=base,
+            sizes=(options.chapter_card_text if shot.card_kind == "chapter"
+                   else options.title_card_text),
         )
     else:
         image = base

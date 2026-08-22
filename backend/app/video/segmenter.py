@@ -46,6 +46,8 @@ class Shot:
     # Text drawn on a title/chapter card.
     card_title: Optional[str] = None
     card_subtitle: Optional[str] = None
+    # "title" or "chapter" — the two are sized independently.
+    card_kind: Optional[str] = None
     # When set, a chapter mark is emitted at this shot's start.
     chapter: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
@@ -246,6 +248,7 @@ def segment(
             kind="card",
             card_title=note_title or "Untitled",
             card_subtitle=author,
+            card_kind="title",
             chapter=note_title or None,
             label="title card",
         ))
@@ -303,7 +306,8 @@ def segment(
                         # the words were no longer on screen.
                         pending_card = Shot(
                             kind="card", card_title=heading, chapter=heading,
-                            narration=_as_sentence(heading), label="chapter card",
+                            card_kind="chapter", narration=_as_sentence(heading),
+                            label="chapter card",
                         )
                         # The card carries the chapter mark, so the section after
                         # it must not claim the same one and duplicate the entry.

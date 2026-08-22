@@ -7,8 +7,10 @@ is allowed to use, and whether two overlays collide.
 
 from PIL import Image
 
-from app.video.compose import _edge_of, _side_of, overlay_layer, wrap_text, load_font, SEMIBOLD
-from app.video.options import OverlayTextSpec, WatermarkSpec
+from app.video.compose import (
+    _edge_of, _side_of, card_image, overlay_layer, wrap_text, load_font, SEMIBOLD,
+)
+from app.video.options import CardTextSpec, OverlayTextSpec, RenderOptions, WatermarkSpec
 
 WIDTH, HEIGHT = 1280, 720
 
@@ -128,6 +130,76 @@ def test_edge_and_side_mapping():
 def test_no_layer_is_produced_when_there_is_nothing_to_show():
     assert _layer(_mark(enabled=False), _text(enabled=False)) is None
     assert _layer(_mark(enabled=False), _text(text="   ")) is None
+
+
+# ── configurable sizes ───────────────────────────────────────────────────────
+
+def _ink(card: Image.Image) -> int:
+    """Roughly how much type is on a card: bright pixels over its dim ground."""
+    grey = card.convert("L")
+    return sum(1 for p in grey.getdata() if p > 200)
+
+
+def test_card_type_scales_with_its_size_setting():
+    small = card_image(WIDTH, HEIGHT, title="A Reasonably Long Card Title",
+                       subtitle="by someone", sizes=CardTextSpec(title_pct=3.0, subtitle_pct=1.5))
+    large = card_image(WIDTH, HEIGHT, title="A Reasonably Long Card Title",
+                       subtitle="by someone", sizes=CardTextSpec(title_pct=10.0, subtitle_pct=4.0))
+    assert _ink(large) > _ink(small) * 2
+
+
+def test_a_card_with_no_sizes_given_uses_the_defaults():
+    assert _ink(card_image(WIDTH, HEIGHT, title="Title", subtitle="sub")) == _ink(
+        card_image(WIDTH, HEIGHT, title="Title", subtitle="sub", sizes=CardTextSpec())
+    )
+
+
+def test_title_and_chapter_screens_are_sized_independently():
+    options = RenderOptions()
+    assert options.title_card_text is not options.chapter_card_text
+    options.chapter_card_text.title_pct = 4.0
+    assert options.title_card_text.title_pct == 6.8
+
+
+def test_the_watermark_caption_is_sized_independently_of_the_icon():
+    def caption_box(caption_pct: float):
+        mark = WatermarkSpec(enabled=True, text="by Gecko Notes",
+                             position="bottom-right", caption_pct=caption_pct)
+        return _box(_layer(mark, _text(enabled=False)))
+
+    small, large = caption_box(1.5), caption_box(6.0)
+    assert _height_of(large) > _height_of(small)
+    assert large[2] - large[0] > small[2] - small[0]
+
+
+def test_size_defaults_match_the_shipped_look():
+    """These are the values the renders in the PR were checked against."""
+    options = RenderOptions()
+    assert (options.title_card_text.title_pct, options.title_card_text.subtitle_pct) == (6.8, 2.9)
+    assert (options.chapter_card_text.title_pct, options.chapter_card_text.subtitle_pct) == (6.8, 2.9)
+    assert (options.watermark.scale_pct, options.watermark.caption_pct) == (6.0, 2.3)
+    assert options.overlay_text.size_pct == 3.0
+
+
+def test_sizes_are_clamped_rather_than_rejected():
+    assert CardTextSpec(title_pct=999).title_pct == 25.0
+    assert CardTextSpec(title_pct=-1).title_pct == 1.0
+    assert CardTextSpec(subtitle_pct=0).subtitle_pct == 0.5
+    assert WatermarkSpec(scale_pct=999).scale_pct == 30.0
+    assert WatermarkSpec(caption_pct=0).caption_pct == 0.5
+    assert OverlayTextSpec(size_pct=999).size_pct == 20.0
+
+
+def test_whole_number_sizes_are_accepted():
+    """Stored options predating the switch to fractional percentages."""
+    assert CardTextSpec(title_pct=7).title_pct == 7.0
+    assert WatermarkSpec(scale_pct=6).scale_pct == 6.0
+
+
+def test_a_tiny_card_size_still_renders_legible_type():
+    card = card_image(WIDTH, HEIGHT, title="Tiny", subtitle="also tiny",
+                      sizes=CardTextSpec(title_pct=1.0, subtitle_pct=0.5))
+    assert _ink(card) > 0
 
 
 def test_wrap_text_never_exceeds_the_budget():

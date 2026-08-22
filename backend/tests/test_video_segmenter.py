@@ -168,6 +168,22 @@ def test_without_chapter_screens_the_heading_stays_in_its_section():
     assert [s.chapter for s in plan.shots if s.chapter] == ["Next Up"]
 
 
+def test_cards_declare_which_kind_they_are():
+    """Title and chapter screens are sized independently, so the renderer has to
+    be able to tell them apart."""
+    root = _media("a.png")
+    plan = _run([
+        {"id": "1", "type": "heading", "props": {"level": 1}, "content": _text("A Section")},
+        {"id": "2", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "3", "type": "paragraph", "content": _text("Body.")},
+    ], media_root=root,
+       options=RenderOptions(title_card=True, chapter_screens=True),
+       title="The Note", author="gecko")
+
+    kinds = [s.card_kind for s in plan.shots if s.kind == "card"]
+    assert kinds == ["title", "chapter"]
+
+
 def test_title_card_is_first_when_enabled():
     root = _media()
     plan = _run(

@@ -83,6 +83,17 @@ class WaveformSpec(BaseModel):
     scrim: float = 0.45
 
 
+# Every text size in a render is expressed as a percentage of the frame height,
+# so a setting chosen once looks the same at 720p, 1080p and 4K, and in every
+# aspect ratio. They are floats rather than ints because a whole percent is a
+# coarse step at these sizes — the difference between 6% and 7% of a 1080p frame
+# is 11 pixels of title.
+def _clamp_pct(low: float, high: float):
+    def _validate(value: float) -> float:
+        return max(low, min(high, float(value)))
+    return _validate
+
+
 class WatermarkSpec(BaseModel):
     """Corner watermark: an uploaded icon plus a caption line beside it."""
 
@@ -92,8 +103,14 @@ class WatermarkSpec(BaseModel):
     position: Position = "bottom-right"
     opacity: float = 0.85
     # Icon height as a percentage of the frame height.
-    scale_pct: int = 6
+    scale_pct: float = 6.0
+    # Caption size, also as a percentage of the frame height — independent of the
+    # icon, so the two can be balanced against each other.
+    caption_pct: float = 2.3
     margin_pct: int = 4
+
+    _scale = field_validator("scale_pct")(_clamp_pct(1.0, 30.0))
+    _caption = field_validator("caption_pct")(_clamp_pct(0.5, 15.0))
 
 
 class OverlayTextSpec(BaseModel):
@@ -104,9 +121,21 @@ class OverlayTextSpec(BaseModel):
     position: Position = "bottom-left"
     color: str = "#ffffff"
     # Font size as a percentage of the frame height.
-    size_pct: int = 3
+    size_pct: float = 3.0
     margin_pct: int = 5
     shadow: bool = True
+
+    _size = field_validator("size_pct")(_clamp_pct(0.5, 20.0))
+
+
+class CardTextSpec(BaseModel):
+    """Type sizes for a full-screen card (the title screen or a chapter screen)."""
+
+    title_pct: float = 6.8
+    subtitle_pct: float = 2.9
+
+    _title = field_validator("title_pct")(_clamp_pct(1.0, 25.0))
+    _subtitle = field_validator("subtitle_pct")(_clamp_pct(0.5, 15.0))
 
 
 class RenderOptions(BaseModel):
@@ -122,6 +151,10 @@ class RenderOptions(BaseModel):
     waveform: WaveformSpec = Field(default_factory=WaveformSpec)
     watermark: WatermarkSpec = Field(default_factory=WatermarkSpec)
     overlay_text: OverlayTextSpec = Field(default_factory=OverlayTextSpec)
+    # Sized separately: the opening title is usually the largest thing in the
+    # video, while chapter dividers read better a little smaller.
+    title_card_text: CardTextSpec = Field(default_factory=CardTextSpec)
+    chapter_card_text: CardTextSpec = Field(default_factory=CardTextSpec)
 
     # Append the finished video to the note as a playable block. Done by the
     # worker rather than the browser so a render survives the tab being closed.
