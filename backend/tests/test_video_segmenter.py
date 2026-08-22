@@ -93,19 +93,79 @@ def test_headings_become_chapter_marks_and_are_still_narrated():
     assert plan.shots[0].narration == "Chapter One."
 
 
+def _with_chapter_screens():
+    return RenderOptions(title_card=False, chapter_screens=True)
+
+
+CHAPTERED_DOC = [
+    {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
+    {"id": "2", "type": "paragraph", "content": _text("First section.")},
+    {"id": "3", "type": "heading", "props": {"level": 2}, "content": _text("Next Up")},
+    {"id": "4", "type": "paragraph", "content": _text("Second section.")},
+]
+
+
 def test_chapter_screens_insert_a_card_between_sections():
     root = _media("a.png")
-    plan = _run([
-        {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
-        {"id": "2", "type": "paragraph", "content": _text("First section.")},
-        {"id": "3", "type": "heading", "props": {"level": 2}, "content": _text("Next Up")},
-        {"id": "4", "type": "paragraph", "content": _text("Second section.")},
-    ], media_root=root, options=RenderOptions(title_card=False, chapter_screens=True))
+    plan = _run(CHAPTERED_DOC, media_root=root, options=_with_chapter_screens())
 
-    kinds = [s.kind for s in plan.shots]
-    assert "card" in kinds
+    assert "card" in [s.kind for s in plan.shots]
     card = next(s for s in plan.shots if s.kind == "card")
     assert card.card_title == "Next Up"
+
+
+def test_a_chapter_screen_reads_its_own_heading():
+    """Otherwise the heading is shown in silence and then spoken over the next
+    shot, once the words are no longer on screen."""
+    root = _media("a.png")
+    plan = _run(CHAPTERED_DOC, media_root=root, options=_with_chapter_screens())
+
+    card = next(s for s in plan.shots if s.kind == "card")
+    assert card.narration == "Next Up."
+
+
+def test_a_chapter_screens_heading_is_not_read_again_in_the_next_section():
+    root = _media("a.png")
+    plan = _run(CHAPTERED_DOC, media_root=root, options=_with_chapter_screens())
+
+    after = plan.shots[plan.shots.index(next(s for s in plan.shots if s.kind == "card")) + 1]
+    assert after.narration == "Second section."
+
+
+def test_a_chapter_screen_does_not_duplicate_its_chapter_mark():
+    root = _media("a.png")
+    plan = _run(CHAPTERED_DOC, media_root=root, options=_with_chapter_screens())
+
+    marks = [s.chapter for s in plan.shots if s.chapter]
+    assert marks == ["Next Up"]
+
+
+def test_a_chapter_mark_never_labels_the_section_above_it():
+    root = _media("a.png", "b.png")
+    plan = _run([
+        {"id": "1", "type": "heading", "props": {"level": 1}, "content": _text("One")},
+        {"id": "2", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "3", "type": "paragraph", "content": _text("First section.")},
+        {"id": "4", "type": "heading", "props": {"level": 2}, "content": _text("Two")},
+        {"id": "5", "type": "image", "props": {"url": "/media/u1/b.png"}},
+        {"id": "6", "type": "paragraph", "content": _text("Second section.")},
+    ], media_root=root, options=_with_chapter_screens())
+
+    # The body of chapter one must not be tagged with chapter two.
+    first_body = next(s for s in plan.shots if s.narration == "First section.")
+    assert first_body.chapter is None
+    assert [s.chapter for s in plan.shots if s.chapter] == ["One", "Two"]
+
+
+def test_without_chapter_screens_the_heading_stays_in_its_section():
+    root = _media("a.png")
+    plan = _run(CHAPTERED_DOC, media_root=root,
+                options=RenderOptions(title_card=False, chapter_screens=False))
+
+    assert all(s.kind != "card" for s in plan.shots)
+    spoken = " ".join(s.narration for s in plan.shots)
+    assert "Next Up." in spoken
+    assert [s.chapter for s in plan.shots if s.chapter] == ["Next Up"]
 
 
 def test_title_card_is_first_when_enabled():

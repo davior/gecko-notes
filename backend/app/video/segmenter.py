@@ -290,14 +290,28 @@ def segment(
             if btype == "heading":
                 heading = _inline_text(block.get("content")).strip()
                 if heading:
-                    if pending_chapter is None:
-                        pending_chapter = heading
                     if options.chapter_screens:
                         # A chapter screen interrupts: close the current shot so
                         # the card lands between sections rather than mid-thought.
-                        card = Shot(kind="card", card_title=heading, chapter=heading, label="chapter card")
+                        # Nothing from this heading is recorded before the flush,
+                        # or the section *above* it would be labelled with the
+                        # chapter this heading is opening.
                         flush(None)
-                        pending_card = card
+                        # The card reads its own heading. Letting the heading fall
+                        # through to the next section instead would show it in
+                        # silence and then speak it over the following shot, once
+                        # the words were no longer on screen.
+                        pending_card = Shot(
+                            kind="card", card_title=heading, chapter=heading,
+                            narration=_as_sentence(heading), label="chapter card",
+                        )
+                        # The card carries the chapter mark, so the section after
+                        # it must not claim the same one and duplicate the entry.
+                        pending_chapter = None
+                        continue
+                    # Without a chapter screen the heading is read inside the
+                    # section it introduces, so that shot carries the mark.
+                    if pending_chapter is None:
                         pending_chapter = heading
             text = _block_narration(block, options)
             if text.strip():
