@@ -550,6 +550,17 @@ export default function EditorView() {
     if (!editor || isSaving.current) return note
     if (!force && !hasPendingChanges.current) return note
 
+    // Never write a document the editor is not actually holding. `editor` exists
+    // from the first render with an empty default document, and the note's
+    // content is applied later by the hydration effect — which is what sets
+    // syncedEditorKey. Saving in that window (a forced save skips the
+    // pending-changes check that would otherwise stop it) replaces the note with
+    // a blank document. Creating a brand-new note is the one case with nothing
+    // to overwrite.
+    const targetId = createdNoteId.current || latestNoteId.current
+    const creatingNew = latestIsNew.current && !createdNoteId.current
+    if (!creatingNew && targetId && syncedEditorKey.current !== targetId) return note
+
     setSaveStatus('Saving...')
     isSaving.current = true
     const content = JSON.stringify(editor.document)
@@ -912,8 +923,21 @@ export default function EditorView() {
    * autosave — so the live document gets the block too, guarded by the URL so it
    * can only ever land once.
    */
+  /** Whether the editor's document is actually this note's content.
+   *
+   * `editor` exists from the first render holding an empty default document; the
+   * note is fetched afterwards and applied by the hydration effect, which is what
+   * sets `syncedEditorKey`. Anything that writes the document back to the server
+   * must wait for that, or it will save a blank document over the real note.
+   */
+  const editorHoldsNote = useCallback((noteIdToMatch: string | null | undefined) => {
+    if (!editor || !loaded || !noteIdToMatch) return false
+    return syncedEditorKey.current === noteIdToMatch
+  }, [editor, loaded])
+
   const insertRenderedVideo = useCallback((job: VideoRenderJob) => {
     if (!job.result_url || !editor) return false
+    if (!editorHoldsNote(createdNoteId.current || latestNoteId.current)) return false
     const already = editor.document.some(
       (b) => (b.props as { url?: string } | undefined)?.url === job.result_url,
     )
@@ -924,7 +948,7 @@ export default function EditorView() {
       props: { url: job.result_url, name: `Video — ${job.note_title || title || 'note'}` },
     } as unknown as PartialBlock])
     return true
-  }, [editor, insertBlocksAtCursor, title])
+  }, [editor, editorHoldsNote, insertBlocksAtCursor, title])
 
   // Reconcile finished renders with the open editor. Runs for every completed
   // job on this note, whether it finished while the user watched or while the
@@ -933,7 +957,11 @@ export default function EditorView() {
   const reconciledVideos = useRef<Set<string>>(new Set())
   useEffect(() => {
     const openNoteId = createdNoteId.current || latestNoteId.current
-    if (!openNoteId || !editor) return
+    // Bail before marking anything reconciled: on a fresh mount the note has not
+    // loaded yet, and a job left in the store from an earlier visit would
+    // otherwise be inserted into the empty document and saved over the note.
+    // Once hydration completes this effect re-runs and picks the job up.
+    if (!editorHoldsNote(openNoteId)) return
     for (const job of Object.values(videoJobs)) {
       if (job.status !== 'done' || !job.result_url) continue
       if (job.note_id !== openNoteId || !job.auto_insert) continue
@@ -944,7 +972,10 @@ export default function EditorView() {
         void doSave(true)
       }
     }
-  }, [videoJobs, editor, insertRenderedVideo])
+    // `note` is a dependency because it is what re-hydration changes: a history
+    // restore or an AI edit clears syncedEditorKey and reloads the document, and
+    // this has to re-evaluate once the editor is holding real content again.
+  }, [videoJobs, note, editorHoldsNote, insertRenderedVideo])
 
   async function handleExportAudio() {
     const text = speechText()
