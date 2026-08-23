@@ -1299,12 +1299,50 @@ _STT_PROVIDERS = {"auto", "deepgram", "fal"}
 # — like DEEPGRAM_STT_MODELS — they're hardcoded rather than in the fal catalog.
 DEFAULT_DEEPGRAM_TTS_MODEL = "aura-2-thalia-en"
 DEEPGRAM_TTS_MODELS = [
-    {"id": "aura-2-thalia-en", "label": "Thalia — female, US (Aura 2)"},
+    # British English (Aura 2)
+    {"id": "aura-2-draco-en", "label": "Draco — male, British (Aura 2)"},
+    {"id": "aura-2-pandora-en", "label": "Pandora — female, British (Aura 2)"},
+
+    # American English — Feminine (Aura 2)
+    {"id": "aura-2-amalthea-en", "label": "Amalthea — female, US (Aura 2)"},
     {"id": "aura-2-andromeda-en", "label": "Andromeda — female, US (Aura 2)"},
+    {"id": "aura-2-asteria-en", "label": "Asteria — female, US (Aura 2)"},
+    {"id": "aura-2-athena-en", "label": "Athena — female, US (Aura 2)"},
+    {"id": "aura-2-aurora-en", "label": "Aurora — female, US (Aura 2)"},
+    {"id": "aura-2-callista-en", "label": "Callista — female, US (Aura 2)"},
+    {"id": "aura-2-cora-en", "label": "Cora — female, US (Aura 2)"},
+    {"id": "aura-2-cordelia-en", "label": "Cordelia — female, US (Aura 2)"},
+    {"id": "aura-2-delia-en", "label": "Delia — female, US (Aura 2)"},
+    {"id": "aura-2-electra-en", "label": "Electra — female, US (Aura 2)"},
+    {"id": "aura-2-harmonia-en", "label": "Harmonia — female, US (Aura 2)"},
+    {"id": "aura-2-helena-en", "label": "Helena — female, US (Aura 2)"},
+    {"id": "aura-2-hera-en", "label": "Hera — female, US (Aura 2)"},
+    {"id": "aura-2-iris-en", "label": "Iris — female, US (Aura 2)"},
+    {"id": "aura-2-janus-en", "label": "Janus — female, US (Aura 2)"},
+    {"id": "aura-2-juno-en", "label": "Juno — female, US (Aura 2)"},
+    {"id": "aura-2-luna-en", "label": "Luna — female, US (Aura 2)"},
+    {"id": "aura-2-minerva-en", "label": "Minerva — female, US (Aura 2)"},
+    {"id": "aura-2-ophelia-en", "label": "Ophelia — female, US (Aura 2)"},
+    {"id": "aura-2-phoebe-en", "label": "Phoebe — female, US (Aura 2)"},
+    {"id": "aura-2-selene-en", "label": "Selene — female, US (Aura 2)"},
+    {"id": "aura-2-thalia-en", "label": "Thalia — female, US (Aura 2)"},
+    {"id": "aura-2-vesta-en", "label": "Vesta — female, US (Aura 2)"},
+
+    # American English — Masculine (Aura 2)
     {"id": "aura-2-apollo-en", "label": "Apollo — male, US (Aura 2)"},
     {"id": "aura-2-arcas-en", "label": "Arcas — male, US (Aura 2)"},
-    {"id": "aura-asteria-en", "label": "Asteria — female, US (Aura 1)"},
-    {"id": "aura-orion-en", "label": "Orion — male, US (Aura 1)"},
+    {"id": "aura-2-aries-en", "label": "Aries — male, US (Aura 2)"},
+    {"id": "aura-2-atlas-en", "label": "Atlas — male, US (Aura 2)"},
+    {"id": "aura-2-hermes-en", "label": "Hermes — male, US (Aura 2)"},
+    {"id": "aura-2-jupiter-en", "label": "Jupiter — male, US (Aura 2)"},
+    {"id": "aura-2-mars-en", "label": "Mars — male, US (Aura 2)"},
+    {"id": "aura-2-neptune-en", "label": "Neptune — male, US (Aura 2)"},
+    {"id": "aura-2-odysseus-en", "label": "Odysseus — male, US (Aura 2)"},
+    {"id": "aura-2-orion-en", "label": "Orion — male, US (Aura 2)"},
+    {"id": "aura-2-orpheus-en", "label": "Orpheus — male, US (Aura 2)"},
+    {"id": "aura-2-pluto-en", "label": "Pluto — male, US (Aura 2)"},
+    {"id": "aura-2-saturn-en", "label": "Saturn — male, US (Aura 2)"},
+    {"id": "aura-2-zeus-en", "label": "Zeus — male, US (Aura 2)"},
 ]
 _TTS_PROVIDERS = {"auto", "deepgram", "fal"}
 
