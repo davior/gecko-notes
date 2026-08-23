@@ -103,6 +103,9 @@ export default function SpeechSettings() {
 
   const allModels = [...ttsModels, ...customTtsModels.map((m) => ({ ...m, label: m.id }))]
 
+  // Create a separate hook for Deepgram voice preview that uses the current provider
+  const deepgramTts = useTextToSpeech({ model: deepgramTtsModel })
+
   async function updateTtsModel(model: string) {
     setError(null)
     try {
@@ -258,6 +261,27 @@ export default function SpeechSettings() {
                   Add a Deepgram API key below to use Deepgram read-aloud; until then fal.ai is used.
                 </p>
               )}
+              <div className="flex items-center gap-3 mt-3">
+                <button
+                  className="btn-primary text-sm flex items-center gap-1.5"
+                  disabled={!deepgramKeyConfigured}
+                  onClick={() => {
+                    if (deepgramTts.isSpeaking) deepgramTts.stop()
+                    else deepgramTts.play('Hello, this is a preview of the selected voice.')
+                  }}
+                >
+                  {deepgramTts.status === 'loading' ? (
+                    'Loading…'
+                  ) : deepgramTts.isSpeaking ? (
+                    <><Square className="w-4 h-4" /> Stop</>
+                  ) : (
+                    <><Volume2 className="w-4 h-4" /> Preview voice</>
+                  )}
+                </button>
+                {deepgramTts.status === 'error' && deepgramTts.errorMessage && (
+                  <span className="text-xs text-red-500">{deepgramTts.errorMessage}</span>
+                )}
+              </div>
             </div>
           )}
 
@@ -495,6 +519,27 @@ export default function SpeechSettings() {
                 The Deepgram Aura voice that speaks replies in voice mode. This is the same voice
                 used for Deepgram read-aloud above.
               </p>
+              <div className="flex items-center gap-3 mt-3">
+                <button
+                  className="btn-primary text-sm flex items-center gap-1.5"
+                  disabled={!deepgramKeyConfigured}
+                  onClick={() => {
+                    if (deepgramTts.isSpeaking) deepgramTts.stop()
+                    else deepgramTts.play('Hello, this is a preview of the selected voice.')
+                  }}
+                >
+                  {deepgramTts.status === 'loading' ? (
+                    'Loading…'
+                  ) : deepgramTts.isSpeaking ? (
+                    <><Square className="w-4 h-4" /> Stop</>
+                  ) : (
+                    <><Volume2 className="w-4 h-4" /> Preview voice</>
+                  )}
+                </button>
+                {deepgramTts.status === 'error' && deepgramTts.errorMessage && (
+                  <span className="text-xs text-red-500">{deepgramTts.errorMessage}</span>
+                )}
+              </div>
             </div>
           </div>
         </div>
