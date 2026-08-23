@@ -19,6 +19,69 @@ WavePosition = Literal["top", "center", "bottom"]
 WaveMode = Literal["line", "p2p", "cline", "point"]
 SubtitleMode = Literal["off", "sidecar", "soft", "burn"]
 
+# A transition either dips through a colour — which each shot can draw inside its
+# own filtergraph — or blends into its neighbour, which needs the two shots to
+# overlap on the timeline. Only the second kind costs anything; see is_crossfade.
+Transition = Literal[
+    "none", "fade", "fadewhite",
+    "dissolve", "slideleft", "slideright", "wipeleft", "wiperight",
+    "circleopen", "smoothleft",
+]
+KenBurnsEffect = Literal[
+    "none", "zoom_in", "zoom_out",
+    "pan_left", "pan_right", "pan_up", "pan_down", "alternate",
+]
+QuotePosition = Literal["top", "center", "bottom"]
+
+# Drawn per shot with `fade`/`afade`, so shot durations are unchanged and the
+# stitch stays a `concat -c copy` remux.
+DIP_TRANSITIONS = frozenset({"fade", "fadewhite"})
+
+# ffmpeg's xfade name for each blending style. Anything absent from here that
+# isn't a dip is treated as "none".
+XFADE_NAMES: Dict[str, str] = {
+    "dissolve": "dissolve",
+    "slideleft": "slideleft",
+    "slideright": "slideright",
+    "wipeleft": "wipeleft",
+    "wiperight": "wiperight",
+    "circleopen": "circleopen",
+    "smoothleft": "smoothleft",
+}
+
+
+def is_crossfade(style: str) -> bool:
+    """True when this style needs the xfade stitch instead of `concat -c copy`.
+
+    The whole pipeline rests on every shot being encoded identically so the join
+    is a remux. A blend needs adjacent shots to overlap, which no per-shot filter
+    can express, so it costs one re-encode of the joined stream. Keeping the test
+    here means the renderer branches in exactly one place.
+    """
+    return style in XFADE_NAMES
+
+
+def transition_colour(style: str) -> str:
+    """The colour a dip transition passes through."""
+    return "white" if style == "fadewhite" else "black"
+
+
+# How much larger than the output frame a Ken Burns shot is rendered before
+# `zoompan` samples it. Zooming a frame already reduced to the output size only
+# magnifies its softness, so the fit stage draws bigger and zoompan brings it
+# back down. 4K gets less headroom purely to bound the intermediate frame — 2x
+# at 4K would put a 7680x4320 picture in the filter's buffer.
+KENBURNS_PRESCALE: Dict[str, float] = {
+    "preview": 2.0, "720p": 2.0, "1080p": 2.0, "4k": 1.25,
+}
+
+
+def kenburns_prescale(resolution: str, preview: bool = False) -> float:
+    """Fit-stage scale factor for a Ken Burns shot at this output size."""
+    if preview:
+        return KENBURNS_PRESCALE["preview"]
+    return KENBURNS_PRESCALE.get(resolution, 2.0)
+
 # Frame size per aspect x resolution. "preview" is not a resolution the user picks —
 # it comes from the job's quality flag and deliberately renders small and fast so a
 # full-quality pass afterwards reuses the cached narration for free.
@@ -138,6 +201,84 @@ class CardTextSpec(BaseModel):
     _subtitle = field_validator("subtitle_pct")(_clamp_pct(0.5, 15.0))
 
 
+class TransitionSpec(BaseModel):
+    """How one shot gives way to the next."""
+
+    style: Transition = "none"
+    # Seconds. A dip spends this long fading out and the same fading back in; a
+    # crossfade overlaps its neighbours by it. Clamped again at render time
+    # against the shortest shot, which is the real ceiling.
+    duration: float = 0.6
+
+    @field_validator("duration")
+    @classmethod
+    def _sane_duration(cls, v: float) -> float:
+        return max(0.1, min(3.0, float(v)))
+
+
+class KenBurnsSpec(BaseModel):
+    """Slow drift over a still, so a photo-backed section isn't frozen."""
+
+    effect: KenBurnsEffect = "none"
+    # Fraction of the frame travelled: 0.12 is a 12% push. Clamped at render
+    # time to the headroom the prescale actually provides.
+    amount: float = 0.12
+    # Title and chapter screens have their text drawn into the picture, so they
+    # are left still by default; when included they only ever zoom from the
+    # centre, never pan, or the type would drift out of frame.
+    include_cards: bool = False
+
+    @field_validator("amount")
+    @classmethod
+    def _sane_amount(cls, v: float) -> float:
+        return max(0.02, min(0.5, float(v)))
+
+
+class MusicSpec(BaseModel):
+    """A background bed mixed under the narration."""
+
+    enabled: bool = False
+    url: Optional[str] = None          # /media/... audio file
+    # Bed level relative to the narration.
+    volume: float = 0.18
+    # Duck the bed under speech with a sidechain compressor. Falls back to a
+    # flat mix when the host ffmpeg has no sidechaincompress.
+    duck: bool = True
+    fade_in: float = 1.5
+    fade_out: float = 3.0
+
+    @field_validator("volume")
+    @classmethod
+    def _sane_volume(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    @field_validator("fade_in", "fade_out")
+    @classmethod
+    def _sane_fade(cls, v: float) -> float:
+        return max(0.0, min(15.0, float(v)))
+
+
+class QuoteSpec(BaseModel):
+    """Pull-quote panel drawn over the section a blockquote interrupts."""
+
+    enabled: bool = False
+    position: QuotePosition = "center"
+    # Quotation size as a percentage of the frame height, like every other size
+    # in a render, so one setting holds at 720p, 1080p and 4K.
+    size_pct: float = 4.2
+    color: str = "#ffffff"
+    accent: str = "#818cf8"
+    # Darkened panel behind the words so they stay legible over a bright photo.
+    scrim: float = 0.55
+
+    _size = field_validator("size_pct")(_clamp_pct(1.0, 15.0))
+
+    @field_validator("scrim")
+    @classmethod
+    def _sane_scrim(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+
 class RenderOptions(BaseModel):
     """The complete render configuration. Persisted as JSON on the job row."""
 
@@ -155,6 +296,13 @@ class RenderOptions(BaseModel):
     # video, while chapter dividers read better a little smaller.
     title_card_text: CardTextSpec = Field(default_factory=CardTextSpec)
     chapter_card_text: CardTextSpec = Field(default_factory=CardTextSpec)
+
+    # Motion and audio. `transition` is the one option that can change how the
+    # video is stitched — see is_crossfade.
+    transition: TransitionSpec = Field(default_factory=TransitionSpec)
+    ken_burns: KenBurnsSpec = Field(default_factory=KenBurnsSpec)
+    music: MusicSpec = Field(default_factory=MusicSpec)
+    quotes: QuoteSpec = Field(default_factory=QuoteSpec)
 
     # Append the finished video to the note as a playable block. Done by the
     # worker rather than the browser so a render survives the tab being closed.

@@ -335,3 +335,137 @@ def test_resolve_media_path_accepts_only_this_users_own_files():
     assert resolve_media_path("/media/u1/nope.png", "u1", root) is None
     assert resolve_media_path("", "u1", root) is None
     assert resolve_media_path(None, "u1", root) is None
+
+
+# ── on-screen quotes ─────────────────────────────────────────────────────────
+
+def _quotes(**kwargs):
+    return RenderOptions(title_card=False, quotes={"enabled": True, **kwargs})
+
+
+def _para(value):
+    return {"type": "paragraph", "content": _text(value)}
+
+
+def _quote(value):
+    return {"type": "quote", "content": _text(value)}
+
+
+def test_a_quote_is_left_in_the_prose_until_the_option_is_turned_on():
+    """Off, this must behave exactly as it did before quotes existed."""
+    root = _media()
+    shots = _run([_para("Before."), _quote("A quotation."), _para("After.")],
+                 media_root=root).shots
+    assert len(shots) == 1
+    assert shots[0].narration == "Before.\nA quotation.\nAfter."
+    assert shots[0].quote_text is None
+
+
+def test_a_quote_gets_its_own_shot_so_the_words_are_up_while_they_are_read():
+    root = _media()
+    shots = _run([_para("Before."), _quote("A quotation."), _para("After.")],
+                 media_root=root, options=_quotes()).shots
+    assert [s.narration for s in shots] == ["Before.", "A quotation.", "After."]
+    assert [s.quote_text for s in shots] == [None, "A quotation.", None]
+
+
+def test_a_quote_keeps_the_picture_of_the_section_it_interrupts():
+    """Cutting to a different background for one sentence reads as a mistake."""
+    root = _media("photo.png")
+    shots = _run([
+        {"type": "image", "props": {"url": "/media/u1/photo.png"}},
+        _para("Some prose."),
+        _quote("A quotation."),
+        _para("More prose."),
+    ], media_root=root, options=_quotes()).shots
+    photo = os.path.join(root, "u1", "photo.png")
+    assert [s.background for s in shots] == [photo, photo, photo]
+    assert [s.kind for s in shots] == ["still", "still", "still"]
+
+
+def test_a_quote_over_a_sounded_clip_carries_it_muted():
+    """Carrying the shot as-is would replay the clip's own audio under the quote."""
+    root = _media("clip.mp4")
+    shots = _run([
+        {"type": "videoFile", "props": {"url": "/media/u1/clip.mp4"}},
+        _quote("A quotation."),
+    ], media_root=root, options=_quotes(), loud={"clip.mp4"}).shots
+    assert [s.kind for s in shots] == ["video_sound", "video_muted"]
+    assert shots[1].quote_text == "A quotation."
+
+
+def test_a_quote_before_any_media_falls_back_like_any_other_opening_text():
+    root = _media()
+    shots = _run([_quote("Opening quotation.")], media_root=root, options=_quotes()).shots
+    assert len(shots) == 1
+    assert shots[0].background is None and shots[0].quote_text == "Opening quotation."
+
+
+def test_a_trailing_dash_becomes_the_attribution_and_leaves_the_quotation():
+    root = _media()
+    shots = _run([_quote("The best way out is always through. — Robert Frost")],
+                 media_root=root, options=_quotes()).shots
+    assert shots[0].quote_text == "The best way out is always through."
+    assert shots[0].quote_attribution == "Robert Frost"
+    # The attribution is shown, not spoken — reading it aloud sounds like a footnote.
+    assert shots[0].narration == "The best way out is always through."
+
+
+def test_a_mid_sentence_dash_is_punctuation_not_an_attribution():
+    root = _media()
+    shots = _run([_quote("A thought — interrupted mid-sentence — is still one sentence.")],
+                 media_root=root, options=_quotes()).shots
+    assert shots[0].quote_attribution is None
+    assert shots[0].quote_text.endswith("is still one sentence.")
+
+
+def test_consecutive_quotes_each_get_their_own_shot():
+    root = _media()
+    shots = _run([_quote("First."), _quote("Second.")],
+                 media_root=root, options=_quotes()).shots
+    assert [s.quote_text for s in shots] == ["First.", "Second."]
+
+
+def test_an_empty_quote_block_is_ignored():
+    root = _media()
+    shots = _run([_para("Before."), _quote("   "), _para("After.")],
+                 media_root=root, options=_quotes()).shots
+    assert len(shots) == 1 and shots[0].quote_text is None
+
+
+def test_a_quote_does_not_steal_the_chapter_mark_of_the_heading_above_it():
+    root = _media()
+    shots = _run([
+        {"type": "heading", "content": _text("A Section")},
+        _para("Some prose."),
+        _quote("A quotation."),
+    ], media_root=root, options=_quotes()).shots
+    assert shots[0].chapter == "A Section"
+    assert [s.chapter for s in shots[1:]] == [None] * (len(shots) - 1)
+
+
+def test_a_quote_straight_after_an_image_gets_no_blank_shot_in_front_of_it():
+    """The section had nothing of its own to say, so a shot holding the same
+    picture in silence for min_shot_seconds would just be dead air."""
+    root = _media("photo.png")
+    shots = _run([
+        {"type": "image", "props": {"url": "/media/u1/photo.png"}},
+        _quote("A quotation."),
+    ], media_root=root, options=_quotes()).shots
+    assert len(shots) == 1
+    assert shots[0].quote_text == "A quotation."
+
+
+def test_a_short_lowercase_source_is_still_read_as_an_attribution():
+    root = _media()
+    shots = _run([_quote("Simplicity is the ultimate sophistication -- da Vinci")],
+                 media_root=root, options=_quotes()).shots
+    assert shots[0].quote_attribution == "da Vinci"
+
+
+def test_a_dash_line_in_a_multi_line_quote_is_always_the_attribution():
+    """A line that opens with a dash is unambiguous, however long it runs."""
+    root = _media()
+    shots = _run([_quote("A quotation.\n— the collected letters of somebody or other")],
+                 media_root=root, options=_quotes()).shots
+    assert shots[0].quote_attribution == "the collected letters of somebody or other"

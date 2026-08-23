@@ -11,7 +11,9 @@ from app.video import ffmpeg as F
 from app.video.narration import (
     Cue, _srt_timestamp, chunk_text, shift_cues, split_for_subtitles, write_srt,
 )
-from app.video.options import RenderOptions, encoder_tier, frame_size
+from app.video.options import MusicSpec, RenderOptions, encoder_tier, frame_size
+from app.video.renderer import build_timeline
+from app.video.segmenter import Shot
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +21,7 @@ def _all_filters_present(monkeypatch):
     """Pretend the host ffmpeg has everything, so tests exercise the full graph."""
     monkeypatch.setattr(F, "_filter_cache", frozenset({
         "showwaves", "gblur", "subtitles", "drawbox", "overlay", "asplit", "apad",
+        "zoompan", "xfade", "acrossfade", "sidechaincompress", "fade", "afade",
     }))
 
 
@@ -347,3 +350,325 @@ def test_out_of_range_options_are_clamped_rather_than_rejected():
     assert RenderOptions(speed=0.01).speed == 0.5
     assert RenderOptions(paragraph_pause_ms=-5).paragraph_pause_ms == 0
     assert RenderOptions(min_shot_seconds=999).min_shot_seconds == 30.0
+
+
+# ── transitions ──────────────────────────────────────────────────────────────
+
+def _shot(options, *, kind="still", duration=6.0, index=0):
+    return F.build_shot_command(
+        kind=kind, background="bg.png", audio="n.wav", duration=duration,
+        output="s.mp4", options=options, preview=False, index=index,
+    )
+
+
+@pytest.mark.parametrize("style,colour", [("fade", "black"), ("fadewhite", "white")])
+def test_a_dip_transition_fades_both_the_picture_and_the_sound(style, colour):
+    graph = _graph(_shot(RenderOptions(transition={"style": style, "duration": 0.6})))
+    assert f"fade=t=in:st=0:d=0.600:color={colour}" in graph
+    assert f"fade=t=out:st=5.400:d=0.600:color={colour}" in graph
+    # Fading the picture without the audio leaves a voice talking over black.
+    assert "afade=t=in:st=0:d=0.600" in graph
+    assert "afade=t=out:st=5.400:d=0.600" in graph
+
+
+def test_a_dip_never_takes_more_than_a_third_of_a_short_shot():
+    """Two 0.6s dips on a 1.2s shot would never let the picture be fully seen."""
+    assert F.dip_seconds("fade", 0.6, 1.2) == pytest.approx(0.4)
+    assert F.dip_seconds("fade", 0.6, 30.0) == pytest.approx(0.6)
+
+
+def test_a_dip_too_short_to_see_is_dropped_entirely():
+    assert F.dip_seconds("fade", 0.6, 0.09) == 0.0
+    graph = _graph(_shot(RenderOptions(transition={"style": "fade"}), duration=0.09))
+    assert "fade=t=in" not in graph
+
+
+def test_a_crossfade_style_draws_no_per_shot_fade():
+    """A blend happens between shots, so drawing one inside a shot as well would
+    dip to black and then dissolve out of it."""
+    graph = _graph(_shot(RenderOptions(transition={"style": "dissolve"})))
+    assert "fade=t=in" not in graph and "afade=" not in graph
+
+
+def test_no_transition_leaves_the_graph_as_it_was():
+    graph = _graph(_shot(RenderOptions()))
+    assert "fade=" not in graph
+    assert graph.endswith("aresample=48000,aformat=channel_layouts=stereo,apad[a]")
+
+
+# ── the crossfade stitch ─────────────────────────────────────────────────────
+
+ALL = frozenset({"xfade", "acrossfade"})
+
+
+def test_crossfade_offsets_accumulate_across_the_whole_video():
+    """Each join eats `overlap` seconds, so shot k starts that much earlier than
+    the running total — get this wrong and every chapter after the first drifts."""
+    argv = F.build_xfade_command(
+        ["a.mp4", "b.mp4", "c.mp4"], [5.0, 4.0, 6.0], "out.mp4",
+        options=RenderOptions(), preview=False, style="dissolve", overlap=0.6,
+    )
+    graph = _graph(argv)
+    assert "[0:v][1:v]xfade=transition=dissolve:duration=0.600:offset=4.400[vx1]" in graph
+    assert "[vx1][2:v]xfade=transition=dissolve:duration=0.600:offset=7.800[vx2]" in graph
+    # Audio has to be crossfaded on the same boundaries or it slides out of sync.
+    assert "[0:a][1:a]acrossfade=d=0.600:c1=tri:c2=tri[ax1]" in graph
+    assert "[ax1][2:a]acrossfade=d=0.600:c1=tri:c2=tri[ax2]" in graph
+    assert argv[argv.index("-map") + 1] == "[v]"
+    assert argv[argv.index("-movflags") + 1] == "+faststart" and argv[-1] == "out.mp4"
+
+
+def test_every_shot_is_its_own_input_to_the_crossfade():
+    argv = F.build_xfade_command(
+        ["a.mp4", "b.mp4", "c.mp4"], [5.0, 4.0, 6.0], "out.mp4",
+        options=RenderOptions(), preview=False, style="wipeleft", overlap=0.5,
+    )
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "-i"] == ["a.mp4", "b.mp4", "c.mp4"]
+    assert "transition=wipeleft" in _graph(argv)
+
+
+def test_a_crossfade_shortens_the_video_by_one_overlap_per_join():
+    assert F.crossfade_total([5.0, 4.0, 6.0], 0.6) == pytest.approx(13.8)
+    assert F.crossfade_total([5.0, 4.0, 6.0], 0.0) == pytest.approx(15.0)
+    assert F.crossfade_total([], 0.6) == 0.0
+
+
+def test_an_overlap_can_never_exceed_half_the_shortest_shot():
+    """Overlapping more than a short shot's own length would blend it away."""
+    assert F.crossfade_overlap("dissolve", [10.0, 1.0, 8.0], 0.6, filters=ALL) == pytest.approx(0.5)
+    assert F.crossfade_overlap("dissolve", [10.0, 8.0], 0.6, filters=ALL) == pytest.approx(0.6)
+
+
+def test_shots_too_short_to_overlap_fall_back_to_a_plain_concat():
+    assert F.crossfade_overlap("dissolve", [0.08, 5.0], 0.6, filters=ALL) is None
+
+
+def test_a_dip_or_no_transition_never_takes_the_crossfade_path():
+    assert F.crossfade_overlap("fade", [5.0, 5.0], 0.6, filters=ALL) is None
+    assert F.crossfade_overlap("none", [5.0, 5.0], 0.6, filters=ALL) is None
+
+
+def test_a_single_shot_has_nothing_to_crossfade_into():
+    assert F.crossfade_overlap("dissolve", [5.0], 0.6, filters=ALL) is None
+
+
+def test_too_many_shots_fall_back_rather_than_build_a_vast_filtergraph():
+    many = [5.0] * (F.XFADE_MAX_SHOTS + 1)
+    assert F.crossfade_overlap("dissolve", many, 0.6, filters=ALL) is None
+    assert F.crossfade_overlap("dissolve", [5.0] * F.XFADE_MAX_SHOTS, 0.6, filters=ALL) is not None
+
+
+def test_a_host_without_xfade_falls_back_instead_of_failing_the_render():
+    assert F.crossfade_overlap("dissolve", [5.0, 5.0], 0.6, filters=frozenset({"overlay"})) is None
+    assert F.crossfade_overlap("dissolve", [5.0, 5.0], 0.6, filters=frozenset({"xfade"})) is None
+
+
+# ── Ken Burns ────────────────────────────────────────────────────────────────
+
+def _kb(effect="zoom_in", **kwargs):
+    return RenderOptions(ken_burns={"effect": effect, **kwargs})
+
+
+def test_a_drifting_still_is_fitted_above_the_frame_so_the_zoom_has_pixels():
+    """Zooming a frame already reduced to the output size just magnifies its
+    softness, which is the whole reason the fit stage renders larger."""
+    graph = _graph(_shot(_kb()))
+    assert "scale=3840:2160" in graph          # 1080p fitted at the 2x prescale
+    assert "s=1920x1080" in graph              # and brought back down by zoompan
+
+
+def test_ken_burns_travel_is_written_against_the_frame_count_not_a_step():
+    """An incremental `zoom+step` drifts with the frame rate; `on/N` does not."""
+    graph = _graph(_shot(_kb(), duration=6.0))          # 6s at 30fps = 180 frames
+    assert "z=1+0.1200*on/180" in graph
+    # Two frames past the shot, so `-t` cuts before zoompan restarts its ramp.
+    assert "d=182" in graph
+
+
+def test_zoom_out_starts_wide_and_closes_in_on_one():
+    graph = _graph(_shot(_kb("zoom_out"), duration=6.0))
+    assert "z=1.1200-0.1200*on/180" in graph
+
+
+@pytest.mark.parametrize("effect,axis", [
+    ("pan_right", "x=(iw-iw/zoom)*on/180"),
+    ("pan_left", "x=(iw-iw/zoom)*(1-on/180)"),
+    ("pan_down", "y=(ih-ih/zoom)*on/180"),
+    ("pan_up", "y=(ih-ih/zoom)*(1-on/180)"),
+])
+def test_a_pan_holds_the_zoom_and_sweeps_one_axis(effect, axis):
+    graph = _graph(_shot(_kb(effect), duration=6.0))
+    assert "z=1.1200:" in graph
+    assert axis in graph
+
+
+def test_no_ken_burns_expression_needs_escaping():
+    """A comma or colon in an expression would be read as a filtergraph
+    separator, so every expression here is deliberately free of both."""
+    chain = F.kenburns_chain("in", "out", width=1920, height=1080, fps=30,
+                             duration=6.0, effect="pan_right", amount=0.2, prescale=2.0)
+    body = chain[chain.index("zoompan=") + len("zoompan="):chain.index("[out]")]
+    for option in body.split(":"):
+        assert "," not in option
+
+
+def test_the_zoom_never_travels_further_than_the_prescale_can_cover():
+    """Past the prescale the zoom is magnifying pixels rather than revealing them."""
+    chain = F.kenburns_chain("in", "out", width=3840, height=2160, fps=30,
+                             duration=4.0, effect="zoom_in", amount=0.5, prescale=1.25)
+    assert "z=1+0.2500*on/120" in chain
+
+
+def test_a_video_background_is_never_given_ken_burns():
+    """The footage already moves; drifting it as well would fight the content."""
+    options = _kb()
+    assert F.kenburns_effect_for("video_muted", 0, options) is None
+    assert F.kenburns_effect_for("video_sound", 0, options) is None
+    assert "zoompan" not in _graph(_shot(options, kind="video_muted"))
+
+
+def test_cards_hold_still_unless_they_are_opted_in():
+    assert F.kenburns_effect_for("card", 0, _kb()) is None
+    assert F.kenburns_effect_for("card", 0, _kb(include_cards=True)) == "zoom_in"
+
+
+def test_an_included_card_zooms_from_the_centre_and_never_pans():
+    """A card's text is drawn into the picture, so a pan would walk it out of frame."""
+    options = _kb("pan_right", include_cards=True)
+    assert F.kenburns_effect_for("card", 0, options) == "zoom_in"
+    graph = _graph(_shot(options, kind="card"))
+    assert "x=iw/2-(iw/zoom/2)" in graph
+
+
+def test_alternate_rotates_deterministically_so_a_rerender_matches():
+    options = _kb("alternate")
+    picks = [F.kenburns_effect_for("still", i, options) for i in range(5)]
+    assert picks == ["zoom_in", "pan_right", "zoom_out", "pan_left", "zoom_in"]
+
+
+def test_a_host_without_zoompan_renders_the_shot_still(monkeypatch):
+    monkeypatch.setattr(F, "_filter_cache", frozenset({"overlay"}))
+    assert "zoompan" not in _graph(_shot(_kb()))
+
+
+def test_ken_burns_sits_under_the_overlay_so_the_watermark_stays_pinned():
+    argv = F.build_shot_command(
+        kind="still", background="bg.png", audio="n.wav", duration=6.0,
+        output="s.mp4", options=_kb(), preview=False, overlay_png="ov.png", index=0,
+    )
+    graph = _graph(argv)
+    assert graph.index("zoompan") < graph.index("overlay=0:0")
+
+
+# ── background music ─────────────────────────────────────────────────────────
+
+def _music(**kwargs):
+    return MusicSpec(enabled=True, url="/media/u/bed.mp3", **kwargs)
+
+
+def test_scoring_a_render_never_re_encodes_the_picture():
+    """The bed only touches the audio, so the video stream is passed through."""
+    argv = F.build_music_command("in.mp4", "bed.mp3", "out.mp4",
+                                 duration=40.0, spec=_music(), duck=False)
+    assert argv[argv.index("-c:v") + 1] == "copy"
+    assert argv[argv.index("-c:a") + 1] == "aac"
+    assert argv[argv.index("-map") + 1] == "0:v"
+
+
+def test_a_short_bed_loops_and_a_long_one_is_cut_to_the_video():
+    argv = F.build_music_command("in.mp4", "bed.mp3", "out.mp4",
+                                 duration=40.0, spec=_music(), duck=False)
+    assert argv[argv.index("-stream_loop") + 1] == "-1"
+    assert argv[argv.index("-stream_loop") + 2] == "-i"      # loops the bed, not the video
+    assert argv[argv.index("-t") + 1] == "40.000"
+    assert "duration=first" in _graph(argv)
+
+
+def test_the_mix_does_not_let_amix_halve_the_narration():
+    """amix normalises by input count by default, which buries the voice."""
+    assert "normalize=0" in _graph(
+        F.build_music_command("in.mp4", "b.mp3", "o.mp4",
+                              duration=40.0, spec=_music(), duck=False))
+
+
+def test_ducking_compresses_the_bed_against_the_narration():
+    graph = _graph(F.build_music_command("in.mp4", "b.mp3", "o.mp4",
+                                         duration=40.0, spec=_music(), duck=True))
+    # The narration has to be split: it is both the key and part of the mix.
+    assert "[0:a]asplit=2[nar][key]" in graph
+    assert "[m][key]sidechaincompress=" in graph
+    assert "[nar][bed]amix=inputs=2:normalize=0:duration=first[a]" in graph
+
+
+def test_without_ducking_the_bed_is_mixed_flat():
+    graph = _graph(F.build_music_command("in.mp4", "b.mp3", "o.mp4",
+                                         duration=40.0, spec=_music(), duck=False))
+    assert "sidechaincompress" not in graph
+    assert "[0:a][m]amix=inputs=2:normalize=0:duration=first[a]" in graph
+
+
+def test_the_bed_fades_in_at_the_start_and_out_at_the_end():
+    graph = _graph(F.build_music_command(
+        "in.mp4", "b.mp3", "o.mp4", duration=40.0,
+        spec=_music(fade_in=2.0, fade_out=3.0), duck=False))
+    assert "afade=t=in:st=0:d=2.000" in graph
+    assert "afade=t=out:st=37.000:d=3.000" in graph
+
+
+def test_a_video_shorter_than_the_fade_out_still_builds_a_valid_graph():
+    graph = _graph(F.build_music_command(
+        "in.mp4", "b.mp3", "o.mp4", duration=1.0,
+        spec=_music(fade_out=5.0), duck=False))
+    assert "afade=t=out:st=0.000:d=5.000" in graph
+
+
+# ── the finished video's timeline ────────────────────────────────────────────
+
+def _timeline(durations, chapters=None, overlap=0.0, cues=None):
+    shots = [Shot(kind="still", chapter=(chapters or {}).get(i))
+             for i in range(len(durations))]
+    per_shot = cues or [[] for _ in durations]
+    return build_timeline(shots, durations, per_shot, overlap)
+
+
+def test_without_a_transition_the_timeline_is_just_the_shots_end_to_end():
+    marks, _cues, total = _timeline([5.0, 4.0, 6.0], {0: "One", 2: "Two"})
+    assert total == pytest.approx(15.0)
+    assert marks == [(0.0, 9.0, "One"), (9.0, 15.0, "Two")]
+
+
+def test_an_unmarked_shot_extends_the_chapter_that_is_open():
+    marks, _cues, _total = _timeline([5.0, 4.0, 6.0], {0: "Only"})
+    assert marks == [(0.0, 15.0, "Only")]
+
+
+def test_a_crossfade_pulls_every_later_shot_earlier_by_one_overlap():
+    """Each join eats `overlap`, so a chapter mark that ignored it would drift
+    further out of place with every section."""
+    marks, _cues, total = _timeline([5.0, 4.0, 6.0], {0: "One", 2: "Two"}, overlap=0.6)
+    assert total == pytest.approx(13.8)          # 15 - 0.6 * 2
+    # Shot 1 starts at 4.4 and runs 4.0, so shot 2 starts at 7.8 — and that is
+    # exactly where the first chapter has to end.
+    assert marks[0] == (pytest.approx(0.0), pytest.approx(7.8), "One")
+    assert marks[1] == (pytest.approx(7.8), pytest.approx(13.8), "Two")
+
+
+def test_chapter_marks_never_overlap_each_other():
+    marks, _cues, total = _timeline([5.0, 4.0, 6.0], {0: "a", 1: "b", 2: "c"}, overlap=0.6)
+    for earlier, later in zip(marks, marks[1:]):
+        assert earlier[1] == pytest.approx(later[0])
+    assert marks[-1][1] == pytest.approx(total)
+
+
+def test_subtitle_cues_are_shifted_onto_the_overlapped_timeline():
+    """Cues are shot-local until they land here; getting the shift wrong is how
+    subtitles slide out of sync a few minutes into a long video."""
+    per_shot = [[Cue(0.0, 1.0, "first")], [Cue(0.0, 1.0, "second")]]
+    _marks, cues, _total = _timeline([5.0, 4.0], overlap=0.6, cues=per_shot)
+    assert cues[0].start == pytest.approx(0.0)
+    assert cues[1].start == pytest.approx(4.4)   # the second shot starts early
+
+
+def test_a_video_with_no_chapters_still_reports_its_length():
+    marks, cues, total = _timeline([3.0])
+    assert marks == [] and cues == [] and total == pytest.approx(3.0)

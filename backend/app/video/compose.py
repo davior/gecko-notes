@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
-from app.video.options import CardTextSpec, OverlayTextSpec, Position, WatermarkSpec
+from app.video.options import CardTextSpec, OverlayTextSpec, Position, QuoteSpec, WatermarkSpec
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,93 @@ def card_image(
     )
 
     return Image.alpha_composite(base.convert("RGBA"), layer).convert("RGB")
+
+
+def quote_panel(
+    width: int, height: int, *,
+    text: str, attribution: str = "", spec: Optional[QuoteSpec] = None,
+) -> Optional[Image.Image]:
+    """A pull-quote panel drawn over whatever the section is already showing.
+
+    Returns a full-frame RGBA layer so the caller can composite it into the same
+    single `overlay` input the watermark already uses, rather than adding another
+    filter to every shot. Returns None when there is nothing to draw.
+
+    The panel hugs its text rather than spanning the frame: a quotation set
+    against the left edge of a photo reads as a quotation, where a full-width
+    band reads as a subtitle.
+    """
+    body = (text or "").strip()
+    if not body:
+        return None
+    style = spec or QuoteSpec()
+
+    # Curly quotes unless the author already supplied their own — the panel has
+    # to read as speech at a glance, before anyone has begun the sentence.
+    if body[0] not in "\u201c\"\u00ab":
+        body = f"\u201c{body}\u201d"
+
+    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+
+    margin = int(min(width, height) * 0.07)
+    pad = max(8, int(height * 0.028))
+    bar_w = max(3, int(height * 0.007))
+    gap = int(pad * 0.9)
+    # What the text may occupy once the panel's own furniture is accounted for.
+    budget = max(1, width - margin * 2 - pad * 2 - bar_w - gap)
+
+    font = fit_font(draw, body, SEMIBOLD, max(8, int(height * style.size_pct / 100)), budget)
+    lines = wrap_text(draw, body, font, budget)[:8]
+    line_h = int(font.size * 1.32)
+
+    credit = (attribution or "").strip()
+    credit_font = load_font(REGULAR, max(8, int(font.size * 0.5)))
+    credit_lines: List[str] = []
+    if credit:
+        if not credit.startswith(("\u2014", "\u2013", "-")):
+            credit = f"\u2014 {credit}"
+        credit_lines = wrap_text(draw, credit, credit_font, budget)[:2]
+    credit_h = int(credit_font.size * 1.4)
+    credit_gap = int(font.size * 0.55) if credit_lines else 0
+
+    text_w = int(max((draw.textlength(l, font=font) for l in lines), default=0))
+    if credit_lines:
+        text_w = max(text_w, int(max(draw.textlength(l, font=credit_font) for l in credit_lines)))
+    panel_w = min(width - margin * 2, pad * 2 + bar_w + gap + text_w)
+    panel_h = pad * 2 + line_h * len(lines) + credit_gap + credit_h * len(credit_lines)
+
+    if style.position == "top":
+        panel_y = margin
+    elif style.position == "bottom":
+        panel_y = max(0, height - panel_h - margin)
+    else:
+        panel_y = max(0, (height - panel_h) // 2)
+    panel_x = margin
+
+    scrim = max(0.0, min(1.0, style.scrim))
+    if scrim > 0.01:
+        draw.rounded_rectangle(
+            [panel_x, panel_y, panel_x + panel_w, panel_y + panel_h],
+            radius=max(4, int(height * 0.018)), fill=(0, 0, 0, int(255 * scrim)),
+        )
+    draw.rounded_rectangle(
+        [panel_x + pad, panel_y + pad, panel_x + pad + bar_w, panel_y + panel_h - pad],
+        radius=max(1, bar_w // 2), fill=(*parse_colour(style.accent, (129, 140, 248)), 255),
+    )
+
+    colour = parse_colour(style.color, (255, 255, 255))
+    x = panel_x + pad + bar_w + gap
+    y = panel_y + pad
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=(*colour, 255))
+        y += line_h
+    y += credit_gap
+    for line in credit_lines:
+        draw.text((x, y), line, font=credit_font, fill=(226, 232, 240, 225))
+        y += credit_h
+
+    return layer
 
 
 def overlay_layer(

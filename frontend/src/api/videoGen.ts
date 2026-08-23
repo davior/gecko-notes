@@ -42,6 +42,27 @@ export type OverlayPosition = 'top-left' | 'top-right' | 'center' | 'bottom-left
 export type WavePosition = 'top' | 'center' | 'bottom'
 export type WaveMode = 'line' | 'p2p' | 'cline' | 'point'
 export type SubtitleMode = 'off' | 'sidecar' | 'soft' | 'burn'
+/** A dip fades through a colour inside each shot, which leaves the stitch a
+ *  cheap remux. Everything below `dissolve` blends between shots instead, which
+ *  needs the finished video re-encoded once. */
+export type TransitionStyle =
+  | 'none' | 'fade' | 'fadewhite'
+  | 'dissolve' | 'slideleft' | 'slideright' | 'wipeleft' | 'wiperight'
+  | 'circleopen' | 'smoothleft'
+export type KenBurnsEffect =
+  | 'none' | 'zoom_in' | 'zoom_out'
+  | 'pan_left' | 'pan_right' | 'pan_up' | 'pan_down' | 'alternate'
+export type QuotePosition = 'top' | 'center' | 'bottom'
+
+/** Styles that blend between shots, so the modal can say what they cost. */
+export const CROSSFADE_STYLES: readonly TransitionStyle[] = [
+  'dissolve', 'slideleft', 'slideright', 'wipeleft', 'wiperight',
+  'circleopen', 'smoothleft',
+]
+
+export function isCrossfade(style: TransitionStyle): boolean {
+  return CROSSFADE_STYLES.includes(style)
+}
 
 export interface CardTextSizes {
   title_pct: number
@@ -79,6 +100,28 @@ export interface RenderOptions {
    *  render is frame-relative, so one setting holds at 720p, 1080p and 4K. */
   title_card_text: CardTextSizes
   chapter_card_text: CardTextSizes
+  transition: { style: TransitionStyle; duration: number }
+  ken_burns: {
+    effect: KenBurnsEffect
+    /** Fraction of the frame travelled — 0.12 is a 12% push. */
+    amount: number
+    /** Cards hold still by default; when included they only ever zoom. */
+    include_cards: boolean
+  }
+  music: {
+    enabled: boolean; url: string | null
+    /** Bed level relative to the narration. */
+    volume: number
+    /** Duck the bed under speech with a sidechain compressor. */
+    duck: boolean
+    fade_in: number; fade_out: number
+  }
+  quotes: {
+    enabled: boolean; position: QuotePosition
+    /** Quotation size as a percentage of the frame height. */
+    size_pct: number
+    color: string; accent: string; scrim: number
+  }
   insert_into_note: boolean
   title_card: boolean
   chapter_screens: boolean
@@ -107,6 +150,10 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   overlay_text: { enabled: false, text: '', position: 'bottom-left', color: '#ffffff', size_pct: 3, margin_pct: 5, shadow: true },
   title_card_text: { title_pct: 6.8, subtitle_pct: 2.9 },
   chapter_card_text: { title_pct: 6.8, subtitle_pct: 2.9 },
+  transition: { style: 'none', duration: 0.6 },
+  ken_burns: { effect: 'none', amount: 0.12, include_cards: false },
+  music: { enabled: false, url: null, volume: 0.18, duck: true, fade_in: 1.5, fade_out: 3.0 },
+  quotes: { enabled: false, position: 'center', size_pct: 4.2, color: '#ffffff', accent: '#818cf8', scrim: 0.55 },
   insert_into_note: true,
   title_card: true,
   chapter_screens: false,
