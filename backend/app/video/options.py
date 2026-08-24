@@ -66,21 +66,57 @@ def transition_colour(style: str) -> str:
     return "white" if style == "fadewhite" else "black"
 
 
-# How much larger than the output frame a Ken Burns shot is rendered before
-# `zoompan` samples it. Zooming a frame already reduced to the output size only
-# magnifies its softness, so the fit stage draws bigger and zoompan brings it
-# back down. 4K gets less headroom purely to bound the intermediate frame — 2x
-# at 4K would put a 7680x4320 picture in the filter's buffer.
-KENBURNS_PRESCALE: Dict[str, float] = {
-    "preview": 2.0, "720p": 2.0, "1080p": 2.0, "4k": 1.25,
-}
+# Ken Burns smoothness.
+#
+# `zoompan` truncates its crop origin to whole pixels of whatever frame it is
+# handed. A slow drift moves that origin well under a pixel per frame, so it
+# stalls on some frames and jumps on others — the picture steps instead of
+# gliding, and a longer shot steps worse because the same travel is spread over
+# more frames. Two things fix it, both of them about giving the motion more
+# pixels to be precise in:
+#
+#   read   the picture is scaled well above the output frame before zoompan
+#          sees it, so a third-of-a-pixel step becomes a two-or-three pixel one
+#          where the truncation actually happens;
+#   write  zoompan renders above the output size and is scaled back down, which
+#          halves whatever step is left and averages it away.
+#
+# Both are bounded by a pixel budget rather than a width, so a 9:16 frame gets
+# the same treatment as a 16:9 one instead of an enormous portrait buffer.
+# 24 megapixels is a deliberate ceiling rather than the largest that would fit:
+# the fit stage runs a split/scale/crop/blur chain at this size, so the buffers
+# and the blur both grow with it, and past here the smoothness gained is smaller
+# than the memory spent.
+KENBURNS_READ_PIXELS = 24_000_000
+KENBURNS_READ_MAX_SCALE = 8.0
+KENBURNS_WRITE_PIXELS = 3840 * 2160
+KENBURNS_WRITE_MAX_SCALE = 2.0
 
 
-def kenburns_prescale(resolution: str, preview: bool = False) -> float:
-    """Fit-stage scale factor for a Ken Burns shot at this output size."""
-    if preview:
-        return KENBURNS_PRESCALE["preview"]
-    return KENBURNS_PRESCALE.get(resolution, 2.0)
+def _budgeted_scale(width: int, height: int, budget: int, ceiling: float) -> float:
+    """Largest scale at or below `ceiling` that keeps width*height under budget."""
+    pixels = max(1, width * height)
+    return max(1.0, min(ceiling, (budget / pixels) ** 0.5))
+
+
+def kenburns_geometry(width: int, height: int) -> Tuple[int, int, int, int]:
+    """(read_w, read_h, write_w, write_h) for a drifting shot at this frame size.
+
+    The fit stage renders at the read size, zoompan crops from it and emits the
+    write size, and the caller scales that back to the frame. All four are even,
+    which every filter in the chain is happier with.
+    """
+    def _even(value: float) -> int:
+        n = max(2, int(value))
+        return n - n % 2
+
+    read = _budgeted_scale(width, height, KENBURNS_READ_PIXELS, KENBURNS_READ_MAX_SCALE)
+    write = _budgeted_scale(width, height, KENBURNS_WRITE_PIXELS, KENBURNS_WRITE_MAX_SCALE)
+    # Reading below what is written would mean zoompan upscaling to fill its own
+    # output, which is the softness this whole arrangement exists to avoid.
+    read = max(read, write)
+    return (_even(width * read), _even(height * read),
+            _even(width * write), _even(height * write))
 
 # Frame size per aspect x resolution. "preview" is not a resolution the user picks —
 # it comes from the job's quality flag and deliberately renders small and fast so a

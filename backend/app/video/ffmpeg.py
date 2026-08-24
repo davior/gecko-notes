@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.video.options import (
     DIP_TRANSITIONS, XFADE_NAMES, MusicSpec, RenderOptions,
-    encoder_tier, frame_size, is_crossfade, kenburns_prescale, transition_colour,
+    encoder_tier, frame_size, is_crossfade, kenburns_geometry, transition_colour,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,13 +241,20 @@ def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Option
 def kenburns_chain(
     src: str, out: str, *,
     width: int, height: int, fps: int, duration: float,
-    effect: str, amount: float, prescale: float,
+    effect: str, amount: float,
 ) -> str:
-    """A `zoompan` drift over a still that has been fitted at `prescale` size.
+    """A `zoompan` drift over a still, rendered above `width`x`height` and scaled back.
 
-    Two details carry this filter. The travel is written against `on/N` rather
-    than ffmpeg's usual incremental `zoom+step`, so it is linear and identical at
-    any fps or resolution instead of drifting with the frame rate. And `zoompan`
+    `width`/`height` are the output frame; the caller must have fitted the source
+    at `kenburns_geometry`'s read size, which is what makes this smooth. zoompan
+    truncates its crop origin to whole pixels of the frame it is given, and a
+    slow drift moves that origin by a fraction of an output pixel per frame — so
+    reading a much larger picture, and writing one larger than the frame before
+    scaling down, are what turn a visible step into a glide.
+
+    Two other details carry it. The travel is written against `on/N` rather than
+    ffmpeg's usual incremental `zoom+step`, so it is linear and identical at any
+    fps or resolution instead of drifting with the frame rate. And `zoompan`
     restarts its ramp every `d` output frames while `-loop 1` feeds frames
     forever, so `d` is set a couple of frames beyond the shot and the caller's
     `-t` cuts before the ramp can begin again.
@@ -255,11 +262,11 @@ def kenburns_chain(
     No expression here contains a comma or a colon, which is what keeps the
     filtergraph free of any escaping.
     """
+    read_width, _read_height, write_width, write_height = kenburns_geometry(width, height)
     frames = max(1, int(math.ceil(max(0.1, duration) * max(1, fps))))
-    # The prescale is the only headroom the zoom has; travelling further than it
-    # would start magnifying pixels, which is the softness this whole approach
-    # exists to avoid.
-    span = max(0.01, min(amount, prescale - 1.0))
+    # What is read is the only headroom the zoom has; travelling past it would
+    # start magnifying pixels, which is the softness this arrangement avoids.
+    span = max(0.01, min(amount, read_width / max(1, width) - 1.0))
 
     if effect == "zoom_out":
         z = f"{1.0 + span:.4f}-{span:.4f}*on/{frames}"
@@ -279,8 +286,12 @@ def kenburns_chain(
     elif effect == "pan_down":
         y = f"(ih-ih/zoom)*on/{frames}"
 
-    return (f"[{src}]zoompan=z={z}:x={x}:y={y}:"
-            f"d={frames + 2}:s={width}x{height}:fps={fps}[{out}]")
+    chain = (f"[{src}]zoompan=z={z}:x={x}:y={y}:"
+             f"d={frames + 2}:s={write_width}x{write_height}:fps={fps}")
+    if (write_width, write_height) != (width, height):
+        # Scaling back down halves whatever step survived and averages it away.
+        chain += f",scale={width}:{height}"
+    return f"{chain}[{out}]"
 
 
 def dip_seconds(style: str, requested: float, shot_duration: float) -> float:
@@ -380,12 +391,11 @@ def build_shot_command(
     # Fitting at the output size first would just magnify its softness.
     drift = kenburns_effect_for(kind, index, options) if "zoompan" in filters else None
     if drift:
-        scale = kenburns_prescale(options.resolution, preview)
-        chains = [fit_chain(video_in, "fit",
-                            _even(width * scale), _even(height * scale), options.fit)]
+        read_width, read_height, _w, _h = kenburns_geometry(width, height)
+        chains = [fit_chain(video_in, "fit", read_width, read_height, options.fit)]
         chains.append(kenburns_chain(
             "fit", "kb", width=width, height=height, fps=options.fps, duration=duration,
-            effect=drift, amount=options.ken_burns.amount, prescale=scale,
+            effect=drift, amount=options.ken_burns.amount,
         ))
         stage = "kb"
     else:

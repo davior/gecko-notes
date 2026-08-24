@@ -24,7 +24,7 @@ from app.video import compose, ffmpeg as F
 from app.video.narration import (
     Cue, NarrationResult, chunk_narration, shift_cues, synthesize_shot, write_srt,
 )
-from app.video.options import RenderOptions, frame_size, is_crossfade, kenburns_prescale
+from app.video.options import RenderOptions, frame_size, is_crossfade, kenburns_geometry
 from app.video.segmenter import Segmentation, Shot, resolve_media_path, segment
 
 logger = logging.getLogger(__name__)
@@ -246,11 +246,12 @@ def render(
                     # A drifting shot is fitted above the frame size, so draw its
                     # background there too: zooming into a frame-sized card would
                     # magnify the type instead of moving in on it.
-                    scale = (kenburns_prescale(options.resolution, preview)
-                             if F.kenburns_effect_for(shot.kind, index, options) else 1.0)
+                    if F.kenburns_effect_for(shot.kind, index, options):
+                        draw_width, draw_height, _w, _h = kenburns_geometry(width, height)
+                    else:
+                        draw_width, draw_height = width, height
                     background = _background_png(
-                        shot, work_dir, f"bg_{index:04d}.png",
-                        int(width * scale), int(height * scale),
+                        shot, work_dir, f"bg_{index:04d}.png", draw_width, draw_height,
                         options, user_id, media_dir, note_title, author,
                     )
                 else:

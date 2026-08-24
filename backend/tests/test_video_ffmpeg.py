@@ -12,7 +12,9 @@ from app.video.narration import (
     Cue, _srt_timestamp, chunk_narration, chunk_text, shift_cues,
     split_for_subtitles, write_srt,
 )
-from app.video.options import MusicSpec, RenderOptions, encoder_tier, frame_size
+from app.video.options import (
+    MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
+)
 from app.video.renderer import build_timeline
 from app.video.segmenter import Shot
 
@@ -470,12 +472,63 @@ def _kb(effect="zoom_in", **kwargs):
     return RenderOptions(ken_burns={"effect": effect, **kwargs})
 
 
-def test_a_drifting_still_is_fitted_above_the_frame_so_the_zoom_has_pixels():
-    """Zooming a frame already reduced to the output size just magnifies its
-    softness, which is the whole reason the fit stage renders larger."""
+def test_a_drifting_still_reads_far_above_the_frame_and_writes_above_it_too():
+    """zoompan truncates its crop origin to whole pixels of the frame it is
+    handed, so a slow drift steps unless it is given many more of them. Reading
+    big is most of the fix; writing big and scaling back down is the rest."""
+    read_w, read_h, write_w, write_h = kenburns_geometry(1920, 1080)
+    assert read_w >= 1920 * 3                  # a real supersample, not a token one
+    assert (write_w, write_h) == (3840, 2160)  # written at 2x, then scaled back
+
     graph = _graph(_shot(_kb()))
-    assert "scale=3840:2160" in graph          # 1080p fitted at the 2x prescale
-    assert "s=1920x1080" in graph              # and brought back down by zoompan
+    assert f"scale={read_w}:{read_h}" in graph
+    assert f"s={write_w}x{write_h}" in graph
+    assert "scale=1920:1080" in graph
+
+
+FRAME_SIZES_TO_CHECK = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160),
+                        (1080, 1920), (2160, 3840))
+
+
+def _pixels_per_frame(width, height, *, seconds, amount=0.12, fps=30):
+    """How far the crop origin travels per frame, in the pixels zoompan rounds
+    to, along the axis the eye actually follows."""
+    read_w, read_h, _w, _h = kenburns_geometry(width, height)
+    return amount * max(read_w, read_h) / 2 / (seconds * fps)
+
+
+def test_a_normal_shot_drifts_by_more_than_a_pixel_a_frame():
+    """The failure this guards is visible, not theoretical: below about a pixel
+    a frame the origin truncates to the same value twice running and the picture
+    stalls, then jumps. Before the supersample, 1080p sat at 1.28 and 720p at
+    0.85 — which is exactly what "chunky" looked like."""
+    for width, height in FRAME_SIZES_TO_CHECK:
+        assert _pixels_per_frame(width, height, seconds=6.0) > 1.5, (width, height)
+
+
+def test_a_long_slow_drift_is_carried_by_the_downscale_not_by_reading_bigger():
+    """A 12% zoom over 30s is a genuinely sub-pixel motion — the same travel over
+    five times the frames — and no affordable read size fixes it. Writing above
+    the frame and scaling back down is what keeps it smooth, because the step
+    that survives lands at half size and gets averaged across the downscale."""
+    for width, height in FRAME_SIZES_TO_CHECK:
+        _r, _rh, write_w, write_h = kenburns_geometry(width, height)
+        if (write_w, write_h) == (width, height):
+            continue                             # 4K writes at frame size
+        assert write_w >= width * 2 or write_h >= height * 2, (width, height)
+
+
+def test_reading_is_never_smaller_than_writing():
+    """That would have zoompan upscaling just to fill its own output."""
+    for size in ((854, 480), (1280, 720), (1920, 1080), (3840, 2160), (2160, 3840)):
+        read_w, read_h, write_w, write_h = kenburns_geometry(*size)
+        assert read_w >= write_w and read_h >= write_h
+
+
+def test_a_portrait_frame_is_budgeted_by_pixels_not_by_width():
+    """Scaling a 9:16 frame by a width rule would build an enormous buffer."""
+    read_w, read_h, _w, _h = kenburns_geometry(1080, 1920)
+    assert read_w * read_h <= 24_000_000 * 1.02
 
 
 def test_ken_burns_travel_is_written_against_the_frame_count_not_a_step():
@@ -507,17 +560,21 @@ def test_no_ken_burns_expression_needs_escaping():
     """A comma or colon in an expression would be read as a filtergraph
     separator, so every expression here is deliberately free of both."""
     chain = F.kenburns_chain("in", "out", width=1920, height=1080, fps=30,
-                             duration=6.0, effect="pan_right", amount=0.2, prescale=2.0)
-    body = chain[chain.index("zoompan=") + len("zoompan="):chain.index("[out]")]
-    for option in body.split(":"):
+                             duration=6.0, effect="pan_right", amount=0.2)
+    zoompan = chain[chain.index("zoompan=") + len("zoompan="):]
+    # Only the zoompan call itself — the trailing scale is a separate filter.
+    zoompan = zoompan.split(",")[0]
+    for option in zoompan.split(":"):
         assert "," not in option
 
 
-def test_the_zoom_never_travels_further_than_the_prescale_can_cover():
-    """Past the prescale the zoom is magnifying pixels rather than revealing them."""
+def test_the_zoom_never_travels_further_than_what_was_read():
+    """Past that the zoom magnifies pixels rather than revealing them."""
+    read_w, _h, _ww, _wh = kenburns_geometry(3840, 2160)
+    headroom = read_w / 3840 - 1.0
     chain = F.kenburns_chain("in", "out", width=3840, height=2160, fps=30,
-                             duration=4.0, effect="zoom_in", amount=0.5, prescale=1.25)
-    assert "z=1+0.2500*on/120" in chain
+                             duration=4.0, effect="zoom_in", amount=5.0)
+    assert f"z=1+{headroom:.4f}*on/120" in chain
 
 
 def test_a_video_background_is_never_given_ken_burns():
