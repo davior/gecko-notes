@@ -5,12 +5,15 @@ they describe what a viewer would actually see: how much of an edge an overlay
 is allowed to use, and whether two overlays collide.
 """
 
+import pytest
 from PIL import Image
 
 from app.video.compose import (
-    _edge_of, _side_of, card_image, overlay_layer, wrap_text, load_font, SEMIBOLD,
+    _edge_of, _side_of, card_image, overlay_layer, quote_panel, wrap_text, load_font, SEMIBOLD,
 )
-from app.video.options import CardTextSpec, OverlayTextSpec, RenderOptions, WatermarkSpec
+from app.video.options import (
+    CardTextSpec, OverlayTextSpec, QuoteSpec, RenderOptions, WatermarkSpec,
+)
 
 WIDTH, HEIGHT = 1280, 720
 
@@ -209,3 +212,71 @@ def test_wrap_text_never_exceeds_the_budget():
     d = ImageDraw.Draw(draw)
     for line in wrap_text(d, LONG_TEXT, font, 300):
         assert d.textlength(line, font=font) <= 300
+
+
+# ── quote panels ─────────────────────────────────────────────────────────────
+
+QUOTE = "The best way out is always through, however long the way may look."
+
+
+def _panel(text=QUOTE, attribution="", **spec):
+    return quote_panel(WIDTH, HEIGHT, text=text, attribution=attribution,
+                       spec=QuoteSpec(**spec))
+
+
+def test_a_quote_panel_draws_something_and_an_empty_one_draws_nothing():
+    assert _box(_panel()) is not None
+    assert _panel(text="   ") is None
+    assert _panel(text="") is None
+
+
+def test_a_bigger_setting_makes_a_taller_panel():
+    """Sizes are percentages of the frame height, so this is the control the
+    user actually turns — it has to move the type, not just the box."""
+    small = _height_of(_box(_panel(size_pct=3.0)))
+    large = _height_of(_box(_panel(size_pct=8.0)))
+    assert large > small * 1.5
+
+
+def test_a_long_quotation_wraps_instead_of_running_off_the_frame():
+    long_quote = QUOTE * 3
+    box = _box(_panel(text=long_quote))
+    assert box[2] <= WIDTH
+    assert _height_of(box) > _height_of(_box(_panel()))
+
+
+def test_an_attribution_adds_a_line_without_changing_the_quotation():
+    """The credit is sized off the quotation, so it must not resize it."""
+    plain = _box(_panel())
+    credited = _box(_panel(attribution="Robert Frost"))
+    assert _height_of(credited) > _height_of(plain)
+
+
+@pytest.mark.parametrize("position", ["top", "center", "bottom"])
+def test_the_panel_lands_in_the_band_it_was_asked_for(position):
+    box = _box(_panel(position=position))
+    middle = (box[1] + box[3]) / 2
+    if position == "top":
+        assert middle < HEIGHT / 2
+    elif position == "bottom":
+        assert middle > HEIGHT / 2
+    else:
+        assert abs(middle - HEIGHT / 2) < HEIGHT * 0.1
+
+
+def test_the_panel_hugs_its_text_rather_than_spanning_the_frame():
+    """A full-width band reads as a subtitle; a quotation should read as a quotation."""
+    assert _box(_panel(text="Short one."))[2] < WIDTH * 0.75
+
+
+def test_an_out_of_range_size_clamps_rather_than_failing_the_render():
+    assert QuoteSpec(size_pct=999).size_pct == 15.0
+    assert QuoteSpec(size_pct=0).size_pct == 1.0
+    assert QuoteSpec(scrim=5).scrim == 1.0
+    assert _box(_panel(size_pct=999)) is not None
+
+
+def test_a_quote_panel_is_transparent_where_nothing_was_drawn():
+    """It is composited over the section's own picture, so it cannot be opaque."""
+    layer = _panel(position="bottom", scrim=1.0)
+    assert layer.getpixel((WIDTH // 2, 2))[3] == 0

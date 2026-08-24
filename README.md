@@ -47,11 +47,16 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Videos in the article play with their own audio (the narration waits for them) or loop silently under the narration when they have no sound
 - **Aspect presets** for 16:9 (YouTube), 9:16 (Shorts/TikTok) and 1:1 (Instagram) at 720p/1080p/4K, with a fast 480p preview pass — narration is cached, so a full render afterwards costs no extra speech
 - Optional **animated waveform** (style, colour, position, height), **watermark** with an uploaded icon and caption, and a **fixed text overlay**
+- **Transitions** between segments — a dip through black or white, or a blend (dissolve, wipe, slide, circle open). A dip is drawn inside each segment and costs nothing; a blend needs the finished video encoded a second time, and the dialog says so
+- **Motion on stills (Ken Burns)** — a slow zoom or pan over each image, with an adjustable travel distance and an option to include the title and chapter screens. Video clips are left alone, since the footage already moves. A drifting shot is rendered well above the output frame and scaled back down, which is what keeps the movement smooth instead of stepping a pixel at a time — it costs render time, so a shot that drifts is slower than one that doesn't
+- **Background music** — an uploaded track mixed under the narration, ducking beneath speech and coming back up in the gaps, with its own level and fade in/out. A short track loops and a long one is cut to the video; the picture is never re-encoded to add it
+- **Quotes on screen** — a blockquote gets its own segment, with the words shown over the same picture while they are read, and a trailing "— name" line picked up as the attribution
 - **Title screens**, optional chapter screens, chapter markers embedded in the MP4, an automatic thumbnail, and **subtitles** as an `.srt` sidecar, a track inside the MP4, or burned into the picture
 - A chapter screen reads its own heading while the words are on screen; with chapter screens off, the heading is read inside the section it introduces
+- An adjustable **pause at each heading**, held going in and coming out, so a section doesn't run straight into the next one — a full stop is all a voice has to separate them otherwise. Set it to zero to read headings on as ordinary prose
 - **Every text size is adjustable** — title screen, chapter screen, watermark icon and caption, and the fixed overlay — set as a percentage of the frame height, so one choice holds at every resolution and aspect ratio
 - Renders in the background with progress in the header and the browser tab, and can be cancelled mid-render — the finished video is attached to the note by the server, so it arrives even if you close the tab
-- Choice of TTS voice and speaking rate per video, and options are remembered between renders
+- Choice of TTS voice and speaking rate per video, and options are remembered between renders — grouped into Format, Narration, Motion & audio, Branding and Structure tabs
 
 ### Sharing & export
 - Export to PDF, Word (.docx), Markdown, HTML, MP3, MP4 video, or clipboard

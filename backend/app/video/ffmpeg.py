@@ -12,12 +12,16 @@ with `setsar=1,format=yuv420p`.
 """
 
 import logging
+import math
 import os
 import shutil
 import subprocess
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from app.video.options import RenderOptions, encoder_tier, frame_size
+from app.video.options import (
+    DIP_TRANSITIONS, XFADE_NAMES, MusicSpec, RenderOptions,
+    encoder_tier, frame_size, is_crossfade, kenburns_geometry, transition_colour,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,19 @@ logger = logging.getLogger(__name__)
 # process can't hold the render queue forever. Mirrors transcription.py's style.
 SHOT_TIMEOUT_SECONDS = 900
 PROBE_TIMEOUT_SECONDS = 30
+
+# An xfade stitch puts every shot in one filtergraph as its own input. That is
+# fine for the ten to thirty shots a normal article produces and absurd at the
+# 200 VIDEO_MAX_SHOTS ceiling, so past this many the render degrades to a plain
+# concat rather than building a graph that would thrash the box.
+XFADE_MAX_SHOTS = 60
+
+# An overlap shorter than this isn't a transition, it's a glitch.
+MIN_TRANSITION_SECONDS = 0.05
+
+# Deterministic rotation for the "alternate" Ken Burns effect. Keyed off the shot
+# index rather than a random draw so re-rendering a note is reproducible.
+KENBURNS_CYCLE = ("zoom_in", "pan_right", "zoom_out", "pan_left")
 
 
 class FFmpegError(RuntimeError):
@@ -192,6 +209,126 @@ def waveform_chain(
     return ";".join(parts)
 
 
+def _even(value: float) -> int:
+    """Round down to an even integer — libx264 with yuv420p requires it."""
+    n = max(2, int(value))
+    return n - n % 2
+
+
+def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Optional[str]:
+    """Which drift, if any, this shot gets.
+
+    A video background already moves, so only stills and (opt-in) cards drift. A
+    card has its text drawn into the picture, so it is only ever allowed to zoom
+    from the centre — a pan would walk the type out of frame.
+    """
+    effect = options.ken_burns.effect
+    if effect == "none":
+        return None
+    if kind == "card":
+        if not options.ken_burns.include_cards:
+            return None
+    elif kind != "still":
+        return None
+
+    if effect == "alternate":
+        effect = KENBURNS_CYCLE[index % len(KENBURNS_CYCLE)]
+    if kind == "card" and effect.startswith("pan"):
+        return "zoom_in"
+    return effect
+
+
+def kenburns_chain(
+    src: str, out: str, *,
+    width: int, height: int, fps: int, duration: float,
+    effect: str, amount: float,
+) -> str:
+    """A `zoompan` drift over a still, rendered above `width`x`height` and scaled back.
+
+    `width`/`height` are the output frame; the caller must have fitted the source
+    at `kenburns_geometry`'s read size, which is what makes this smooth. zoompan
+    truncates its crop origin to whole pixels of the frame it is given, and a
+    slow drift moves that origin by a fraction of an output pixel per frame — so
+    reading a much larger picture, and writing one larger than the frame before
+    scaling down, are what turn a visible step into a glide.
+
+    Two other details carry it. The travel is written against `on/N` rather than
+    ffmpeg's usual incremental `zoom+step`, so it is linear and identical at any
+    fps or resolution instead of drifting with the frame rate. And `zoompan`
+    restarts its ramp every `d` output frames while `-loop 1` feeds frames
+    forever, so `d` is set a couple of frames beyond the shot and the caller's
+    `-t` cuts before the ramp can begin again.
+
+    No expression here contains a comma or a colon, which is what keeps the
+    filtergraph free of any escaping.
+    """
+    read_width, _read_height, write_width, write_height = kenburns_geometry(width, height)
+    frames = max(1, int(math.ceil(max(0.1, duration) * max(1, fps))))
+    # What is read is the only headroom the zoom has; travelling past it would
+    # start magnifying pixels, which is the softness this arrangement avoids.
+    span = max(0.01, min(amount, read_width / max(1, width) - 1.0))
+
+    if effect == "zoom_out":
+        z = f"{1.0 + span:.4f}-{span:.4f}*on/{frames}"
+    elif effect.startswith("pan"):
+        z = f"{1.0 + span:.4f}"
+    else:  # zoom_in and anything unrecognised
+        z = f"1+{span:.4f}*on/{frames}"
+
+    # Centre the frame by default; a pan sweeps one axis end to end instead.
+    x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    if effect == "pan_left":
+        x = f"(iw-iw/zoom)*(1-on/{frames})"
+    elif effect == "pan_right":
+        x = f"(iw-iw/zoom)*on/{frames}"
+    elif effect == "pan_up":
+        y = f"(ih-ih/zoom)*(1-on/{frames})"
+    elif effect == "pan_down":
+        y = f"(ih-ih/zoom)*on/{frames}"
+
+    chain = (f"[{src}]zoompan=z={z}:x={x}:y={y}:"
+             f"d={frames + 2}:s={write_width}x{write_height}:fps={fps}")
+    if (write_width, write_height) != (width, height):
+        # Scaling back down halves whatever step survived and averages it away.
+        chain += f",scale={width}:{height}"
+    return f"{chain}[{out}]"
+
+
+def dip_seconds(style: str, requested: float, shot_duration: float) -> float:
+    """How long a dip-through-colour transition may last on a shot this short.
+
+    A shot has to hold a fade out as well as a fade in, so a third of its length
+    is the ceiling; below that the two would overlap and the picture would never
+    be fully visible.
+    """
+    if style not in DIP_TRANSITIONS:
+        return 0.0
+    seconds = min(max(0.0, requested), max(0.0, shot_duration) / 3.0)
+    return seconds if seconds >= MIN_TRANSITION_SECONDS else 0.0
+
+
+def crossfade_overlap(
+    style: str, durations: Sequence[float], requested: float,
+    *, filters: Optional[frozenset] = None,
+) -> Optional[float]:
+    """The overlap an xfade stitch should use, or None to fall back to concat.
+
+    Every reason a crossfade can't run lives here so the renderer branches once
+    and the guards can be tested without ffmpeg: the style isn't a blend, there
+    is nothing to blend between, the graph would be unreasonably large, the host
+    ffmpeg lacks the filters, or the shots are too short to absorb an overlap.
+    """
+    if not is_crossfade(style) or len(durations) < 2:
+        return None
+    if len(durations) > XFADE_MAX_SHOTS:
+        return None
+    names = available_filters() if filters is None else filters
+    if "xfade" not in names or "acrossfade" not in names:
+        return None
+    overlap = min(max(0.0, requested), 0.5 * min(durations))
+    return overlap if overlap >= MIN_TRANSITION_SECONDS else None
+
+
 def build_shot_command(
     *,
     kind: str,
@@ -204,6 +341,7 @@ def build_shot_command(
     overlay_png: Optional[str] = None,
     subtitle_file: Optional[str] = None,
     background_has_audio: bool = False,
+    index: int = 0,
 ) -> List[str]:
     """Full argv for rendering one shot to its own MP4.
 
@@ -246,10 +384,24 @@ def build_shot_command(
         next_index += 1
 
     # ── filtergraph ───────────────────────────────────────────────────────────
-    chains = [fit_chain(video_in, "fit", width, height, options.fit)]
-    stage = "fit"
-
     filters = available_filters()
+
+    # A drifting shot is fitted larger than the output frame so `zoompan` has
+    # real pixels to zoom into, and zoompan's own `s=` brings it back down.
+    # Fitting at the output size first would just magnify its softness.
+    drift = kenburns_effect_for(kind, index, options) if "zoompan" in filters else None
+    if drift:
+        read_width, read_height, _w, _h = kenburns_geometry(width, height)
+        chains = [fit_chain(video_in, "fit", read_width, read_height, options.fit)]
+        chains.append(kenburns_chain(
+            "fit", "kb", width=width, height=height, fps=options.fps, duration=duration,
+            effect=drift, amount=options.ken_burns.amount,
+        ))
+        stage = "kb"
+    else:
+        chains = [fit_chain(video_in, "fit", width, height, options.fit)]
+        stage = "fit"
+
     draw_wave = bool(options.waveform.enabled and audio_in and "showwaves" in filters)
 
     # An input pad may only be consumed once in a filtergraph, and the waveform
@@ -269,11 +421,27 @@ def build_shot_command(
         chains.append(f"[{stage}]subtitles={subtitle_file}[sub]")
         stage = "sub"
 
+    # A dip through black or white is drawn inside the shot, so its duration is
+    # unchanged and the stitch stays a `concat -c copy` remux. A blending
+    # transition cannot be expressed here at all — see build_xfade_command.
+    dip = dip_seconds(options.transition.style, options.transition.duration, duration)
+    if dip > 0:
+        colour = transition_colour(options.transition.style)
+        chains.append(
+            f"[{stage}]fade=t=in:st=0:d={dip:.3f}:color={colour},"
+            f"fade=t=out:st={duration - dip:.3f}:d={dip:.3f}:color={colour}[fd]"
+        )
+        stage = "fd"
+
     chains.append(f"[{stage}]setsar=1,format=yuv420p[v]")
 
     # Pad the audio so a shot always reaches its target length even when the
     # narration is shorter (a media block with little text under it).
-    chains.append(f"[{audio_main}]aresample=48000,aformat=channel_layouts=stereo,apad[a]")
+    audio_chain = f"[{audio_main}]aresample=48000,aformat=channel_layouts=stereo,apad"
+    if dip > 0:
+        audio_chain += (f",afade=t=in:st=0:d={dip:.3f}"
+                        f",afade=t=out:st={duration - dip:.3f}:d={dip:.3f}")
+    chains.append(f"{audio_chain}[a]")
 
     argv += ["-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]"]
     argv += ["-t", f"{max(0.1, duration):.3f}"]
@@ -289,6 +457,99 @@ def build_concat_command(list_file: str, output: str) -> List[str]:
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", list_file,
         "-c", "copy", "-movflags", "+faststart", output,
+    ]
+
+
+def build_xfade_command(
+    shot_files: Sequence[str], durations: Sequence[float], output: str,
+    *, options: RenderOptions, preview: bool, style: str, overlap: float,
+) -> List[str]:
+    """Stitch the shots with a blending transition instead of a plain concat.
+
+    Unlike `build_concat_command` this is a real encode, because a blend needs
+    adjacent shots to be on screen at the same time and no per-shot filter can
+    express that. It is still only one pass over the joined stream, and it reuses
+    `encode_args` so the result matches every other path's quality settings.
+
+    Each shot is its own input and the graph chains pairwise, carrying the
+    running total so every `offset` lands where the previous blend left off:
+    shot k starts `overlap` seconds before the accumulated stream ends.
+    """
+    argv = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for name in shot_files:
+        argv += ["-i", name]
+
+    transition = XFADE_NAMES.get(style, "dissolve")
+    chains: List[str] = []
+    video, audio = "0:v", "0:a"
+    total = durations[0]
+    for index in range(1, len(shot_files)):
+        offset = max(0.0, total - overlap)
+        chains.append(
+            f"[{video}][{index}:v]xfade=transition={transition}:"
+            f"duration={overlap:.3f}:offset={offset:.3f}[vx{index}]"
+        )
+        chains.append(
+            f"[{audio}][{index}:a]acrossfade=d={overlap:.3f}:c1=tri:c2=tri[ax{index}]"
+        )
+        video, audio = f"vx{index}", f"ax{index}"
+        total += durations[index] - overlap
+
+    chains.append(f"[{video}]setsar=1,format=yuv420p[v]")
+    argv += ["-filter_complex", ";".join(chains), "-map", "[v]", "-map", f"[{audio}]"]
+    argv += encode_args(options, preview)
+    argv += ["-movflags", "+faststart", output]
+    return argv
+
+
+def crossfade_total(durations: Sequence[float], overlap: float) -> float:
+    """Length of an xfade stitch: every join eats `overlap` seconds."""
+    if not durations:
+        return 0.0
+    return max(0.0, sum(durations) - overlap * (len(durations) - 1))
+
+
+def build_music_command(
+    source: str, music: str, output: str,
+    *, duration: float, spec: MusicSpec, duck: bool,
+) -> List[str]:
+    """Mix a background bed under the finished video, without touching the picture.
+
+    Music has to run continuously across shot boundaries, so it cannot be a
+    per-shot input — it goes on after the stitch. `-c:v copy` is the point: the
+    video stream is passed through untouched and only the audio is re-encoded,
+    so scoring a render costs seconds rather than a second full encode.
+
+    `-stream_loop -1` covers a bed shorter than the video and the output `-t`
+    truncates one that is longer. `normalize=0` stops `amix` halving the
+    narration to make room, which is the default and never what anyone wants.
+    """
+    fade_out_at = max(0.0, duration - max(0.0, spec.fade_out))
+    bed = (f"[1:a]volume={max(0.0, min(1.0, spec.volume)):.3f},"
+           f"aresample=48000,aformat=channel_layouts=stereo")
+    if spec.fade_in > 0:
+        bed += f",afade=t=in:st=0:d={spec.fade_in:.3f}"
+    if spec.fade_out > 0:
+        bed += f",afade=t=out:st={fade_out_at:.3f}:d={spec.fade_out:.3f}"
+    chains = [f"{bed}[m]"]
+
+    if duck:
+        # Compress the bed against the narration so it drops under speech and
+        # comes back up in the gaps. The main input comes first, the key second.
+        chains.append("[0:a]asplit=2[nar][key]")
+        chains.append("[m][key]sidechaincompress="
+                      "threshold=0.060:ratio=8:attack=15:release=350[bed]")
+        chains.append("[nar][bed]amix=inputs=2:normalize=0:duration=first[a]")
+    else:
+        chains.append("[0:a][m]amix=inputs=2:normalize=0:duration=first[a]")
+
+    return [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", source, "-stream_loop", "-1", "-i", music,
+        "-filter_complex", ";".join(chains),
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-t", f"{max(0.1, duration):.3f}", "-movflags", "+faststart", output,
     ]
 
 

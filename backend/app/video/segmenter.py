@@ -15,7 +15,7 @@ ffmpeg invocation per shot, one progress tick per shot.
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from app.routers.media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from app.video.options import RenderOptions
@@ -50,6 +50,9 @@ class Shot:
     card_kind: Optional[str] = None
     # When set, a chapter mark is emitted at this shot's start.
     chapter: Optional[str] = None
+    # A pull quote drawn over this shot's background while it is read.
+    quote_text: Optional[str] = None
+    quote_attribution: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
     label: str = ""
 
@@ -188,6 +191,63 @@ def _as_sentence(text: str) -> str:
     return stripped + "."
 
 
+# How long a trailing fragment may be and still read as "who said it" rather
+# than as more of the sentence. A source is short and usually starts with a name
+# or a year; a clause that happens to follow an em dash starts with a function
+# word and runs on, so an unnamed fragment is held to a much tighter word count.
+_MAX_ATTRIBUTION_CHARS = 60
+_MAX_ATTRIBUTION_WORDS = 6
+_MAX_UNNAMED_ATTRIBUTION_WORDS = 3
+
+
+def _split_attribution(text: str) -> Tuple[str, str]:
+    """Peel a trailing attribution off a quotation.
+
+    BlockNote has no attribution field on a quote block, so the convention
+    writers already use is what gets read: a closing dash. An em dash is also
+    ordinary punctuation mid-sentence, so a trailing fragment only counts as an
+    attribution when it is short and carries no sentence of its own.
+    """
+    body = (text or "").strip()
+    if not body:
+        return "", ""
+
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        for marker in ("\u2014", "\u2013", "--", "-"):
+            if lines[-1].startswith(marker):
+                credit = lines[-1][len(marker):].strip()
+                if credit:
+                    return "\n".join(lines[:-1]), credit
+
+    for marker in ("\u2014", "\u2013", " -- ", " - "):
+        index = body.rfind(marker)
+        if index <= 0:
+            continue
+        credit = body[index + len(marker):].strip()
+        quoted = body[:index].strip()
+        if not quoted or not credit or len(credit) > _MAX_ATTRIBUTION_CHARS:
+            continue
+        if any(ch in credit[:-1] for ch in ".!?"):
+            continue
+        words = len(credit.split())
+        named = credit[0].isupper() or credit[0].isdigit()
+        if words <= (_MAX_ATTRIBUTION_WORDS if named else _MAX_UNNAMED_ATTRIBUTION_WORDS):
+            return quoted, credit.rstrip(".")
+    return body, ""
+
+
+def _set_apart(text: str) -> str:
+    """Mark a block as needing a real pause on either side of it.
+
+    Blank lines are the marker, for two reasons: whitespace can never be spoken
+    if it somehow reaches a provider, and the narration stays a plain string
+    that `narration_chars` and the estimate can still measure. `chunk_narration`
+    turns each one into an actual gap in the audio.
+    """
+    return f"\n{text}\n"
+
+
 def _block_narration(block: Dict[str, Any], options: RenderOptions) -> str:
     btype = block.get("type")
     if btype in SILENT_TYPES:
@@ -317,9 +377,50 @@ def segment(
                     # section it introduces, so that shot carries the mark.
                     if pending_chapter is None:
                         pending_chapter = heading
+
+            if btype == "quote" and options.quotes.enabled:
+                quoted = _split_attribution(_inline_text(block.get("content")))
+                if quoted[0]:
+                    # A quote gets its own screen time so the words can be on
+                    # screen while they are read, but it keeps the background of
+                    # the section it interrupts — cutting to a different picture
+                    # for one sentence would read as a mistake. A sounded clip is
+                    # carried muted, or it would replay its audio underneath.
+                    carry_kind: ShotKind = (
+                        "video_muted"
+                        if open_shot is not None and open_shot.kind.startswith("video")
+                        else "still"
+                    )
+                    carry_background = open_shot.background if open_shot is not None else None
+                    quote_shot = Shot(
+                        kind=carry_kind, background=carry_background,
+                        quote_text=quoted[0], quote_attribution=quoted[1] or None,
+                        label="quote",
+                    )
+                    if (any(t.strip() for t in pending_text)
+                            or pending_chapter is not None or pending_card is not None):
+                        flush(quote_shot)
+                    else:
+                        # The open shot has nothing of its own to say, so the
+                        # quote takes it over rather than being preceded by a
+                        # blank copy of itself held for min_shot_seconds.
+                        open_shot = quote_shot
+                    # Closing the quote's own shot immediately is what keeps the
+                    # quotation as its narration rather than whatever follows it.
+                    pending_text.append(_as_sentence(quoted[0]))
+                    flush(Shot(kind=carry_kind, background=carry_background,
+                               label="after quote"))
+                    continue
+
             text = _block_narration(block, options)
             if text.strip():
-                pending_text.append(_as_sentence(text))
+                spoken = _as_sentence(text)
+                # A heading is a section boundary, not another sentence of the
+                # paragraph above it, so it gets a pause on both sides. A card
+                # already has the boundary of its own shot and needs no marking.
+                if btype == "heading" and options.heading_pause_ms > 0:
+                    spoken = _set_apart(spoken)
+                pending_text.append(spoken)
             continue
 
         url = _media_url(block, options)
@@ -357,4 +458,19 @@ def segment(
         s for s in result.shots
         if s.kind != "still" or s.background is not None or s.narration.strip()
     ]
+
+    # The section reopened after a quote is a continuation, not a shot of its
+    # own: when nothing followed the quote it would replay the same background
+    # in silence, so drop it.
+    trimmed: List[Shot] = []
+    for shot in result.shots:
+        previous = trimmed[-1] if trimmed else None
+        if (previous is not None and previous.quote_text is not None
+                and shot.quote_text is None and not shot.narration.strip()
+                and shot.chapter is None
+                and shot.kind == previous.kind
+                and shot.background == previous.background):
+            continue
+        trimmed.append(shot)
+    result.shots = trimmed
     return result

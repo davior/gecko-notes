@@ -22,9 +22,9 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from app.video import compose, ffmpeg as F
 from app.video.narration import (
-    Cue, NarrationResult, build_silence, shift_cues, synthesize_shot, write_srt,
+    Cue, NarrationResult, chunk_narration, shift_cues, synthesize_shot, write_srt,
 )
-from app.video.options import RenderOptions, frame_size
+from app.video.options import RenderOptions, frame_size, is_crossfade, kenburns_geometry
 from app.video.segmenter import Segmentation, Shot, resolve_media_path, segment
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,38 @@ def _chapters_file(path: str, marks: Sequence[Tuple[float, float, str]]) -> bool
             f.write("[CHAPTER]\nTIMEBASE=1/1000\n")
             f.write(f"START={int(start * 1000)}\nEND={int(end * 1000)}\ntitle={safe}\n")
     return True
+
+
+def build_timeline(
+    shots: Sequence[Shot], durations: Sequence[float],
+    shot_cues: Sequence[Sequence[Cue]], overlap: float,
+) -> Tuple[List[Tuple[float, float, str]], List[Cue], float]:
+    """Lay the rendered shots out on the finished video's timeline.
+
+    Returns the chapter marks, every subtitle cue shifted onto that timeline,
+    and the total length. `overlap` is how much a crossfade eats at each join;
+    at zero this is the plain-concat timeline, which is why both stitch paths
+    can share one piece of arithmetic instead of drifting apart.
+    """
+    chapters: List[Tuple[float, float, str]] = []
+    cues: List[Cue] = []
+    timeline = 0.0
+    for shot, duration, shot_cue in zip(shots, durations, shot_cues):
+        start = timeline
+        cues.extend(shift_cues(shot_cue, start))
+        # A shot starts `overlap` seconds before its predecessor ends, and a
+        # chapter ends where the next one begins — so the marks stay contiguous
+        # rather than overlapping each other by the length of the transition.
+        timeline += duration - overlap
+        if shot.chapter:
+            chapters.append((start, timeline, shot.chapter))
+        elif chapters:
+            chapters[-1] = (chapters[-1][0], timeline, chapters[-1][2])
+    # Nothing overlaps the last shot, so it plays to its full length.
+    timeline += overlap
+    if chapters:
+        chapters[-1] = (chapters[-1][0], timeline, chapters[-1][2])
+    return chapters, cues, timeline
 
 
 def _background_png(
@@ -168,8 +200,8 @@ def render(
         if layer is not None:
             overlay_name = "overlay.png"
             layer.save(os.path.join(work_dir, overlay_name), "PNG")
-
-        silence = build_silence(work_dir, options.paragraph_pause_ms)
+        # The layer itself is kept in scope: a shot carrying a quote composites
+        # the two into one PNG rather than adding a second overlay filter.
 
         # ── narration ─────────────────────────────────────────────────────────
         narrations: List[NarrationResult] = []
@@ -184,16 +216,16 @@ def render(
             progress("Narrating", 2 + int(NARRATION_SHARE * done / max(1, len(speaking))),
                      f"section {done} of {len(speaking)}")
             narrations.append(synthesize_shot(
-                shot.narration, index=index, work_dir=work_dir, options=options,
-                tts=tts, silence_name=silence,
+                shot.narration, index=index, work_dir=work_dir, options=options, tts=tts,
             ))
 
         # ── per-shot render ───────────────────────────────────────────────────
         base = 2 + NARRATION_SHARE
         shot_files: List[str] = []
-        chapters: List[Tuple[float, float, str]] = []
-        all_cues: List[Cue] = []
-        timeline = 0.0
+        # Collected as the shots are rendered and laid out on a timeline
+        # afterwards, once the transition overlap is known.
+        durations: List[float] = []
+        shot_cues: List[List[Cue]] = []
 
         for index, (shot, narration) in enumerate(zip(shots, narrations)):
             progress("Rendering", base + int(RENDER_SHARE * index / len(shots)),
@@ -211,8 +243,15 @@ def render(
                 # A card is always drawn, and a still with no usable media of its
                 # own falls back to the chosen background; a video loops as-is.
                 if shot.kind == "card" or shot.background is None:
+                    # A drifting shot is fitted above the frame size, so draw its
+                    # background there too: zooming into a frame-sized card would
+                    # magnify the type instead of moving in on it.
+                    if F.kenburns_effect_for(shot.kind, index, options):
+                        draw_width, draw_height, _w, _h = kenburns_geometry(width, height)
+                    else:
+                        draw_width, draw_height = width, height
                     background = _background_png(
-                        shot, work_dir, f"bg_{index:04d}.png", width, height,
+                        shot, work_dir, f"bg_{index:04d}.png", draw_width, draw_height,
                         options, user_id, media_dir, note_title, author,
                     )
                 else:
@@ -226,34 +265,93 @@ def render(
                 if write_srt(os.path.join(work_dir, name), narration.cues):
                     shot_srt = name
 
+            # A quote is drawn per shot with the global layer composited on top,
+            # so the watermark still sits above the quotation and ffmpeg still
+            # receives exactly one overlay input.
+            shot_overlay = overlay_name
+            if shot.quote_text:
+                panel = compose.quote_panel(
+                    width, height, text=shot.quote_text,
+                    attribution=shot.quote_attribution or "", spec=options.quotes,
+                )
+                if panel is not None:
+                    if layer is not None:
+                        panel.alpha_composite(layer)
+                    shot_overlay = f"overlay_{index:04d}.png"
+                    panel.save(os.path.join(work_dir, shot_overlay), "PNG")
+
             output = f"shot_{index:04d}.mp4"
             argv = F.build_shot_command(
                 kind=shot.kind, background=background, audio=narration.path,
                 duration=duration, output=output, options=options, preview=preview,
-                overlay_png=overlay_name, subtitle_file=shot_srt,
-                background_has_audio=has_audio,
+                overlay_png=shot_overlay, subtitle_file=shot_srt,
+                background_has_audio=has_audio, index=index,
             )
             # Run inside the work dir so every path in the command is a bare
             # filename — which is what keeps the `subtitles=` filter, whose
             # argument needs escaping, free of anything that needs escaping.
             F.run(argv, cwd=work_dir)
             shot_files.append(output)
+            durations.append(duration)
+            shot_cues.append(narration.cues)
 
-            if shot.chapter:
-                chapters.append((timeline, timeline + duration, shot.chapter))
-            elif chapters:
-                # Extend the open chapter to cover this shot too.
-                start, _end, title = chapters[-1]
-                chapters[-1] = (start, timeline + duration, title)
-            all_cues.extend(shift_cues(narration.cues, timeline))
-            timeline += duration
+        # ── timeline ──────────────────────────────────────────────────────────
+        # A crossfade overlaps each pair of shots, so every shot after the first
+        # starts before its predecessor ends. Laying the timeline out here, once
+        # all the durations are known, means the chapter marks and the subtitle
+        # cues fall out of the same arithmetic on both stitch paths — with an
+        # overlap of zero this is exactly the plain-concat timeline.
+        overlap = F.crossfade_overlap(
+            options.transition.style, durations, options.transition.duration,
+        ) or 0.0
+        if is_crossfade(options.transition.style) and overlap <= 0:
+            plan.warnings.append(
+                "Crossfade transitions were skipped: this video has too many "
+                "segments, or they are too short to overlap."
+            )
+
+        chapters, all_cues, timeline = build_timeline(shots, durations, shot_cues, overlap)
 
         # ── stitch ────────────────────────────────────────────────────────────
         progress("Stitching", base + RENDER_SHARE, f"joining {len(shot_files)} segments")
-        F.write_concat_list(os.path.join(work_dir, "shots.txt"), shot_files)
-        F.run(F.build_concat_command("shots.txt", "stitched.mp4"), cwd=work_dir, timeout=1800)
+        if overlap > 0:
+            # A blend needs adjacent shots on screen together, which no per-shot
+            # filter can express, so this path re-encodes the joined stream once.
+            # Every other transition still stitches as a remux below.
+            F.run(
+                F.build_xfade_command(
+                    shot_files, durations, "stitched.mp4", options=options,
+                    preview=preview, style=options.transition.style, overlap=overlap,
+                ),
+                cwd=work_dir, timeout=3600,
+            )
+        else:
+            F.write_concat_list(os.path.join(work_dir, "shots.txt"), shot_files)
+            F.run(F.build_concat_command("shots.txt", "stitched.mp4"), cwd=work_dir, timeout=1800)
 
         final = "stitched.mp4"
+
+        # ── background music ──────────────────────────────────────────────────
+        # A bed has to run continuously across shot boundaries, so it can only go
+        # on once the shots are joined. Mixing here re-encodes the audio alone —
+        # `-c:v copy` leaves the picture exactly as the stitch produced it.
+        music_path = (resolve_media_path(options.music.url, user_id, media_dir)
+                      if options.music.enabled and options.music.url else None)
+        if options.music.enabled and music_path is None:
+            plan.warnings.append("Background music was skipped: that track could not be read.")
+        if music_path:
+            progress("Stitching", base + RENDER_SHARE + 2, "mixing the background music")
+            scored_length = F.probe_duration(os.path.join(work_dir, final)) or timeline
+            duck = options.music.duck and "sidechaincompress" in F.available_filters()
+            F.run(
+                F.build_music_command(
+                    final, music_path, "scored.mp4",
+                    duration=scored_length, spec=options.music, duck=duck,
+                ),
+                cwd=work_dir, timeout=1800,
+            )
+            final = "scored.mp4"
+
         chapters_name = subtitle_name = None
         if options.embed_chapters and _chapters_file(os.path.join(work_dir, "chapters.ffmeta"), chapters):
             chapters_name = "chapters.ffmeta"
@@ -326,13 +424,31 @@ def estimate(
         note_content, user_id=user_id, media_dir=media_dir, options=options,
         note_title=note_title, author=author, has_audio=F.probe_has_audio,
     )
-    seconds = 0.0
+    durations = []
     for shot in plan.shots:
         if shot.kind == "video_sound":
-            seconds += F.probe_duration(shot.background or "") or options.min_shot_seconds
+            durations.append(F.probe_duration(shot.background or "") or options.min_shot_seconds)
         else:
+            speed = max(0.25, options.speed)
             # ~15 characters per second is a normal TTS speaking rate.
-            spoken = len(shot.narration) / 15.0 / max(0.25, options.speed)
+            spoken = len(shot.narration) / 15.0 / speed
+            # The pauses held at headings are real silence in the finished
+            # video, so an estimate that ignored them would run short by a
+            # second and a half for every heading in the article. They are
+            # sped up with everything else, hence the same divisor.
+            held = sum(c.pause_after_ms for c in chunk_narration(
+                shot.narration,
+                paragraph_pause_ms=options.paragraph_pause_ms,
+                heading_pause_ms=options.heading_pause_ms,
+            )) / 1000.0 / speed
             floor = options.card_seconds if shot.kind == "card" else options.min_shot_seconds
-            seconds += max(spoken, floor)
-    return len(plan.shots), plan.narration_chars, seconds, plan.warnings
+            durations.append(max(spoken + held, floor))
+
+    # A crossfade shortens the video by one overlap per join, which is the number
+    # the dialog is showing. The filter set is assumed rather than probed, so a
+    # dry run stays instant and never shells out.
+    overlap = F.crossfade_overlap(
+        options.transition.style, durations, options.transition.duration,
+        filters=frozenset({"xfade", "acrossfade"}),
+    ) or 0.0
+    return len(plan.shots), plan.narration_chars, F.crossfade_total(durations, overlap), plan.warnings

@@ -74,6 +74,64 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
     return [c for c in chunks if c]
 
 
+# A blank line marks a break the voice cannot make on its own — see
+# segmenter._set_apart. A single newline is an ordinary block join and is left
+# to the sentence packer, so marking is opt-in rather than accidental.
+_HARD_BREAK = re.compile(r"\n[ \t]*\n+")
+
+
+@dataclass
+class Chunk:
+    """One TTS request, and the silence held after it."""
+
+    text: str
+    pause_after_ms: int = 0
+
+
+def chunk_narration(
+    text: str, *, paragraph_pause_ms: int, heading_pause_ms: int,
+    max_chars: int = MAX_CHUNK_CHARS,
+) -> List[Chunk]:
+    """Split a shot's narration into TTS requests and the pauses between them.
+
+    Silence can only be laid between separately synthesised pieces, so a pause
+    inside a section means splitting the request there. A whole section is
+    normally one chunk, which is exactly why a heading in the middle of it gets
+    nothing more than a full stop today.
+
+    Sections split on a blank line and are chunked as before within themselves;
+    the gap after a section is the longer heading pause. With that pause turned
+    off the marks are ignored entirely, so nothing is split that would otherwise
+    have travelled as one request.
+
+    A heading-adjacent chunk therefore stops matching the one the read-aloud
+    player would have produced for the same passage, so the two no longer share
+    that disk-cache entry. Only passages next to a heading are affected, and the
+    chunks a render makes are still cached and reused by later renders.
+    """
+    body = text or ""
+    if heading_pause_ms <= 0:
+        packed = chunk_text(body, max_chars)
+        return [Chunk(c, 0 if index == len(packed) - 1 else paragraph_pause_ms)
+                for index, c in enumerate(packed)]
+
+    sections = [s for s in _HARD_BREAK.split(body) if s.strip()]
+    chunks: List[Chunk] = []
+    for index, section in enumerate(sections):
+        packed = chunk_text(section, max_chars)
+        for position, piece in enumerate(packed):
+            last_in_section = position == len(packed) - 1
+            ends_the_text = last_in_section and index == len(sections) - 1
+            if ends_the_text:
+                pause = 0
+            elif last_in_section:
+                pause = heading_pause_ms
+            else:
+                pause = paragraph_pause_ms
+            chunks.append(Chunk(piece, pause))
+    return chunks
+
+
 # Two lines of roughly 42 characters is the long-standing broadcast convention
 # and about as much as anyone can read before the next cue arrives.
 SUBTITLE_MAX_CHARS = 84
@@ -176,14 +234,17 @@ def synthesize_shot(
     work_dir: str,
     options: RenderOptions,
     tts: Callable[[str], bytes],
-    silence_name: Optional[str],
 ) -> NarrationResult:
     """Synthesise one shot's narration and return its WAV, length and cues.
 
     `tts` is injected (rather than imported) so this stays testable without a
     network call, and so the caller owns provider selection and usage recording.
     """
-    chunks = chunk_text(text)
+    chunks = chunk_narration(
+        text,
+        paragraph_pause_ms=options.paragraph_pause_ms,
+        heading_pause_ms=options.heading_pause_ms,
+    )
     if not chunks:
         # A shot with no text still needs an audio track — the concat demuxer
         # requires every part to have the same stream layout — so it gets
@@ -195,7 +256,7 @@ def synthesize_shot(
     parts: List[str] = []
     scratch: List[str] = []
     for position, chunk in enumerate(chunks):
-        audio = tts(chunk)
+        audio = tts(chunk.text)
         raw_name = f"chunk_{index:04d}_{position:03d}.raw"
         with open(os.path.join(work_dir, raw_name), "wb") as f:
             f.write(audio)
@@ -215,8 +276,13 @@ def synthesize_shot(
     entries: List[str] = []
     for position, part in enumerate(parts):
         entries.append(part)
-        if silence_name and position < len(parts) - 1:
-            entries.append(silence_name)
+        if position >= len(parts) - 1:
+            continue
+        # Each gap is the one its own chunk asked for, so a heading break is
+        # audibly longer than the join between two halves of a paragraph.
+        pad = build_silence(work_dir, chunks[position].pause_after_ms)
+        if pad:
+            entries.append(pad)
 
     list_name = f"narration_{index:04d}.txt"
     F.write_concat_list(os.path.join(work_dir, list_name), entries)
@@ -234,7 +300,6 @@ def synthesize_shot(
     # pauses scaled by the speed change, so they stay aligned end to end. A TTS
     # chunk is far too long to show as one subtitle, so each is split into
     # readable lines and given a proportional slice of its measured duration.
-    pause = (options.paragraph_pause_ms / 1000.0) if silence_name else 0.0
     speed = max(0.25, options.speed)
     cues: List[Cue] = []
     cursor = 0.0
@@ -243,15 +308,15 @@ def synthesize_shot(
         if length <= 0:
             # Fall back to a reading-rate estimate rather than emitting a zero
             # cue, which would be dropped and lose the line entirely.
-            length = max(0.6, len(chunk) / 15.0 / speed)
-        lines = split_for_subtitles(chunk)
+            length = max(0.6, len(chunk.text) / 15.0 / speed)
+        lines = split_for_subtitles(chunk.text)
         total = sum(len(l) for l in lines) or 1
         for line in lines:
             span = length * len(line) / total
             cues.append(Cue(cursor, cursor + span, line))
             cursor += span
         if position < len(chunks) - 1:
-            cursor += pause / speed
+            cursor += chunk.pause_after_ms / 1000.0 / speed
 
     for name in scratch:
         try:
@@ -259,4 +324,5 @@ def synthesize_shot(
         except OSError:
             pass
 
-    return NarrationResult(path=out_name, duration=duration, cues=cues, chars=sum(len(c) for c in chunks))
+    return NarrationResult(path=out_name, duration=duration, cues=cues,
+                           chars=sum(len(c.text) for c in chunks))
