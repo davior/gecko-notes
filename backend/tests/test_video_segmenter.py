@@ -521,3 +521,81 @@ def test_a_chapter_card_carries_its_heading_unmarked():
                  media_root=root, options=options).shots
     card = next(s for s in shots if s.kind == "card")
     assert card.narration == "A Chapter."
+
+
+# ── a chapter screen must not lose the picture behind it ────────────────────
+#
+# Confirmed as a real bug: `flush(None)` discarded the open shot's background
+# entirely, so the section after a chapter card fell back to the plain
+# gradient instead of resuming the image that was on screen before the card.
+
+def test_a_chapter_screen_does_not_lose_the_image_behind_it():
+    root = _media("a.png")
+    plan = _run(CHAPTERED_DOC, media_root=root, options=_with_chapter_screens())
+    photo = os.path.join(root, "u1", "a.png")
+
+    card_index = plan.shots.index(next(s for s in plan.shots if s.kind == "card"))
+    before, after = plan.shots[card_index - 1], plan.shots[card_index + 1]
+    assert before.background == photo
+    assert after.background == photo
+    assert after.narration == "Second section."
+
+
+def test_a_chapter_screen_over_a_sounded_clip_resumes_muted():
+    """Carrying the shot as-is would replay the clip's own audio under the
+    section that follows the card — the same reasoning the quote handler
+    above already uses for the same situation."""
+    root = _media("clip.mp4")
+    shots = _run([
+        {"id": "1", "type": "videoFile", "props": {"url": "/media/u1/clip.mp4"}},
+        {"id": "2", "type": "heading", "content": _text("A Chapter")},
+        {"id": "3", "type": "paragraph", "content": _text("After the chapter.")},
+    ], media_root=root, options=_with_chapter_screens(), loud={"clip.mp4"}).shots
+
+    assert [s.kind for s in shots] == ["video_sound", "video_muted", "card", "video_muted"]
+    clip = os.path.join(root, "u1", "clip.mp4")
+    assert shots[3].background == clip
+    assert shots[3].narration == "After the chapter."
+
+
+def test_a_chapter_screen_before_any_media_still_falls_back_to_the_gradient():
+    """Nothing to carry forward here — this must behave as it always has."""
+    root = _media()
+    shots = _run([
+        {"id": "1", "type": "heading", "content": _text("Opening Chapter")},
+        {"id": "2", "type": "paragraph", "content": _text("Body text.")},
+    ], media_root=root, options=_with_chapter_screens()).shots
+
+    body = next(s for s in shots if s.narration == "Body text.")
+    assert body.background is None
+
+
+def test_back_to_back_chapter_screens_both_hold_the_same_image():
+    root = _media("a.png")
+    shots = _run([
+        {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "2", "type": "heading", "content": _text("First Heading")},
+        {"id": "3", "type": "heading", "content": _text("Second Heading")},
+        {"id": "4", "type": "paragraph", "content": _text("After both.")},
+    ], media_root=root, options=_with_chapter_screens()).shots
+
+    photo = os.path.join(root, "u1", "a.png")
+    cards = [s for s in shots if s.kind == "card"]
+    assert [c.card_title for c in cards] == ["First Heading", "Second Heading"]
+    # Every "still" shot in this run sits on the one image — none of them ever
+    # fell back to the gradient, including the beat held between the two cards.
+    assert all(s.background == photo for s in shots if s.kind == "still")
+
+
+def test_a_new_image_after_a_chapter_screen_still_takes_over_as_normal():
+    root = _media("a.png", "b.png")
+    shots = _run([
+        {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "2", "type": "heading", "content": _text("A Chapter")},
+        {"id": "3", "type": "image", "props": {"url": "/media/u1/b.png"}},
+        {"id": "4", "type": "paragraph", "content": _text("On the new image.")},
+    ], media_root=root, options=_with_chapter_screens()).shots
+
+    b = os.path.join(root, "u1", "b.png")
+    body = next(s for s in shots if s.narration == "On the new image.")
+    assert body.background == b

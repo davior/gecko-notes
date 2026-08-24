@@ -14,6 +14,7 @@ from app.video.narration import (
 )
 from app.video.options import (
     MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
+    kenburns_is_perceptible,
 )
 from app.video.renderer import build_timeline
 from app.video.segmenter import Shot
@@ -794,3 +795,132 @@ def test_nothing_is_held_after_the_final_chunk():
 def test_blank_narration_produces_no_chunks():
     assert _narration("") == []
     assert _narration("\n\n   \n\n") == []
+
+
+# ── the per-shot timeout scales with the shot, instead of being flat ────────
+
+def test_a_short_shot_gets_the_old_flat_floor():
+    assert F.shot_timeout(3.0) == F.SHOT_TIMEOUT_SECONDS
+    assert F.shot_timeout(0.0) == F.SHOT_TIMEOUT_SECONDS
+
+
+def test_a_long_shot_gets_a_budget_scaled_to_its_own_length():
+    """A flat cap is wrong because a shot is not a fixed amount of work — an
+    eight-minute still and a three-second card used to get the same 900s."""
+    assert F.shot_timeout(200.0) == 200.0 * F.SHOT_TIMEOUT_FACTOR
+
+
+def test_the_exact_shot_that_failed_in_production_now_gets_room_to_finish():
+    """Shot 34 from job 3d815257: a 502.678s still that hit the flat 900s cap
+    and was killed with 40% of its own length still left to encode."""
+    assert F.shot_timeout(502.678) > 900
+    assert F.shot_timeout(502.678) >= 502.678 * 2  # comfortable headroom, not just enough
+
+
+def test_the_timeout_still_has_a_ceiling():
+    assert F.shot_timeout(10_000.0) == F.SHOT_TIMEOUT_CEILING
+
+
+# ── a timeout becomes a readable error, not a severed argv ──────────────────
+
+def test_a_timeout_is_reported_as_a_short_readable_message(monkeypatch):
+    """subprocess.TimeoutExpired stringifies as the whole argv followed by the
+    reason — over a thousand characters for a real shot command — and the
+    worker truncates error_message to 500, which used to cut the reason off
+    the end entirely. The message here has to be short enough, on its own, to
+    survive that truncation with the reason still in it."""
+    def _fake_run(argv, **kwargs):
+        raise F.subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 900))
+    monkeypatch.setattr(F.subprocess, "run", _fake_run)
+
+    with pytest.raises(F.FFmpegError) as excinfo:
+        F.run(["ffmpeg"] + ["-argument"] * 200, timeout=900)
+
+    message = str(excinfo.value)
+    assert len(message) < 500
+    assert "900" in message
+
+
+def test_the_original_timeout_is_chained_so_the_full_argv_still_reaches_the_log(monkeypatch):
+    def _fake_run(argv, **kwargs):
+        raise F.subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 900))
+    monkeypatch.setattr(F.subprocess, "run", _fake_run)
+
+    with pytest.raises(F.FFmpegError) as excinfo:
+        F.run(["ffmpeg", "-i", "in.mp4", "out.mp4"], timeout=900)
+    assert isinstance(excinfo.value.__cause__, F.subprocess.TimeoutExpired)
+
+
+def test_a_non_zero_exit_is_still_reported_as_before(monkeypatch):
+    """The timeout handling must not swallow the ordinary failure path."""
+    class _Result:
+        returncode = 1
+        stderr = b"encoder error: unsupported pixel format"
+    monkeypatch.setattr(F.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(F.FFmpegError, match="unsupported pixel format"):
+        F.run(["ffmpeg"])
+
+
+# ── Ken Burns is skipped once the drift would not be seen ───────────────────
+
+def test_a_normal_length_shot_still_drifts():
+    assert kenburns_is_perceptible(0.12, 1920, frames=6 * 30)
+
+
+def test_the_exact_failing_shot_would_have_drifted_at_under_a_hundredth_of_a_pixel():
+    """502.678s at 12% travel on a 1920-wide (1080p) frame — this is the shot
+    that cost the render an 8-minute zoompan for a drift nobody could have
+    seen. The rate is judged in output pixels: that is what a viewer would
+    actually see move, regardless of how much bigger the picture is read at
+    internally to keep the crop origin's truncation from being visible."""
+    frames = int(502.678 * 30)
+    assert not kenburns_is_perceptible(0.12, 1920, frames=frames)
+
+
+def test_raising_travel_keeps_the_drift_on_for_longer():
+    """Travel is the discoverable lever: the same shot that fails at 12% should
+    still pass at a large enough setting, so turning it up is a real choice."""
+    frames = int(60 * 30)   # a one-minute shot: past 12%'s reach, within 40%'s
+    assert not kenburns_is_perceptible(0.12, 1920, frames=frames)
+    assert kenburns_is_perceptible(0.40, 1920, frames=frames)
+
+
+def test_zero_frames_is_never_perceptible():
+    assert not kenburns_is_perceptible(0.12, 1920, frames=0)
+
+
+def test_kenburns_effect_for_is_unaffected_when_the_caller_omits_duration():
+    """Callers that don't know the shot's length yet (none currently do, but
+    the parameter is optional) get the old behaviour rather than a crash."""
+    options = RenderOptions(ken_burns={"effect": "zoom_in"})
+    assert F.kenburns_effect_for("still", 0, options) == "zoom_in"
+
+
+def test_kenburns_effect_for_drops_the_drift_on_a_shot_this_long():
+    options = RenderOptions(ken_burns={"effect": "zoom_in"})
+    assert F.kenburns_effect_for("still", 0, options, duration=502.678, width=1920) is None
+    assert F.kenburns_effect_for("still", 0, options, duration=6.0, width=1920) == "zoom_in"
+
+
+def test_the_built_shot_command_has_no_zoompan_for_the_failing_shot():
+    """The fix that actually matters: build_shot_command has to receive the
+    same duration and width the renderer already knows, or the perceptibility
+    gate above changes nothing about what ffmpeg is actually asked to do."""
+    options = RenderOptions(ken_burns={"effect": "zoom_in"})
+    argv = F.build_shot_command(
+        kind="still", background="bg.png", audio="n.wav", duration=502.678,
+        output="s.mp4", options=options, preview=False, index=0,
+    )
+    graph = _graph(argv)
+    assert "zoompan" not in graph
+    # And none of the expense that came with it either.
+    assert "scale=6530" not in graph and "3840x2160" not in graph
+
+
+def test_a_short_shot_still_gets_the_full_supersampled_drift():
+    options = RenderOptions(ken_burns={"effect": "zoom_in"})
+    argv = F.build_shot_command(
+        kind="still", background="bg.png", audio="n.wav", duration=6.0,
+        output="s.mp4", options=options, preview=False, index=0,
+    )
+    assert "zoompan" in _graph(argv)

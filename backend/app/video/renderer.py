@@ -246,7 +246,8 @@ def render(
                     # A drifting shot is fitted above the frame size, so draw its
                     # background there too: zooming into a frame-sized card would
                     # magnify the type instead of moving in on it.
-                    if F.kenburns_effect_for(shot.kind, index, options):
+                    if F.kenburns_effect_for(shot.kind, index, options,
+                                             duration=duration, width=width):
                         draw_width, draw_height, _w, _h = kenburns_geometry(width, height)
                     else:
                         draw_width, draw_height = width, height
@@ -281,16 +282,36 @@ def render(
                     panel.save(os.path.join(work_dir, shot_overlay), "PNG")
 
             output = f"shot_{index:04d}.mp4"
-            argv = F.build_shot_command(
-                kind=shot.kind, background=background, audio=narration.path,
-                duration=duration, output=output, options=options, preview=preview,
-                overlay_png=shot_overlay, subtitle_file=shot_srt,
-                background_has_audio=has_audio, index=index,
-            )
-            # Run inside the work dir so every path in the command is a bare
-            # filename — which is what keeps the `subtitles=` filter, whose
-            # argument needs escaping, free of anything that needs escaping.
-            F.run(argv, cwd=work_dir)
+
+            def _encode(with_options: RenderOptions) -> None:
+                argv = F.build_shot_command(
+                    kind=shot.kind, background=background, audio=narration.path,
+                    duration=duration, output=output, options=with_options,
+                    preview=preview, overlay_png=shot_overlay, subtitle_file=shot_srt,
+                    background_has_audio=has_audio, index=index,
+                )
+                # Run inside the work dir so every path in the command is a bare
+                # filename — which is what keeps the `subtitles=` filter, whose
+                # argument needs escaping, free of anything that needs escaping.
+                F.run(argv, cwd=work_dir, timeout=F.shot_timeout(duration))
+
+            try:
+                _encode(options)
+            except F.FFmpegError as exc:
+                # Losing a forty-minute render to one expensive segment is a bad
+                # trade when the two most expensive things in it are also the two
+                # least important. Retry once without them; the narration is
+                # already synthesised and cached, so this costs no speech.
+                logger.warning("Segment %d failed (%s) — retrying it plainer", index + 1, exc)
+                plain = options.model_copy(deep=True)
+                plain.ken_burns.effect = "none"
+                plain.waveform.enabled = False
+                _encode(plain)
+                plan.warnings.append(
+                    f"Segment {index + 1} was rendered without motion or a waveform: "
+                    f"it was too long to render with them."
+                )
+
             shot_files.append(output)
             durations.append(duration)
             shot_cues.append(narration.cues)
@@ -323,7 +344,7 @@ def render(
                     shot_files, durations, "stitched.mp4", options=options,
                     preview=preview, style=options.transition.style, overlap=overlap,
                 ),
-                cwd=work_dir, timeout=3600,
+                cwd=work_dir, timeout=F.shot_timeout(sum(durations)),
             )
         else:
             F.write_concat_list(os.path.join(work_dir, "shots.txt"), shot_files)

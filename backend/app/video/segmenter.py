@@ -359,7 +359,22 @@ def segment(
                         # Nothing from this heading is recorded before the flush,
                         # or the section *above* it would be labelled with the
                         # chapter this heading is opening.
-                        flush(None)
+                        #
+                        # The section after the card resumes on the same picture
+                        # — cutting to the plain fallback for one screen and back
+                        # again would read as a mistake, the same reasoning the
+                        # quote handler below uses. A card interrupting a sounded
+                        # clip resumes muted, matching how the clip is carried
+                        # elsewhere; only a genuinely new image or video changes
+                        # the background from here.
+                        carry_kind: ShotKind = (
+                            "video_muted"
+                            if open_shot is not None and open_shot.kind.startswith("video")
+                            else "still"
+                        )
+                        carry_background = open_shot.background if open_shot is not None else None
+                        flush(Shot(kind=carry_kind, background=carry_background,
+                                   label="after chapter card"))
                         # The card reads its own heading. Letting the heading fall
                         # through to the next section instead would show it in
                         # silence and then speak it over the following shot, once

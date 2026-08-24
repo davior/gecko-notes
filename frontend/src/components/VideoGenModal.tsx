@@ -411,7 +411,9 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                   </label>
                 )}
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Video clips are left alone — the footage already moves.
+                  Video clips are left alone — the footage already moves. Motion
+                  is also skipped on a segment long enough that it wouldn't be
+                  seen anyway — a higher Travel keeps it on for longer.
                 </p>
               </section>
 

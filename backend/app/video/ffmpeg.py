@@ -20,14 +20,21 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.video.options import (
     DIP_TRANSITIONS, XFADE_NAMES, MusicSpec, RenderOptions,
-    encoder_tier, frame_size, is_crossfade, kenburns_geometry, transition_colour,
+    encoder_tier, frame_size, is_crossfade, kenburns_geometry,
+    kenburns_is_perceptible, transition_colour,
 )
 
 logger = logging.getLogger(__name__)
 
 # Long enough for a 4K encode of a multi-minute clip, short enough that a wedged
 # process can't hold the render queue forever. Mirrors transcription.py's style.
+# A flat per-shot cap is wrong, because a shot is not a fixed amount of work: a
+# three-second card and an eight-minute still both used to get 900 seconds, and
+# the second one cannot possibly finish in it. These bound a shot by how long it
+# actually is, with the old value as the floor so short shots are unaffected.
 SHOT_TIMEOUT_SECONDS = 900
+SHOT_TIMEOUT_FACTOR = 6
+SHOT_TIMEOUT_CEILING = 2 * 60 * 60
 PROBE_TIMEOUT_SECONDS = 30
 
 # An xfade stitch puts every shot in one filtergraph as its own input. That is
@@ -80,9 +87,36 @@ def available_filters() -> frozenset:
     return _filter_cache
 
 
+def shot_timeout(duration: float) -> int:
+    """How long one shot may take to encode, given how long the shot is.
+
+    Encoding runs slower than real time once a filter chain and a slow x264
+    preset are involved, so the budget is a multiple of the shot's length rather
+    than a constant — with the old flat value as a floor, so nothing short gets
+    less than it had.
+    """
+    scaled = max(0.0, duration) * SHOT_TIMEOUT_FACTOR
+    return int(min(SHOT_TIMEOUT_CEILING, max(SHOT_TIMEOUT_SECONDS, scaled)))
+
+
 def run(argv: Sequence[str], *, cwd: Optional[str] = None, timeout: int = SHOT_TIMEOUT_SECONDS) -> None:
-    """Run ffmpeg, raising FFmpegError with the tail of stderr on failure."""
-    result = subprocess.run(list(argv), capture_output=True, timeout=timeout, cwd=cwd)
+    """Run ffmpeg, raising FFmpegError with something readable on failure.
+
+    A timeout is converted here rather than left to propagate. `TimeoutExpired`
+    stringifies as the entire argv followed by the reason, which runs past a
+    thousand characters — so by the time the worker truncates it for the UI the
+    reason has been cut off the end and all the user sees is a severed command
+    line. The original is chained, so the full argv still reaches the log, which
+    is where it is actually useful.
+    """
+    try:
+        result = subprocess.run(list(argv), capture_output=True, timeout=timeout, cwd=cwd)
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(
+            f"ffmpeg gave up on a segment after {timeout}s. It is probably a very "
+            f"long section on one image — try a lower resolution or a faster "
+            f"encoding preset."
+        ) from exc
     if result.returncode != 0:
         tail = result.stderr.decode(errors="replace")[-800:]
         raise FFmpegError(f"ffmpeg failed: {tail}")
@@ -215,16 +249,30 @@ def _even(value: float) -> int:
     return n - n % 2
 
 
-def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Optional[str]:
+def kenburns_effect_for(
+    kind: str, index: int, options: RenderOptions,
+    *, duration: Optional[float] = None, width: Optional[int] = None,
+) -> Optional[str]:
     """Which drift, if any, this shot gets.
 
     A video background already moves, so only stills and (opt-in) cards drift. A
     card has its text drawn into the picture, so it is only ever allowed to zoom
     from the centre — a pan would walk the type out of frame.
+
+    A drift spread over a very long shot is also refused, because the same
+    travel across more frames is less movement per frame, not more: past a point
+    the picture simply holds still between one-pixel jumps. Rendering that costs
+    a 24-megapixel read and a 4K intermediate for every frame and shows nothing,
+    so `duration` and `width` — when the caller knows them — decide whether the
+    effect is worth its price. Turning the travel up keeps it on for longer.
     """
     effect = options.ken_burns.effect
     if effect == "none":
         return None
+    if duration is not None and width:
+        frames = int(math.ceil(max(0.1, duration) * max(1, options.fps)))
+        if not kenburns_is_perceptible(options.ken_burns.amount, width, frames):
+            return None
     if kind == "card":
         if not options.ken_burns.include_cards:
             return None
@@ -389,7 +437,8 @@ def build_shot_command(
     # A drifting shot is fitted larger than the output frame so `zoompan` has
     # real pixels to zoom into, and zoompan's own `s=` brings it back down.
     # Fitting at the output size first would just magnify its softness.
-    drift = kenburns_effect_for(kind, index, options) if "zoompan" in filters else None
+    drift = (kenburns_effect_for(kind, index, options, duration=duration, width=width)
+             if "zoompan" in filters else None)
     if drift:
         read_width, read_height, _w, _h = kenburns_geometry(width, height)
         chains = [fit_chain(video_in, "fit", read_width, read_height, options.fit)]
