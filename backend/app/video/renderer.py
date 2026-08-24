@@ -453,15 +453,16 @@ def estimate(
             speed = max(0.25, options.speed)
             # ~15 characters per second is a normal TTS speaking rate.
             spoken = len(shot.narration) / 15.0 / speed
-            # The pauses held at headings are real silence in the finished
-            # video, so an estimate that ignored them would run short by a
-            # second and a half for every heading in the article. They are
-            # sped up with everything else, hence the same divisor.
+            # The pauses held at headings, and the one held after every shot's
+            # last word, are real silence in the finished video, so an estimate
+            # that ignored them would run short. They are sped up with
+            # everything else, hence the same divisor.
             held = sum(c.pause_after_ms for c in chunk_narration(
                 shot.narration,
                 paragraph_pause_ms=options.paragraph_pause_ms,
                 heading_pause_ms=options.heading_pause_ms,
             )) / 1000.0 / speed
+            held += options.shot_end_pause_ms / 1000.0 / speed if shot.narration.strip() else 0.0
             floor = options.card_seconds if shot.kind == "card" else options.min_shot_seconds
             durations.append(max(spoken + held, floor))
 

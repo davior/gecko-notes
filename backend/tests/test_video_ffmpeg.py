@@ -5,6 +5,10 @@ they produce can be asserted without ffmpeg being installed. Filter availability
 is stubbed rather than probed, since it's a property of the host, not the code.
 """
 
+import json
+import os
+import tempfile
+
 import pytest
 
 from app.video import ffmpeg as F
@@ -16,7 +20,7 @@ from app.video.options import (
     MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
     kenburns_is_perceptible,
 )
-from app.video.renderer import build_timeline
+from app.video.renderer import build_timeline, estimate
 from app.video.segmenter import Shot
 
 
@@ -354,6 +358,16 @@ def test_out_of_range_options_are_clamped_rather_than_rejected():
     assert RenderOptions(speed=0.01).speed == 0.5
     assert RenderOptions(paragraph_pause_ms=-5).paragraph_pause_ms == 0
     assert RenderOptions(min_shot_seconds=999).min_shot_seconds == 30.0
+    assert RenderOptions(shot_end_pause_ms=-5).shot_end_pause_ms == 0
+    assert RenderOptions(shot_end_pause_ms=99999).shot_end_pause_ms == 3000
+
+
+def test_shot_end_pause_defaults_on():
+    """Confirmed as a real bug and the reason this option exists: without a
+    trailing pause, a shot's audio stops the instant speech does, often
+    mid-decay on the voice's own trailing intonation, and the cut lands right
+    on top of it — it reads as the sentence getting clipped, not finishing."""
+    assert RenderOptions().shot_end_pause_ms > 0
 
 
 # ── transitions ──────────────────────────────────────────────────────────────
@@ -924,3 +938,57 @@ def test_a_short_shot_still_gets_the_full_supersampled_drift():
         output="s.mp4", options=options, preview=False, index=0,
     )
     assert "zoompan" in _graph(argv)
+
+
+# ── the end-of-shot pause is a real second and a half the estimate must count ─
+
+def _note(*paragraphs):
+    return json.dumps([
+        {"id": str(i), "type": "paragraph", "content": [{"type": "text", "text": p}]}
+        for i, p in enumerate(paragraphs)
+    ])
+
+
+def _estimate(*paragraphs, **options_kwargs):
+    root = tempfile.mkdtemp()
+    return estimate(
+        user_id="u1", media_dir=root, note_content=_note(*paragraphs), note_title="", author="",
+        options=RenderOptions(title_card=False, **options_kwargs),
+    )
+
+
+# Long enough that its spoken length alone clears min_shot_seconds, so the
+# floor can't absorb part of the pause and mask what's being measured.
+LONG_PARAGRAPH = "A paragraph with enough words in it to run well past the floor. " * 2
+
+
+def test_a_longer_end_pause_makes_the_estimate_longer():
+    """estimate() is a dry run with no ffmpeg and no TTS call, so this is the
+    only place this option's effect on total length can be checked at all."""
+    short = _estimate(LONG_PARAGRAPH, shot_end_pause_ms=0)
+    long = _estimate(LONG_PARAGRAPH, shot_end_pause_ms=2000)
+    assert long[2] - short[2] == pytest.approx(2.0, abs=0.05)
+
+
+def test_the_end_pause_is_sped_up_along_with_the_narration():
+    fast = _estimate(LONG_PARAGRAPH, shot_end_pause_ms=1000, speed=2.0)
+    normal = _estimate(LONG_PARAGRAPH, shot_end_pause_ms=1000, speed=1.0)
+    assert fast[2] < normal[2]
+
+
+def test_a_shot_with_no_narration_gets_no_end_pause():
+    """Nothing was said, so there is nothing for a cut to land on top of."""
+    empty_document = _estimate(shot_end_pause_ms=2000)
+    assert empty_document[2] == 0.0
+
+    # A silent image (nothing follows it) is a shot that exists but has
+    # nothing to say; the 2s end-pause must not be added on top of its floor.
+    root = tempfile.mkdtemp()
+    os.makedirs(os.path.join(root, "u1"), exist_ok=True)
+    open(os.path.join(root, "u1", "photo.png"), "wb").write(b"x")
+    doc = json.dumps([{"id": "1", "type": "image", "props": {"url": "/media/u1/photo.png"}}])
+    silent_image = estimate(
+        user_id="u1", media_dir=root, note_content=doc, note_title="", author="",
+        options=RenderOptions(title_card=False, shot_end_pause_ms=2000),
+    )
+    assert silent_image[2] == RenderOptions().min_shot_seconds

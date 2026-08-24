@@ -154,7 +154,14 @@ def _classify(block: Dict[str, Any], options: RenderOptions) -> Optional[str]:
 
     if btype == "image":
         return "image" if isinstance(url, str) and url else None
-    if btype == "videoFile":
+    if btype in ("videoFile", "video"):
+        # "videoFile" is this app's own block (the camera recorder, and a
+        # finished article-to-video render inserted back into its note).
+        # "video" is BlockNote's own built-in block, which is what a plain
+        # drag-and-drop or paste of an .mp4 produces — same `props.url` shape,
+        # and just as much a video, so it has to be recognised the same way or
+        # it silently isn't a media boundary at all: not skipped with a
+        # warning, just invisible to the whole pipeline.
         return "video" if isinstance(url, str) and url else None
     if btype == "file" and isinstance(url, str) and url:
         # BlockNote's generic file block is used for transcripts and downloads as

@@ -374,6 +374,14 @@ class RenderOptions(BaseModel):
     # in one breath — which is the main thing that makes a long read sound
     # machine-made. Set to 0 to run headings on as ordinary prose.
     heading_pause_ms: int = 800
+    # Held after the *last* word of every shot — a plain section, a title
+    # screen, a chapter card — before the cut to whatever comes next. Without
+    # this a shot's audio stops the instant speech does, often mid-decay on a
+    # voice's own trailing intonation, and the cut lands right on top of it: it
+    # reads as the sentence getting clipped rather than finishing. This is the
+    # gap paragraph_pause_ms and heading_pause_ms don't cover — both only ever
+    # sit *between* two chunks inside one shot, never after the shot's last one.
+    shot_end_pause_ms: int = 600
     narrate_code: bool = False
 
     # Shortest a shot may be, so a media block with little or no text under it
@@ -403,6 +411,11 @@ class RenderOptions(BaseModel):
     @classmethod
     def _sane_heading_pause(cls, v: int) -> int:
         return max(0, min(5000, v))
+
+    @field_validator("shot_end_pause_ms")
+    @classmethod
+    def _sane_shot_end_pause(cls, v: int) -> int:
+        return max(0, min(3000, v))
 
     @field_validator("min_shot_seconds", "card_seconds")
     @classmethod

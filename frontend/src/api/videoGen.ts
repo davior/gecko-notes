@@ -133,6 +133,10 @@ export interface RenderOptions {
   paragraph_pause_ms: number
   /** Silence held either side of a heading. 0 runs headings on as prose. */
   heading_pause_ms: number
+  /** Silence held after the *last* word of every shot, before the cut to
+   *  whatever comes next — without it a shot's audio stops the instant
+   *  speech does, often mid-decay on the voice's own trailing intonation. */
+  shot_end_pause_ms: number
   narrate_code: boolean
   min_shot_seconds: number
   card_seconds: number
@@ -166,6 +170,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   speed: 1.0,
   paragraph_pause_ms: 350,
   heading_pause_ms: 800,
+  shot_end_pause_ms: 600,
   narrate_code: false,
   min_shot_seconds: 2.5,
   card_seconds: 3.5,

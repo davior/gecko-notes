@@ -79,6 +79,53 @@ def test_video_with_audio_splits_into_the_clip_then_a_muted_continuation():
     assert plan.shots[0].background == plan.shots[1].background
 
 
+# ── BlockNote's own "video" block, not just this app's "videoFile" one ──────
+#
+# Confirmed as a real bug: a plain drag-and-drop or paste of an .mp4 produces
+# BlockNote's *built-in* "video" block (same `props.url` shape as "image"),
+# which `_classify` didn't recognise at all — not skipped with a warning, just
+# invisible, so the clip silently never made it into the render. "videoFile"
+# is only ever inserted by this app's own code: the camera recorder, and a
+# finished article-to-video render being attached back to its note.
+
+def test_a_plain_dropped_or_pasted_video_is_not_skipped():
+    root = _media("clip.mp4")
+    plan = _run([
+        {"id": "1", "type": "video", "props": {"url": "/media/u1/clip.mp4"}},
+        {"id": "2", "type": "paragraph", "content": _text("Spoken over the clip.")},
+    ], media_root=root)
+
+    assert [s.kind for s in plan.shots] == ["video_muted"]
+    assert plan.shots[0].background.endswith("clip.mp4")
+    assert plan.shots[0].narration == "Spoken over the clip."
+    assert plan.warnings == []
+
+
+def test_a_sounded_native_video_block_splits_the_same_way_videofile_does():
+    root = _media("loud.mp4")
+    plan = _run([
+        {"id": "1", "type": "video", "props": {"url": "/media/u1/loud.mp4"}},
+        {"id": "2", "type": "paragraph", "content": _text("Read after the clip.")},
+    ], media_root=root, loud={"loud.mp4"})
+
+    assert [s.kind for s in plan.shots] == ["video_sound", "video_muted"]
+    assert plan.shots[1].narration == "Read after the clip."
+    assert plan.shots[0].background == plan.shots[1].background
+
+
+def test_a_native_video_block_with_no_url_yet_is_simply_not_media():
+    """A block mid-upload, or otherwise props-less, must not crash the segmenter
+    or be mistaken for a boundary it doesn't have a source for yet."""
+    root = _media()
+    plan = _run([
+        {"id": "1", "type": "video", "props": {}},
+        {"id": "2", "type": "paragraph", "content": _text("Text.")},
+    ], media_root=root)
+
+    assert [s.kind for s in plan.shots] == ["still"]
+    assert plan.shots[0].narration == "Text."
+
+
 def test_headings_become_chapter_marks_and_are_still_narrated():
     root = _media("a.png")
     plan = _run([
