@@ -22,7 +22,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from app.video import compose, ffmpeg as F
 from app.video.narration import (
-    Cue, NarrationResult, build_silence, shift_cues, synthesize_shot, write_srt,
+    Cue, NarrationResult, chunk_narration, shift_cues, synthesize_shot, write_srt,
 )
 from app.video.options import RenderOptions, frame_size, is_crossfade, kenburns_prescale
 from app.video.segmenter import Segmentation, Shot, resolve_media_path, segment
@@ -203,8 +203,6 @@ def render(
         # The layer itself is kept in scope: a shot carrying a quote composites
         # the two into one PNG rather than adding a second overlay filter.
 
-        silence = build_silence(work_dir, options.paragraph_pause_ms)
-
         # ── narration ─────────────────────────────────────────────────────────
         narrations: List[NarrationResult] = []
         speaking = [s for s in shots if s.kind != "video_sound"]
@@ -218,8 +216,7 @@ def render(
             progress("Narrating", 2 + int(NARRATION_SHARE * done / max(1, len(speaking))),
                      f"section {done} of {len(speaking)}")
             narrations.append(synthesize_shot(
-                shot.narration, index=index, work_dir=work_dir, options=options,
-                tts=tts, silence_name=silence,
+                shot.narration, index=index, work_dir=work_dir, options=options, tts=tts,
             ))
 
         # ── per-shot render ───────────────────────────────────────────────────
@@ -431,10 +428,20 @@ def estimate(
         if shot.kind == "video_sound":
             durations.append(F.probe_duration(shot.background or "") or options.min_shot_seconds)
         else:
+            speed = max(0.25, options.speed)
             # ~15 characters per second is a normal TTS speaking rate.
-            spoken = len(shot.narration) / 15.0 / max(0.25, options.speed)
+            spoken = len(shot.narration) / 15.0 / speed
+            # The pauses held at headings are real silence in the finished
+            # video, so an estimate that ignored them would run short by a
+            # second and a half for every heading in the article. They are
+            # sped up with everything else, hence the same divisor.
+            held = sum(c.pause_after_ms for c in chunk_narration(
+                shot.narration,
+                paragraph_pause_ms=options.paragraph_pause_ms,
+                heading_pause_ms=options.heading_pause_ms,
+            )) / 1000.0 / speed
             floor = options.card_seconds if shot.kind == "card" else options.min_shot_seconds
-            durations.append(max(spoken, floor))
+            durations.append(max(spoken + held, floor))
 
     # A crossfade shortens the video by one overlap per join, which is the number
     # the dialog is showing. The filter set is assumed rather than probed, so a

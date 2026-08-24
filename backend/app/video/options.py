@@ -318,6 +318,11 @@ class RenderOptions(BaseModel):
     voice: Optional[str] = None        # None = the account's configured voice
     speed: float = 1.0
     paragraph_pause_ms: int = 350
+    # Held at a heading, going in and coming out. A full stop is all a voice has
+    # to separate "...ends here." from "A New Chapter.", so the two run together
+    # in one breath — which is the main thing that makes a long read sound
+    # machine-made. Set to 0 to run headings on as ordinary prose.
+    heading_pause_ms: int = 800
     narrate_code: bool = False
 
     # Shortest a shot may be, so a media block with little or no text under it
@@ -342,6 +347,11 @@ class RenderOptions(BaseModel):
     @classmethod
     def _sane_pause(cls, v: int) -> int:
         return max(0, min(3000, v))
+
+    @field_validator("heading_pause_ms")
+    @classmethod
+    def _sane_heading_pause(cls, v: int) -> int:
+        return max(0, min(5000, v))
 
     @field_validator("min_shot_seconds", "card_seconds")
     @classmethod

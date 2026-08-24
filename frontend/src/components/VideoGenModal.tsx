@@ -148,6 +148,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   }, [
     noteId, payload.speed, payload.title_card, payload.chapter_screens,
     payload.narrate_code, payload.min_shot_seconds, payload.quotes.enabled,
+    payload.heading_pause_ms,
     payload.transition.style, payload.transition.duration,
   ])
 
@@ -312,6 +313,20 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                          onChange={(e) => patch({ speed: Number(e.target.value) })} />
                 </div>
               </div>
+              <div>
+                <label className="label">
+                  Pause at a heading — {options.heading_pause_ms === 0
+                    ? 'none' : `${(options.heading_pause_ms / 1000).toFixed(2)}s`}
+                </label>
+                <input type="range" min={0} max={2000} step={50} className="w-full"
+                       value={options.heading_pause_ms}
+                       onChange={(e) => patch({ heading_pause_ms: Number(e.target.value) })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Held going into a heading and coming out of it. Without one the
+                  voice runs the section above straight into the one below.
+                </p>
+              </div>
+
               <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                 <input type="checkbox" checked={options.narrate_code}
                        onChange={(e) => patch({ narrate_code: e.target.checked })} />

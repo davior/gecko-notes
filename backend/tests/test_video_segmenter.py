@@ -469,3 +469,55 @@ def test_a_dash_line_in_a_multi_line_quote_is_always_the_attribution():
     shots = _run([_quote("A quotation.\n— the collected letters of somebody or other")],
                  media_root=root, options=_quotes()).shots
     assert shots[0].quote_attribution == "the collected letters of somebody or other"
+
+
+# ── heading pauses ───────────────────────────────────────────────────────────
+
+def _heading(value):
+    return {"type": "heading", "content": _text(value)}
+
+
+def test_a_heading_read_in_its_section_is_set_apart_by_blank_lines():
+    """The blank line is what chunk_narration turns into an actual gap; without
+    it the voice has only a full stop between the paragraph and the heading."""
+    root = _media()
+    shots = _run([
+        _para("The first section ends here"),
+        _heading("A New Chapter"),
+        _para("And the next section begins"),
+    ], media_root=root).shots
+    assert shots[0].narration == (
+        "The first section ends here.\n\nA New Chapter.\n\nAnd the next section begins."
+    )
+
+
+def test_ordinary_paragraphs_are_not_set_apart_from_each_other():
+    root = _media()
+    shots = _run([_para("One"), _para("Two")], media_root=root).shots
+    assert shots[0].narration == "One.\nTwo."
+
+
+def test_turning_the_heading_pause_off_leaves_the_narration_as_it_was():
+    root = _media()
+    options = RenderOptions(title_card=False, heading_pause_ms=0)
+    shots = _run([_para("Before"), _heading("A Heading"), _para("After")],
+                 media_root=root, options=options).shots
+    assert shots[0].narration == "Before.\nA Heading.\nAfter."
+
+
+def test_a_leading_or_trailing_break_is_trimmed_off_the_shot():
+    """A pause before the first word or after the last would just pad the shot."""
+    root = _media()
+    shots = _run([_heading("Opening Heading"), _para("Body")], media_root=root).shots
+    assert shots[0].narration.startswith("Opening Heading.")
+    assert not shots[0].narration.endswith("\n")
+
+
+def test_a_chapter_card_carries_its_heading_unmarked():
+    """A card is its own shot, so the boundary is already there in the picture."""
+    root = _media()
+    options = RenderOptions(title_card=False, chapter_screens=True)
+    shots = _run([_heading("A Chapter"), _para("Body")],
+                 media_root=root, options=options).shots
+    card = next(s for s in shots if s.kind == "card")
+    assert card.narration == "A Chapter."

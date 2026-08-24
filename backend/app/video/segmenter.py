@@ -237,6 +237,17 @@ def _split_attribution(text: str) -> Tuple[str, str]:
     return body, ""
 
 
+def _set_apart(text: str) -> str:
+    """Mark a block as needing a real pause on either side of it.
+
+    Blank lines are the marker, for two reasons: whitespace can never be spoken
+    if it somehow reaches a provider, and the narration stays a plain string
+    that `narration_chars` and the estimate can still measure. `chunk_narration`
+    turns each one into an actual gap in the audio.
+    """
+    return f"\n{text}\n"
+
+
 def _block_narration(block: Dict[str, Any], options: RenderOptions) -> str:
     btype = block.get("type")
     if btype in SILENT_TYPES:
@@ -403,7 +414,13 @@ def segment(
 
             text = _block_narration(block, options)
             if text.strip():
-                pending_text.append(_as_sentence(text))
+                spoken = _as_sentence(text)
+                # A heading is a section boundary, not another sentence of the
+                # paragraph above it, so it gets a pause on both sides. A card
+                # already has the boundary of its own shot and needs no marking.
+                if btype == "heading" and options.heading_pause_ms > 0:
+                    spoken = _set_apart(spoken)
+                pending_text.append(spoken)
             continue
 
         url = _media_url(block, options)

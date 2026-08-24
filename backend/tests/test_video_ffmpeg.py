@@ -9,7 +9,8 @@ import pytest
 
 from app.video import ffmpeg as F
 from app.video.narration import (
-    Cue, _srt_timestamp, chunk_text, shift_cues, split_for_subtitles, write_srt,
+    Cue, _srt_timestamp, chunk_narration, chunk_text, shift_cues,
+    split_for_subtitles, write_srt,
 )
 from app.video.options import MusicSpec, RenderOptions, encoder_tier, frame_size
 from app.video.renderer import build_timeline
@@ -672,3 +673,67 @@ def test_subtitle_cues_are_shifted_onto_the_overlapped_timeline():
 def test_a_video_with_no_chapters_still_reports_its_length():
     marks, cues, total = _timeline([3.0])
     assert marks == [] and cues == [] and total == pytest.approx(3.0)
+
+
+# ── pauses around headings ───────────────────────────────────────────────────
+
+def _narration(text, paragraph=350, heading=800):
+    return chunk_narration(text, paragraph_pause_ms=paragraph, heading_pause_ms=heading)
+
+
+def test_a_heading_is_held_on_both_sides():
+    """A full stop is all a voice has between a paragraph and the heading after
+    it, so the two run together in one breath unless real silence is inserted."""
+    chunks = _narration("Ends here.\n\nA New Chapter.\n\nBegins now.")
+    assert [c.text for c in chunks] == ["Ends here.", "A New Chapter.", "Begins now."]
+    assert [c.pause_after_ms for c in chunks] == [800, 800, 0]
+
+
+def test_prose_without_a_heading_still_travels_as_one_request():
+    """Splitting where no pause is wanted would buy nothing and cost a TTS call."""
+    chunks = _narration("Just prose. More of the same prose.")
+    assert len(chunks) == 1
+    assert chunks[0].pause_after_ms == 0
+
+
+def test_an_ordinary_block_join_is_not_a_break():
+    """Blocks are joined with a single newline; only a blank line marks a pause,
+    so marking has to be deliberate rather than accidental."""
+    chunks = _narration("One paragraph.\nAnother paragraph.")
+    assert len(chunks) == 1
+
+
+def test_turning_the_pause_off_restores_the_old_single_chunk():
+    chunks = _narration("Ends here.\n\nA New Chapter.\n\nBegins now.", heading=0)
+    assert len(chunks) == 1
+    assert chunks[0].pause_after_ms == 0
+
+
+def test_back_to_back_headings_are_held_once_not_twice():
+    chunks = _narration("Body.\n\nFirst Heading.\n\n\nSecond Heading.\n\nMore body.")
+    assert [c.text for c in chunks] == [
+        "Body.", "First Heading.", "Second Heading.", "More body.",
+    ]
+    assert [c.pause_after_ms for c in chunks] == [800, 800, 800, 0]
+
+
+def test_a_long_section_keeps_the_shorter_pause_between_its_own_chunks():
+    """Only the gap at a heading is the long one; splitting an oversized section
+    is a mechanical necessity, not a place anyone wants a beat."""
+    section = " ".join(f"Sentence number {i}." for i in range(400))
+    chunks = _narration(f"{section}\n\nA Heading.")
+    assert len(chunks) > 2
+    assert chunks[-2].pause_after_ms == 800     # the last chunk before the heading
+    assert chunks[0].pause_after_ms == 350      # inside the section
+    assert chunks[-1].pause_after_ms == 0
+
+
+def test_nothing_is_held_after_the_final_chunk():
+    """A trailing pause would just pad the end of the shot."""
+    for text in ("Alone.", "A.\n\nB.", "A.\n\nB.\n\nC."):
+        assert _narration(text)[-1].pause_after_ms == 0
+
+
+def test_blank_narration_produces_no_chunks():
+    assert _narration("") == []
+    assert _narration("\n\n   \n\n") == []

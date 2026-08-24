@@ -131,6 +131,8 @@ export interface RenderOptions {
   voice: string | null
   speed: number
   paragraph_pause_ms: number
+  /** Silence held either side of a heading. 0 runs headings on as prose. */
+  heading_pause_ms: number
   narrate_code: boolean
   min_shot_seconds: number
   card_seconds: number
@@ -163,6 +165,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   voice: null,
   speed: 1.0,
   paragraph_pause_ms: 350,
+  heading_pause_ms: 800,
   narrate_code: false,
   min_shot_seconds: 2.5,
   card_seconds: 3.5,
