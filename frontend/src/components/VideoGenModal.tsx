@@ -148,6 +148,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   }, [
     noteId, payload.speed, payload.title_card, payload.chapter_screens,
     payload.narrate_code, payload.min_shot_seconds, payload.quotes.enabled,
+    payload.shot_end_pause_ms,
     payload.heading_pause_ms,
     payload.transition.style, payload.transition.duration,
   ])
@@ -324,6 +325,21 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Held going into a heading and coming out of it. Without one the
                   voice runs the section above straight into the one below.
+                </p>
+              </div>
+              <div>
+                <label className="label">
+                  Pause at the end of every segment — {options.shot_end_pause_ms === 0
+                    ? 'none' : `${(options.shot_end_pause_ms / 1000).toFixed(2)}s`}
+                </label>
+                <input type="range" min={0} max={2000} step={50} className="w-full"
+                       value={options.shot_end_pause_ms}
+                       onChange={(e) => patch({ shot_end_pause_ms: Number(e.target.value) })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Held after the last word of a paragraph, section or title screen
+                  before cutting to what's next. Without one a segment's audio
+                  stops the instant speech does, which reads as the sentence
+                  getting cut off rather than finishing.
                 </p>
               </div>
 

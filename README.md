@@ -54,6 +54,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - **Title screens**, optional chapter screens, chapter markers embedded in the MP4, an automatic thumbnail, and **subtitles** as an `.srt` sidecar, a track inside the MP4, or burned into the picture
 - A chapter screen reads its own heading while the words are on screen; with chapter screens off, the heading is read inside the section it introduces
 - An adjustable **pause at each heading**, held going in and coming out, so a section doesn't run straight into the next one — a full stop is all a voice has to separate them otherwise. Set it to zero to read headings on as ordinary prose
+- An adjustable **pause at the end of every segment** — a paragraph, a section, a title or chapter screen — held after the last word before cutting to what's next, so a segment finishes rather than getting clipped by the cut
 - **Every text size is adjustable** — title screen, chapter screen, watermark icon and caption, and the fixed overlay — set as a percentage of the frame height, so one choice holds at every resolution and aspect ratio
 - Renders in the background with progress in the header and the browser tab, and can be cancelled mid-render — the finished video is attached to the note by the server, so it arrives even if you close the tab
 - Choice of TTS voice and speaking rate per video, and options are remembered between renders — grouped into Format, Narration, Motion & audio, Branding and Structure tabs

@@ -284,6 +284,17 @@ def synthesize_shot(
         if pad:
             entries.append(pad)
 
+    # Held after the shot's very last word, before the cut to whatever comes
+    # next. Without this the shot's audio — and so the shot itself, since its
+    # length is measured from this file — ends the instant speech does, often
+    # mid-decay on a voice's own trailing intonation; the cut then lands right
+    # on top of it and reads as the sentence getting clipped rather than
+    # finishing. paragraph_pause_ms and heading_pause_ms only ever sit
+    # *between* two chunks above, which is why this needs its own entry here.
+    end_pad = build_silence(work_dir, options.shot_end_pause_ms)
+    if end_pad:
+        entries.append(end_pad)
+
     list_name = f"narration_{index:04d}.txt"
     F.write_concat_list(os.path.join(work_dir, list_name), entries)
 
