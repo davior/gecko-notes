@@ -92,6 +92,21 @@ KENBURNS_READ_MAX_SCALE = 8.0
 KENBURNS_WRITE_PIXELS = 3840 * 2160
 KENBURNS_WRITE_MAX_SCALE = 2.0
 
+# Below this the drift is not slow, it is invisible: the picture holds still for
+# several frames between each one-pixel move, and no amount of precision changes
+# that. A 12% travel crosses it at about 25 seconds; an 8-minute section — one
+# image carried across a heading and all its subsections — runs at 0.008, where
+# rendering the drift costs a great deal and shows nothing. Expressed as a rate
+# rather than a shot length so it follows the travel the user actually chose.
+KENBURNS_MIN_TRAVEL_PX_PER_FRAME = 0.15
+
+
+def kenburns_is_perceptible(amount: float, width: int, frames: int) -> bool:
+    """Whether a drift of `amount` across `frames` would be seen at all."""
+    if frames <= 0:
+        return False
+    return (amount * width / 2 / frames) >= KENBURNS_MIN_TRAVEL_PX_PER_FRAME
+
 
 def _budgeted_scale(width: int, height: int, budget: int, ceiling: float) -> float:
     """Largest scale at or below `ceiling` that keeps width*height under budget."""
