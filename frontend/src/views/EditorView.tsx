@@ -200,6 +200,14 @@ export default function EditorView() {
   const dirtySinceSnapshot = useRef(false)
   const blurTimestamp = useRef<number | null>(null)
   const isSaving = useRef(false)
+  // Files pasted/dropped into the editor are inserted as a placeholder block
+  // immediately, with `uploadFile` resolving the real URL asynchronously
+  // afterwards (see @blocknote/core's handleFileInsertion). A save that reads
+  // editor.document while an upload is still in flight persists the block
+  // before its URL is set — the note then reopens with the file's "add
+  // image" placeholder instead of the pasted image. Track in-flight uploads
+  // here so doSave can wait for them before serializing the document.
+  const pendingUploads = useRef<Set<Promise<void>>>(new Set())
   const isHydratingEditor = useRef(false)
   const syncedEditorKey = useRef<string | null>(null)
   // Latches true the first time the editor UI has mounted, and stays true for the
@@ -223,8 +231,22 @@ export default function EditorView() {
   const editor = useCreateBlockNote({
     schema: noteSchema,
     uploadFile: async (file: File) => {
-      const response = await mediaApi.upload(file)
-      return response.data.url
+      let markSettled: () => void = () => {}
+      const settled = new Promise<void>((resolve) => { markSettled = resolve })
+      pendingUploads.current.add(settled)
+      try {
+        const response = await mediaApi.upload(file)
+        return response.data.url
+      } finally {
+        // Defer clearing to a macrotask: BlockNote writes the resolved URL
+        // onto the block in a microtask continuation right after this
+        // function returns, and that write must land before we report the
+        // upload as settled.
+        setTimeout(() => {
+          markSettled()
+          pendingUploads.current.delete(settled)
+        }, 0)
+      }
     },
   })
 
@@ -563,6 +585,15 @@ export default function EditorView() {
 
     setSaveStatus('Saving...')
     isSaving.current = true
+
+    // Let any in-flight pasted/dropped file uploads finish and write their
+    // URL onto the block before we read the document — otherwise a save
+    // triggered right after a paste (e.g. immediately exiting the note) can
+    // persist the block before it has a URL.
+    if (pendingUploads.current.size > 0) {
+      await Promise.allSettled([...pendingUploads.current])
+    }
+
     const content = JSON.stringify(editor.document)
     currentNoteContent.current = extractPlainText(editor.document as unknown[])
 
