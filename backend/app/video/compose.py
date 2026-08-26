@@ -334,18 +334,47 @@ def quote_panel(
     return layer
 
 
+# In "title + chapter" mode the chapter line reads as a subheading, so it is
+# drawn a bit smaller than the title rather than at the same weight.
+CHAPTER_OVERLAY_SIZE_RATIO = 0.72
+
+
+def _overlay_text_blocks(
+    draw: ImageDraw.ImageDraw, overlay_text: OverlayTextSpec, chapter_line: Optional[str],
+    height: int, max_width: int,
+) -> List[Tuple[str, ImageFont.FreeTypeFont]]:
+    """Wrap the overlay's title (and optional chapter) line into (text, font) pairs.
+
+    Each block is fitted and wrapped independently, so the chapter line — when
+    present — gets its own, smaller font rather than sharing the title's.
+    """
+    blocks: List[Tuple[str, ImageFont.FreeTypeFont]] = []
+    title = (overlay_text.text or "").strip()
+    if title:
+        font = fit_font(draw, title, SEMIBOLD, max(8, int(height * overlay_text.size_pct / 100)), max_width)
+        blocks.extend((line, font) for line in wrap_text(draw, title, font, max_width)[:4])
+    chapter = (chapter_line or "").strip()
+    if chapter:
+        chapter_pct = overlay_text.size_pct * CHAPTER_OVERLAY_SIZE_RATIO
+        font = fit_font(draw, chapter, SEMIBOLD, max(8, int(height * chapter_pct / 100)), max_width)
+        blocks.extend((line, font) for line in wrap_text(draw, chapter, font, max_width)[:2])
+    return blocks
+
+
 def overlay_layer(
     width: int, height: int, *,
     watermark: WatermarkSpec, watermark_icon: Optional[str],
-    overlay_text: OverlayTextSpec,
+    overlay_text: OverlayTextSpec, chapter_line: Optional[str] = None,
 ) -> Optional[Image.Image]:
     """One full-frame RGBA layer carrying the watermark and the fixed text.
 
     Composing both into a single PNG means ffmpeg applies one `overlay` per shot
-    instead of a chain of scale/overlay/drawtext filters.
+    instead of a chain of scale/overlay/drawtext filters. `chapter_line`, when
+    given, is drawn under `overlay_text.text` at a smaller size — the video's
+    current chapter, in "title + chapter" mode.
     """
     wants_watermark = watermark.enabled and (watermark_icon or watermark.text.strip())
-    wants_text = overlay_text.enabled and overlay_text.text.strip()
+    wants_text = overlay_text.enabled and (overlay_text.text.strip() or (chapter_line or "").strip())
     if not wants_watermark and not wants_text:
         return None
 
@@ -376,18 +405,13 @@ def overlay_layer(
         margin = int(min(width, height) * max(0, min(25, overlay_text.margin_pct)) / 100)
         colour = parse_colour(overlay_text.color, (255, 255, 255))
         text_budget = _budget(margin)
-        font = fit_font(
-            draw, overlay_text.text, SEMIBOLD,
-            max(8, int(height * overlay_text.size_pct / 100)),
-            text_budget, min_size=8,
-        )
-        lines = wrap_text(draw, overlay_text.text, font, text_budget)[:4]
-        line_h = int(font.size * 1.3)
-        box_w = int(max((draw.textlength(l, font=font) for l in lines), default=0))
-        box_h = line_h * len(lines)
+        blocks = _overlay_text_blocks(draw, overlay_text, chapter_line, height, text_budget)
+        box_w = int(max((draw.textlength(l, font=f) for l, f in blocks), default=0))
+        box_h = sum(int(f.size * 1.3) for _, f in blocks)
         x, y = _anchor_xy(overlay_text.position, width, height, box_w, box_h, margin)
         text_rect = (x, y, box_w, box_h)
-        for line in lines:
+        for line, font in blocks:
+            line_h = int(font.size * 1.3)
             lw = draw.textlength(line, font=font)
             # Right-aligned corners look wrong if the wrapped lines are ragged left.
             lx = x + (box_w - lw) if overlay_text.position.endswith("right") else x

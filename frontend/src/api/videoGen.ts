@@ -42,6 +42,10 @@ export type OverlayPosition = 'top-left' | 'top-right' | 'center' | 'bottom-left
 export type WavePosition = 'top' | 'center' | 'bottom'
 export type WaveMode = 'line' | 'p2p' | 'cline' | 'point'
 export type SubtitleMode = 'off' | 'sidecar' | 'soft' | 'burn'
+/** "title" shows the note's title; "title_chapter" adds the current chapter
+ *  underneath it, in a smaller size, and follows it as the video moves
+ *  between chapters; "fixed" is free text typed into `text`. */
+export type OverlayTextMode = 'fixed' | 'title' | 'title_chapter'
 /** A dip fades through a colour inside each shot, which leaves the stitch a
  *  cheap remux. Everything below `dissolve` blends between shots instead, which
  *  needs the finished video re-encoded once. */
@@ -90,7 +94,7 @@ export interface RenderOptions {
     margin_pct: number
   }
   overlay_text: {
-    enabled: boolean; text: string; position: OverlayPosition
+    enabled: boolean; mode: OverlayTextMode; text: string; position: OverlayPosition
     color: string
     /** Font size as a percentage of the frame height. */
     size_pct: number
@@ -153,7 +157,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   fallback: { type: 'gradient', colors: ['#1e293b', '#0f172a'], angle: 135, url: null },
   waveform: { enabled: false, mode: 'line', color: '#00ff41', opacity: 0.7, position: 'bottom', height_pct: 22, scrim: 0.45 },
   watermark: { enabled: false, url: null, text: '', position: 'bottom-right', opacity: 0.85, scale_pct: 6, caption_pct: 2.3, margin_pct: 4 },
-  overlay_text: { enabled: false, text: '', position: 'bottom-left', color: '#ffffff', size_pct: 3, margin_pct: 5, shadow: true },
+  overlay_text: { enabled: false, mode: 'title', text: '', position: 'bottom-left', color: '#ffffff', size_pct: 3, margin_pct: 5, shadow: true },
   title_card_text: { title_pct: 6.8, subtitle_pct: 2.9 },
   chapter_card_text: { title_pct: 6.8, subtitle_pct: 2.9 },
   transition: { style: 'none', duration: 0.6 },

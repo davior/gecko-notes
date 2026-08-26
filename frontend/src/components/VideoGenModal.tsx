@@ -6,8 +6,8 @@ import { settingsApi } from '@/api/settings'
 import {
   DEFAULT_RENDER_OPTIONS, isCrossfade, videoGenApi,
   type AspectRatio, type FitMode, type KenBurnsEffect, type OverlayPosition,
-  type QuotePosition, type RenderOptions, type SubtitleMode, type TransitionStyle,
-  type VideoEstimate, type VideoResolution, type WaveMode, type WavePosition,
+  type OverlayTextMode, type QuotePosition, type RenderOptions, type SubtitleMode,
+  type TransitionStyle, type VideoEstimate, type VideoResolution, type WaveMode, type WavePosition,
 } from '@/api/videoGen'
 import { apiErrorMessage } from '@/utils/format'
 
@@ -590,14 +590,18 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 pt-3">
                   <input type="checkbox" checked={options.overlay_text.enabled}
                          onChange={(e) => patchGroup('overlay_text', { enabled: e.target.checked })} />
-                  Fixed text overlay
+                  Text overlay
                 </label>
                 {options.overlay_text.enabled && (
                   <div className="grid grid-cols-4 gap-3 pl-6">
                     <div className="col-span-2">
-                      <label className="label">Text</label>
-                      <input className="input" value={options.overlay_text.text}
-                             onChange={(e) => patchGroup('overlay_text', { text: e.target.value })} />
+                      <label className="label">Show</label>
+                      <select className="input" value={options.overlay_text.mode}
+                              onChange={(e) => patchGroup('overlay_text', { mode: e.target.value as OverlayTextMode })}>
+                        <option value="title">Show title</option>
+                        <option value="title_chapter">Show title and chapter</option>
+                        <option value="fixed">Show fixed text</option>
+                      </select>
                     </div>
                     <div>
                       <label className="label">Position</label>
@@ -615,9 +619,21 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                       <input type="color" className="input h-9 p-1" value={options.overlay_text.color}
                              onChange={(e) => patchGroup('overlay_text', { color: e.target.value })} />
                     </div>
+                    {options.overlay_text.mode === 'fixed' && (
+                      <div className="col-span-4">
+                        <label className="label">Text</label>
+                        <input className="input" value={options.overlay_text.text}
+                               onChange={(e) => patchGroup('overlay_text', { text: e.target.value })} />
+                      </div>
+                    )}
                     <div className="col-span-2">
                       <SizeSlider label="Text size" min={0.5} max={12} value={options.overlay_text.size_pct}
                                   onChange={(v) => patchGroup('overlay_text', { size_pct: v })} />
+                      {options.overlay_text.mode === 'title_chapter' && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          The chapter line is drawn a little smaller than the title.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
