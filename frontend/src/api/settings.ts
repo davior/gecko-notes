@@ -13,8 +13,10 @@ export const DEFAULT_TTS_MODEL = 'fal-ai/elevenlabs/tts/eleven-v3'
 export const DEFAULT_STT_MODEL = 'fal-ai/wizper'
 // Mirrors backend `DEFAULT_DEEPGRAM_MODEL` — used before speech settings finish loading.
 export const DEFAULT_DEEPGRAM_MODEL = 'nova-3'
-// Mirrors backend `DEFAULT_DEEPGRAM_TTS_MODEL` — the default Deepgram Aura read-aloud voice.
-export const DEFAULT_DEEPGRAM_TTS_MODEL = 'aura-2-thalia-en'
+// Mirrors backend `DEFAULT_DEEPGRAM_TTS_MODEL` — the default Deepgram Flux read-aloud voice.
+export const DEFAULT_DEEPGRAM_TTS_MODEL = 'flux-haley-en'
+// Mirrors backend `DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY` — calm (-2) to animated (2).
+export const DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY = 0
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
@@ -55,10 +57,12 @@ export interface SpeechSettings {
   stt_provider: SttProvider
   deepgram_model: string
   deepgram_models: STTModel[]
-  // Read-aloud (TTS) provider: Deepgram Aura streaming with fal.ai as fallback.
+  // Read-aloud (TTS) provider: Deepgram Flux streaming with fal.ai as fallback.
   tts_provider: TtsProvider
   deepgram_tts_model: string
   deepgram_tts_models: STTModel[]
+  // Calm (-2) to animated (2); Flux-only register offset from the voice's tuned default.
+  deepgram_tts_expressivity: number
   // Per-user opt-in for Flux voice mode (also gated by the instance flag + a Deepgram key).
   voice_mode_enabled: boolean
 }
@@ -71,6 +75,7 @@ export interface SpeechConfigUpdate {
   deepgram_model?: string
   tts_provider?: TtsProvider
   deepgram_tts_model?: string
+  deepgram_tts_expressivity?: number
   voice_mode_enabled?: boolean
   // Tri-state, same convention as the fal.ai key elsewhere: omitted leaves the
   // stored key untouched, "" clears it, a non-empty value replaces it.
@@ -418,6 +423,7 @@ export const settingsApi = {
     deepgram_model: string
     tts_provider: TtsProvider
     deepgram_tts_model: string
+    deepgram_tts_expressivity: number
     voice_mode_enabled: boolean
     has_deepgram_key: boolean
   }> {
