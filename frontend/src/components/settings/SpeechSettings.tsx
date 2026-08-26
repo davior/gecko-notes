@@ -3,7 +3,7 @@ import { Volume2, Square, Plus, Trash2, X, Eye, EyeOff, Mic } from 'lucide-react
 import { useSettingsStore } from '@/stores/settings'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { configApi } from '@/api/config'
-import type { SttProvider, TtsProvider } from '@/api/settings'
+import { DEEPGRAM_TTS_SPEED_MIN, DEEPGRAM_TTS_SPEED_MAX, type SttProvider, type TtsProvider } from '@/api/settings'
 
 // Deepgram Flux `expressivity`: a signed register offset (-2 calm .. 2 animated)
 // from the voice's tuned default (0). Indexed by value + 2.
@@ -88,7 +88,7 @@ export default function SpeechSettings() {
   const {
     falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels,
     sttModel, sttModels, sttProvider, deepgramModel, deepgramModels, deepgramKeyConfigured,
-    ttsProvider, deepgramTtsModel, deepgramTtsModels, deepgramTtsExpressivity, voiceModeEnabled,
+    ttsProvider, deepgramTtsModel, deepgramTtsModels, deepgramTtsExpressivity, deepgramTtsSpeed, voiceModeEnabled,
     updateAppSettings, updateSpeechConfig,
   } = useSettingsStore()
   const [error, setError] = useState<string | null>(null)
@@ -170,6 +170,15 @@ export default function SpeechSettings() {
       await updateSpeechConfig({ deepgram_tts_expressivity: value })
     } catch {
       setError('Failed to save Deepgram expressivity')
+    }
+  }
+
+  async function updateDeepgramTtsSpeed(value: number) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ deepgram_tts_speed: value })
+    } catch {
+      setError('Failed to save Deepgram speed')
     }
   }
 
@@ -299,6 +308,30 @@ export default function SpeechSettings() {
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                   Shifts the voice's delivery register from calm to animated. Preview it below before
                   committing to a non-default value.
+                </p>
+              </div>
+
+              <div className="mt-3">
+                <div className="flex justify-between mb-1">
+                  <label className="label mb-0">Speed</label>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">{deepgramTtsSpeed.toFixed(2)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min={DEEPGRAM_TTS_SPEED_MIN}
+                  max={DEEPGRAM_TTS_SPEED_MAX}
+                  step={0.05}
+                  value={deepgramTtsSpeed}
+                  onChange={(e) => void updateDeepgramTtsSpeed(Number(e.target.value))}
+                  className="w-full accent-blue-600"
+                />
+                <div className="flex justify-between text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  <span>Slower</span>
+                  <span>Faster</span>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Playback rate for the voice's speech. Also controls the speed slider on the
+                  read-aloud toolbar — the two share one setting.
                 </p>
               </div>
 
@@ -558,7 +591,7 @@ export default function SpeechSettings() {
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 The Deepgram Flux voice that speaks replies in voice mode. This is the same voice
-                (and the same expressivity setting) used for Deepgram read-aloud above.
+                (and the same expressivity and speed settings) used for Deepgram read-aloud above.
               </p>
               <div className="flex items-center gap-3 mt-3">
                 <button

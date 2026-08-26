@@ -17,6 +17,10 @@ export const DEFAULT_DEEPGRAM_MODEL = 'nova-3'
 export const DEFAULT_DEEPGRAM_TTS_MODEL = 'flux-haley-en'
 // Mirrors backend `DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY` — calm (-2) to animated (2).
 export const DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY = 0
+// Mirrors backend `DEFAULT_DEEPGRAM_TTS_SPEED`/`DEEPGRAM_TTS_SPEED_MIN/MAX`.
+export const DEFAULT_DEEPGRAM_TTS_SPEED = 1.0
+export const DEEPGRAM_TTS_SPEED_MIN = 0.85
+export const DEEPGRAM_TTS_SPEED_MAX = 1.15
 export const TTS_VOICES: TTSVoice[] = [
   'Aria', 'Roger', 'Sarah', 'Laura', 'Charlie', 'George', 'Callum', 'River',
   'Liam', 'Charlotte', 'Alice', 'Matilda', 'Will', 'Jessica', 'Eric', 'Chris',
@@ -63,6 +67,8 @@ export interface SpeechSettings {
   deepgram_tts_models: STTModel[]
   // Calm (-2) to animated (2); Flux-only register offset from the voice's tuned default.
   deepgram_tts_expressivity: number
+  // Playback-rate multiplier (0.85-1.15); Flux-only.
+  deepgram_tts_speed: number
   // Per-user opt-in for Flux voice mode (also gated by the instance flag + a Deepgram key).
   voice_mode_enabled: boolean
 }
@@ -76,6 +82,7 @@ export interface SpeechConfigUpdate {
   tts_provider?: TtsProvider
   deepgram_tts_model?: string
   deepgram_tts_expressivity?: number
+  deepgram_tts_speed?: number
   voice_mode_enabled?: boolean
   // Tri-state, same convention as the fal.ai key elsewhere: omitted leaves the
   // stored key untouched, "" clears it, a non-empty value replaces it.
@@ -424,6 +431,7 @@ export const settingsApi = {
     tts_provider: TtsProvider
     deepgram_tts_model: string
     deepgram_tts_expressivity: number
+    deepgram_tts_speed: number
     voice_mode_enabled: boolean
     has_deepgram_key: boolean
   }> {
@@ -439,8 +447,8 @@ export const settingsApi = {
     }).then((r) => r.data.text as string)
   },
 
-  synthesizeSpeech(text: string, model = DEFAULT_TTS_VOICE, speed = 1): Promise<Blob> {
-    return client.post('/settings/speech/tts', { text, model, speed }, {
+  synthesizeSpeech(text: string, model = DEFAULT_TTS_VOICE): Promise<Blob> {
+    return client.post('/settings/speech/tts', { text, model }, {
       responseType: 'arraybuffer',
     }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
   },

@@ -3,6 +3,7 @@ import { Play, Pause, Square, Volume2, VolumeX, GripVertical, Mic, Circle, Panel
 import type { UseTextToSpeechReturn } from '@/hooks/useTextToSpeech'
 import type { UseDictationReturn } from '@/hooks/useDictation'
 import DictationWaveIcon from '@/components/DictationWaveIcon'
+import { DEEPGRAM_TTS_SPEED_MIN, DEEPGRAM_TTS_SPEED_MAX } from '@/api/settings'
 
 const POS_KEY = 'tts_controls_pos'
 const PANEL_FALLBACK_W = 280
@@ -237,8 +238,8 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
       <div className="flex items-center gap-1 pl-1 pr-1.5">
         <input
           type="range"
-          min={0.25}
-          max={2}
+          min={DEEPGRAM_TTS_SPEED_MIN}
+          max={DEEPGRAM_TTS_SPEED_MAX}
           step={0.05}
           value={ttsSpeed}
           className="w-16 accent-blue-600"
