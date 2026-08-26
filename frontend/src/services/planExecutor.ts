@@ -7,6 +7,7 @@ import { notesApi } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { imageGenApi } from '@/api/imageGen'
+import { recipesApi } from '@/api/recipes'
 import { extractBlockTexts } from '@/utils/blocks'
 import { newDiagramId, validateMermaidSource } from '@/utils/diagram'
 import type { Plan, PlanAction } from './aiPlan'
@@ -30,6 +31,7 @@ export interface PlanExecContext {
   validFolderIds: Set<string>
   validCategoryIds: Set<string>
   validAnnotationIds?: Set<string>
+  validRecipeIds?: Set<string>
 }
 
 export interface ActionResult {
@@ -39,6 +41,7 @@ export interface ActionResult {
   notesChanged?: boolean
   touchedCurrentNote?: boolean
   annotationsChanged?: boolean  // true when this action touched the current note's annotations
+  recipesChanged?: boolean      // true when this action created/updated/deleted a recipe
   noteId?: string    // the note this action created/affected, for a result-summary link
   noteTitle?: string // display title for the pill link (omitted where title isn't fetched)
 }
@@ -228,6 +231,11 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
     if (mapped) return { id: mapped }
     if (ctx.validFolderIds.has(idOrRef)) return { id: idOrRef }
     return { error: `Folder "${idOrRef}" is not in context — skipped.` }
+  }
+
+  const resolveRecipe = (id: string): { id: string } | { error: string } => {
+    if ((ctx.validRecipeIds ?? new Set()).has(id)) return { id }
+    return { error: `Recipe "${id}" is not in context — skipped.` }
   }
 
   const touchesCurrent = (id: string) => id === ctx.currentNoteId
@@ -631,6 +639,29 @@ export async function executePlan(plan: Plan, ctx: PlanExecContext): Promise<Act
           noteId: r.id,
           noteTitle: cur.data.title,
         }
+      }
+
+      case 'create_recipe': {
+        const res = await recipesApi.create({ name: action.name || 'Untitled recipe', prompt: action.prompt, tags: action.tags ?? [] })
+        return { ok: true, message: `Created recipe “${res.data.name}”.`, recipesChanged: true }
+      }
+
+      case 'update_recipe': {
+        const r = resolveRecipe(action.recipeId)
+        if ('error' in r) return { ok: false, message: r.error }
+        const res = await recipesApi.update(r.id, {
+          ...(action.name !== undefined ? { name: action.name } : {}),
+          ...(action.prompt !== undefined ? { prompt: action.prompt } : {}),
+          ...(action.tags !== undefined ? { tags: action.tags } : {}),
+        })
+        return { ok: true, message: `Updated recipe “${res.data.name}”.`, recipesChanged: true }
+      }
+
+      case 'delete_recipe': {
+        const r = resolveRecipe(action.recipeId)
+        if ('error' in r) return { ok: false, message: r.error }
+        await recipesApi.delete(r.id)
+        return { ok: true, message: 'Deleted recipe.', recipesChanged: true }
       }
     }
   }
