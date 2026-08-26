@@ -37,13 +37,28 @@ const PLAYBACK_CHUNK_TARGETS = [220, 500, 1000, MAX_CHUNK_CHARS]
 // playback stays gapless across the smaller fast-start chunks.
 const PREFETCH_DEPTH = 2
 
+// Matches emoji (pictographs, flag sequences, skin-tone modifiers) plus the
+// zero-width joiner / variation-selector / keycap marks used to build them,
+// so they can be dropped before synthesis — otherwise the TTS engine reads
+// them out by description (e.g. "🚗" becomes the spoken word "car").
+const EMOJI_REGEX = new RegExp(
+  '[\\u{1F1E6}-\\u{1F1FF}]{2}' + // flag sequences (pairs of regional indicators)
+  '|[\\p{Extended_Pictographic}\\u{1F3FB}-\\u{1F3FF}]' + // pictographs + skin-tone modifiers
+  '|[\\u200D\\uFE0F\\u20E3]', // ZWJ, variation selector, keycap combiner
+  'gu',
+)
+
+function stripEmoji(text: string): string {
+  return text.replace(EMOJI_REGEX, '')
+}
+
 // Greedily pack sentences/lines into chunks, where the size budget for the Nth
 // chunk is `limitFor(N)`. Collapses runs of spaces/tabs but preserves newlines
 // so list items, table rows and other line-delimited content stay separate
 // segments (and the TTS engine pauses between them) rather than being read as
 // one line.
 function packChunks(text: string, limitFor: (index: number) => number): string[] {
-  const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
+  const clean = stripEmoji(text).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
   if (!clean) return []
 
   // Split into sentences / lines, then greedily pack into chunks.
@@ -79,7 +94,7 @@ function packChunks(text: string, limitFor: (index: number) => number): string[]
 // Uniform chunks — used for whole-file synthesis (audio export), where there's
 // no first-audio latency to optimise.
 export function chunkText(text: string): string[] {
-  const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
+  const clean = stripEmoji(text).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
   if (clean && clean.length <= MAX_CHUNK_CHARS) return [clean]
   return packChunks(text, () => MAX_CHUNK_CHARS)
 }
