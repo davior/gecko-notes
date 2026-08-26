@@ -18,6 +18,10 @@ Position = Literal["top-left", "top-right", "center", "bottom-left", "bottom-rig
 WavePosition = Literal["top", "center", "bottom"]
 WaveMode = Literal["line", "p2p", "cline", "point"]
 SubtitleMode = Literal["off", "sidecar", "soft", "burn"]
+# "title" shows the note's title; "title_chapter" adds the current chapter
+# underneath it, in a smaller size, and follows it as the video moves between
+# chapters; "fixed" is free text the user types in.
+OverlayTextMode = Literal["fixed", "title", "title_chapter"]
 
 # A transition either dips through a colour — which each shot can draw inside its
 # own filtergraph — or blends into its neighbour, which needs the two shots to
@@ -235,9 +239,15 @@ class WatermarkSpec(BaseModel):
 
 
 class OverlayTextSpec(BaseModel):
-    """A fixed text line held on screen for the whole video."""
+    """A text overlay held on screen for the whole video.
+
+    `mode` picks what's shown: the note's title, the title with the current
+    chapter added underneath, or `text` verbatim. `text` is only read in
+    "fixed" mode — the other two derive their words from the note itself.
+    """
 
     enabled: bool = False
+    mode: OverlayTextMode = "fixed"
     text: str = ""
     position: Position = "bottom-left"
     color: str = "#ffffff"

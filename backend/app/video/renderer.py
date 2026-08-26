@@ -185,23 +185,35 @@ def render(
                 f"above the limit of {max_narration_chars:,}"
             )
 
-        # One overlay layer for the whole video: the watermark and the fixed text
-        # never change between shots, so they are composed once and reused.
+        # One overlay layer for the whole video: the watermark and the overlay
+        # text usually never change between shots, so they are composed once and
+        # reused. "title + chapter" mode is the exception — the chapter line
+        # follows the video from section to section, so that mode is instead
+        # recomposed per shot, below, in the same way a quote panel is.
         overlay_name: Optional[str] = None
         icon_path = (resolve_media_path(options.watermark.url, user_id, media_dir)
                      if options.watermark.url else None)
         watermark = options.watermark.model_copy()
         if watermark.enabled and not watermark.text.strip() and note_title:
             watermark.text = f"by {note_title}"
-        layer = compose.overlay_layer(
-            width, height, watermark=watermark, watermark_icon=icon_path,
-            overlay_text=options.overlay_text,
-        )
-        if layer is not None:
-            overlay_name = "overlay.png"
-            layer.save(os.path.join(work_dir, overlay_name), "PNG")
+
+        overlay_text = options.overlay_text.model_copy()
+        if overlay_text.enabled and overlay_text.mode != "fixed":
+            overlay_text.text = note_title or ""
+        dynamic_overlay_text = overlay_text.enabled and overlay_text.mode == "title_chapter"
+
+        layer = None
+        if not dynamic_overlay_text:
+            layer = compose.overlay_layer(
+                width, height, watermark=watermark, watermark_icon=icon_path,
+                overlay_text=overlay_text,
+            )
+            if layer is not None:
+                overlay_name = "overlay.png"
+                layer.save(os.path.join(work_dir, overlay_name), "PNG")
         # The layer itself is kept in scope: a shot carrying a quote composites
         # the two into one PNG rather than adding a second overlay filter.
+        current_chapter: Optional[str] = None
 
         # ── narration ─────────────────────────────────────────────────────────
         narrations: List[NarrationResult] = []
@@ -265,18 +277,38 @@ def render(
                 if write_srt(os.path.join(work_dir, name), narration.cues):
                     shot_srt = name
 
-            # A quote is drawn per shot with the global layer composited on top,
-            # so the watermark still sits above the quotation and ffmpeg still
-            # receives exactly one overlay input.
+            if shot.chapter:
+                current_chapter = shot.chapter
+
+            shot_layer = layer
             shot_overlay = overlay_name
+            if dynamic_overlay_text:
+                # The intro stretch before any heading is marked with the note's
+                # own title as its "chapter" (see segment()'s title card) — showing
+                # it again underneath the title would just repeat it, so that
+                # stretch shows the title alone until a real chapter begins.
+                chapter_line = (current_chapter
+                                 if current_chapter and current_chapter != note_title else None)
+                shot_layer = compose.overlay_layer(
+                    width, height, watermark=watermark, watermark_icon=icon_path,
+                    overlay_text=overlay_text, chapter_line=chapter_line,
+                )
+                shot_overlay = None
+                if shot_layer is not None:
+                    shot_overlay = f"overlay_text_{index:04d}.png"
+                    shot_layer.save(os.path.join(work_dir, shot_overlay), "PNG")
+
+            # A quote is drawn per shot with the shot's overlay layer composited
+            # on top, so the watermark still sits above the quotation and ffmpeg
+            # still receives exactly one overlay input.
             if shot.quote_text:
                 panel = compose.quote_panel(
                     width, height, text=shot.quote_text,
                     attribution=shot.quote_attribution or "", spec=options.quotes,
                 )
                 if panel is not None:
-                    if layer is not None:
-                        panel.alpha_composite(layer)
+                    if shot_layer is not None:
+                        panel.alpha_composite(shot_layer)
                     shot_overlay = f"overlay_{index:04d}.png"
                     panel.save(os.path.join(work_dir, shot_overlay), "PNG")
 
