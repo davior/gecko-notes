@@ -5,6 +5,10 @@ import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { configApi } from '@/api/config'
 import type { SttProvider, TtsProvider } from '@/api/settings'
 
+// Deepgram Flux `expressivity`: a signed register offset (-2 calm .. 2 animated)
+// from the voice's tuned default (0). Indexed by value + 2.
+const EXPRESSIVITY_LABELS = ['Calm', 'Slightly calm', 'Default', 'More animated', 'Animated']
+
 function AddCustomModelModal({ onAdd, onClose }: { onAdd: (id: string, voices: string[]) => string | void; onClose: () => void }) {
   const [modelId, setModelId] = useState('')
   const [modelVoices, setModelVoices] = useState('')
@@ -84,7 +88,7 @@ export default function SpeechSettings() {
   const {
     falKeyConfigured, ttsModel, ttsModels, voice, availableVoices, customTtsModels,
     sttModel, sttModels, sttProvider, deepgramModel, deepgramModels, deepgramKeyConfigured,
-    ttsProvider, deepgramTtsModel, deepgramTtsModels, voiceModeEnabled,
+    ttsProvider, deepgramTtsModel, deepgramTtsModels, deepgramTtsExpressivity, voiceModeEnabled,
     updateAppSettings, updateSpeechConfig,
   } = useSettingsStore()
   const [error, setError] = useState<string | null>(null)
@@ -160,6 +164,15 @@ export default function SpeechSettings() {
     }
   }
 
+  async function updateDeepgramTtsExpressivity(value: number) {
+    setError(null)
+    try {
+      await updateSpeechConfig({ deepgram_tts_expressivity: value })
+    } catch {
+      setError('Failed to save Deepgram expressivity')
+    }
+  }
+
   async function updateVoiceMode(enabled: boolean) {
     setError(null)
     try {
@@ -208,10 +221,10 @@ export default function SpeechSettings() {
       <div>
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Speech</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Read-aloud can run on Deepgram Aura (streaming) or fal.ai. The fal.ai key is shared with
+          Read-aloud can run on Deepgram Flux (streaming) or fal.ai. The fal.ai key is shared with
           image generation — set it on the <span className="font-medium">Providers</span> tab, under{' '}
           <span className="font-medium">Media Provider</span>. Deepgram (used for both realtime dictation
-          and Aura read-aloud) uses its own separate API key, set directly below.
+          and Flux read-aloud) uses its own separate API key, set directly below.
         </p>
       </div>
 
@@ -228,7 +241,7 @@ export default function SpeechSettings() {
         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Read-aloud (TTS)</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
           Choose the provider and voice used when reading assistant responses and notes aloud.
-          Deepgram Aura streams the audio; fal.ai is kept as a fallback (and provides its own voices).
+          Deepgram Flux streams the audio; fal.ai is kept as a fallback (and provides its own voices).
         </p>
         <div className="card p-4 space-y-4">
           <div>
@@ -239,7 +252,7 @@ export default function SpeechSettings() {
               onChange={(e) => void updateTtsProvider(e.target.value as TtsProvider)}
             >
               <option value="auto">Automatic (Deepgram if configured, else fal.ai)</option>
-              <option value="deepgram">Deepgram (Aura streaming)</option>
+              <option value="deepgram">Deepgram (Flux streaming)</option>
               <option value="fal">fal.ai</option>
             </select>
           </div>
@@ -261,6 +274,34 @@ export default function SpeechSettings() {
                   Add a Deepgram API key below to use Deepgram read-aloud; until then fal.ai is used.
                 </p>
               )}
+
+              <div className="mt-3">
+                <div className="flex justify-between mb-1">
+                  <label className="label mb-0">Expressivity</label>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {EXPRESSIVITY_LABELS[deepgramTtsExpressivity + 2]}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-2}
+                  max={2}
+                  step={1}
+                  value={deepgramTtsExpressivity}
+                  onChange={(e) => void updateDeepgramTtsExpressivity(Number(e.target.value))}
+                  className="w-full accent-blue-600"
+                />
+                <div className="flex justify-between text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  <span>Calm</span>
+                  <span>Default</span>
+                  <span>Animated</span>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Shifts the voice's delivery register from calm to animated. Preview it below before
+                  committing to a non-default value.
+                </p>
+              </div>
+
               <div className="flex items-center gap-3 mt-3">
                 <button
                   className="btn-primary text-sm flex items-center gap-1.5"
@@ -484,7 +525,7 @@ export default function SpeechSettings() {
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
             A hands-free, conversational voice assistant. When on, a voice-mode toggle appears in the
-            AI Assistant. Speech is transcribed by Deepgram Flux and spoken back with Deepgram Aura;
+            AI Assistant. Speech is transcribed and spoken back, both with Deepgram Flux;
             note-changing actions are read back for a spoken confirmation before running. Requires a
             Deepgram API key (above).
           </p>
@@ -516,8 +557,8 @@ export default function SpeechSettings() {
                 ))}
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                The Deepgram Aura voice that speaks replies in voice mode. This is the same voice
-                used for Deepgram read-aloud above.
+                The Deepgram Flux voice that speaks replies in voice mode. This is the same voice
+                (and the same expressivity setting) used for Deepgram read-aloud above.
               </p>
               <div className="flex items-center gap-3 mt-3">
                 <button

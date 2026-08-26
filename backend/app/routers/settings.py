@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.auth import encrypt_api_key, decrypt_api_key
@@ -1293,57 +1293,63 @@ DEEPGRAM_STT_MODELS = [
 ]
 _STT_PROVIDERS = {"auto", "deepgram", "fal"}
 
-# Deepgram streaming TTS (Aura) — an alternative read-aloud provider to fal.ai,
+# Deepgram streaming TTS (Flux) — an alternative read-aloud provider to fal.ai,
 # selectable per-user via `tts_provider`. Shares the same encrypted Deepgram key
-# as realtime STT. Voice ids are Aura model ids (not fal.run endpoint paths), so
+# as realtime STT. Voice ids are Flux model ids (not fal.run endpoint paths), so
 # — like DEEPGRAM_STT_MODELS — they're hardcoded rather than in the fal catalog.
-DEFAULT_DEEPGRAM_TTS_MODEL = "aura-2-thalia-en"
+# Flux (not Aura-2) is used because it's the only Deepgram TTS family that
+# supports the `expressivity` register control (see DEEPGRAM_TTS_EXPRESSIVITY_*
+# below and `_deepgram_tts()`); Aura-2's `/v1/speak` doesn't offer it.
+DEFAULT_DEEPGRAM_TTS_MODEL = "flux-haley-en"
 DEEPGRAM_TTS_MODELS = [
-    # British English (Aura 2)
-    {"id": "aura-2-draco-en", "label": "Draco — male, British (Aura 2)"},
-    {"id": "aura-2-pandora-en", "label": "Pandora — female, British (Aura 2)"},
+    # Featured — the strongest all-rounders in the catalog.
+    {"id": "flux-hannah-en", "label": "Hannah — female, US (Flux)"},
+    {"id": "flux-kit-en", "label": "Kit — male, British (Flux)"},
+    {"id": "flux-alexis-en", "label": "Alexis — female, US (Flux)"},
+    {"id": "flux-cliff-en", "label": "Cliff — male, US (Flux)"},
+    {"id": "flux-sienna-en", "label": "Sienna — female, US (Flux)"},
+    {"id": "flux-cole-en", "label": "Cole — male, US (Flux)"},
+    {"id": "flux-brooke-en", "label": "Brooke — female, US (Flux)"},
+    {"id": "flux-colin-en", "label": "Colin — male, British (Flux)"},
+    {"id": "flux-gemma-en", "label": "Gemma — female, British (Flux)"},
+    {"id": "flux-haley-en", "label": "Haley — female, US (Flux)"},
+    {"id": "flux-heather-en", "label": "Heather — female, US (Flux)"},
+    {"id": "flux-miles-en", "label": "Miles — male, US (Flux)"},
+    {"id": "flux-sean-en", "label": "Sean — male, British (Flux)"},
 
-    # American English — Feminine (Aura 2)
-    {"id": "aura-2-amalthea-en", "label": "Amalthea — female, US (Aura 2)"},
-    {"id": "aura-2-andromeda-en", "label": "Andromeda — female, US (Aura 2)"},
-    {"id": "aura-2-asteria-en", "label": "Asteria — female, US (Aura 2)"},
-    {"id": "aura-2-athena-en", "label": "Athena — female, US (Aura 2)"},
-    {"id": "aura-2-aurora-en", "label": "Aurora — female, US (Aura 2)"},
-    {"id": "aura-2-callista-en", "label": "Callista — female, US (Aura 2)"},
-    {"id": "aura-2-cora-en", "label": "Cora — female, US (Aura 2)"},
-    {"id": "aura-2-cordelia-en", "label": "Cordelia — female, US (Aura 2)"},
-    {"id": "aura-2-delia-en", "label": "Delia — female, US (Aura 2)"},
-    {"id": "aura-2-electra-en", "label": "Electra — female, US (Aura 2)"},
-    {"id": "aura-2-harmonia-en", "label": "Harmonia — female, US (Aura 2)"},
-    {"id": "aura-2-helena-en", "label": "Helena — female, US (Aura 2)"},
-    {"id": "aura-2-hera-en", "label": "Hera — female, US (Aura 2)"},
-    {"id": "aura-2-iris-en", "label": "Iris — female, US (Aura 2)"},
-    {"id": "aura-2-janus-en", "label": "Janus — female, US (Aura 2)"},
-    {"id": "aura-2-juno-en", "label": "Juno — female, US (Aura 2)"},
-    {"id": "aura-2-luna-en", "label": "Luna — female, US (Aura 2)"},
-    {"id": "aura-2-minerva-en", "label": "Minerva — female, US (Aura 2)"},
-    {"id": "aura-2-ophelia-en", "label": "Ophelia — female, US (Aura 2)"},
-    {"id": "aura-2-phoebe-en", "label": "Phoebe — female, US (Aura 2)"},
-    {"id": "aura-2-selene-en", "label": "Selene — female, US (Aura 2)"},
-    {"id": "aura-2-thalia-en", "label": "Thalia — female, US (Aura 2)"},
-    {"id": "aura-2-vesta-en", "label": "Vesta — female, US (Aura 2)"},
-
-    # American English — Masculine (Aura 2)
-    {"id": "aura-2-apollo-en", "label": "Apollo — male, US (Aura 2)"},
-    {"id": "aura-2-arcas-en", "label": "Arcas — male, US (Aura 2)"},
-    {"id": "aura-2-aries-en", "label": "Aries — male, US (Aura 2)"},
-    {"id": "aura-2-atlas-en", "label": "Atlas — male, US (Aura 2)"},
-    {"id": "aura-2-hermes-en", "label": "Hermes — male, US (Aura 2)"},
-    {"id": "aura-2-jupiter-en", "label": "Jupiter — male, US (Aura 2)"},
-    {"id": "aura-2-mars-en", "label": "Mars — male, US (Aura 2)"},
-    {"id": "aura-2-neptune-en", "label": "Neptune — male, US (Aura 2)"},
-    {"id": "aura-2-odysseus-en", "label": "Odysseus — male, US (Aura 2)"},
-    {"id": "aura-2-orion-en", "label": "Orion — male, US (Aura 2)"},
-    {"id": "aura-2-orpheus-en", "label": "Orpheus — male, US (Aura 2)"},
-    {"id": "aura-2-pluto-en", "label": "Pluto — male, US (Aura 2)"},
-    {"id": "aura-2-saturn-en", "label": "Saturn — male, US (Aura 2)"},
-    {"id": "aura-2-zeus-en", "label": "Zeus — male, US (Aura 2)"},
+    # More voices — additional accents, ages, and characters.
+    {"id": "flux-bree-en", "label": "Bree — female, US (Flux)"},
+    {"id": "flux-brittany-en", "label": "Brittany — female, US (Flux)"},
+    {"id": "flux-bruce-en", "label": "Bruce — male, US (Flux)"},
+    {"id": "flux-conor-en", "label": "Conor — male, British (Flux)"},
+    {"id": "flux-donovan-en", "label": "Donovan — male, US (Flux)"},
+    {"id": "flux-drew-en", "label": "Drew — male, US (Flux)"},
+    {"id": "flux-elise-en", "label": "Elise — female, US (Flux)"},
+    {"id": "flux-jack-en", "label": "Jack — male, British (Flux)"},
+    {"id": "flux-kai-en", "label": "Kai — male, Singaporean (Flux)"},
+    {"id": "flux-kelsey-en", "label": "Kelsey — female, US (Flux)"},
+    {"id": "flux-maeve-en", "label": "Maeve — female, Irish (Flux)"},
+    {"id": "flux-marcelo-en", "label": "Marcelo — male, Filipino (Flux)"},
+    {"id": "flux-marcus-en", "label": "Marcus — male, US (Flux)"},
+    {"id": "flux-meena-en", "label": "Meena — female, Indian (Flux)"},
+    {"id": "flux-meghan-en", "label": "Meghan — female, US (Flux)"},
+    {"id": "flux-naveen-en", "label": "Naveen — male, Indian (Flux)"},
+    {"id": "flux-paige-en", "label": "Paige — female, US (Flux)"},
+    {"id": "flux-priya-en", "label": "Priya — female, Indian (Flux)"},
+    {"id": "flux-rufus-en", "label": "Rufus — male, British (Flux)"},
+    {"id": "flux-sharon-en", "label": "Sharon — female, Australian (Flux)"},
+    {"id": "flux-tanner-en", "label": "Tanner — male, British (Flux)"},
+    {"id": "flux-wade-en", "label": "Wade — male, US (Flux)"},
+    {"id": "flux-wes-en", "label": "Wes — male, US (Flux)"},
 ]
+_DEEPGRAM_TTS_VOICE_IDS = {m["id"] for m in DEEPGRAM_TTS_MODELS}
+
+# `expressivity`: a signed register offset from a Flux voice's tuned default —
+# calm (-2) to animated (2). Deepgram rejects out-of-range/fractional values
+# rather than clamping them, so we mirror that instead of silently coercing.
+DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY = 0
+DEEPGRAM_TTS_EXPRESSIVITY_MIN = -2
+DEEPGRAM_TTS_EXPRESSIVITY_MAX = 2
 _TTS_PROVIDERS = {"auto", "deepgram", "fal"}
 
 # Curated ElevenLabs voices offered in the read-aloud picker. Values are passed
@@ -1357,7 +1363,7 @@ FAL_TTS_VOICES = [
 # Curated TTS/STT model lists now live in ModelCatalogEntry (admin-editable via
 # /model-catalog, seeded in seed.py) — see _load_catalog() above.
 
-_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model, tts_provider, deepgram_tts_model, voice_mode_enabled}
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model, tts_provider, deepgram_tts_model, deepgram_tts_expressivity, voice_mode_enabled}
 _DEEPGRAM_KEY = "deepgram_api_key"     # encrypted; separate from fal's key
 
 _TTS_MAX_CHARS = 2000
@@ -1383,6 +1389,16 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
     tts_provider = cfg.get("tts_provider") or "auto"
     if tts_provider not in _TTS_PROVIDERS:
         tts_provider = "auto"
+    # A voice persisted before the Aura-2 -> Flux TTS migration (or any other
+    # unrecognised id) would otherwise be sent straight to Deepgram and fail.
+    deepgram_tts_model = cfg.get("deepgram_tts_model") or DEFAULT_DEEPGRAM_TTS_MODEL
+    if deepgram_tts_model not in _DEEPGRAM_TTS_VOICE_IDS:
+        deepgram_tts_model = DEFAULT_DEEPGRAM_TTS_MODEL
+    expressivity = cfg.get("deepgram_tts_expressivity", DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY)
+    if not isinstance(expressivity, int) or isinstance(expressivity, bool) or not (
+        DEEPGRAM_TTS_EXPRESSIVITY_MIN <= expressivity <= DEEPGRAM_TTS_EXPRESSIVITY_MAX
+    ):
+        expressivity = DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY
     return {
         "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
         "custom_tts_models": custom,
@@ -1390,7 +1406,8 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
         "stt_provider": stt_provider,
         "deepgram_model": cfg.get("deepgram_model") or DEFAULT_DEEPGRAM_MODEL,
         "tts_provider": tts_provider,
-        "deepgram_tts_model": cfg.get("deepgram_tts_model") or DEFAULT_DEEPGRAM_TTS_MODEL,
+        "deepgram_tts_model": deepgram_tts_model,
+        "deepgram_tts_expressivity": expressivity,
         # Per-user opt-in for Flux voice mode (only usable when the instance-wide
         # feature flag is also on and a Deepgram key is configured).
         "voice_mode_enabled": bool(cfg.get("voice_mode_enabled", False)),
@@ -1465,6 +1482,7 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
         "tts_provider": cfg["tts_provider"],
         "deepgram_tts_model": cfg["deepgram_tts_model"],
         "deepgram_tts_models": DEEPGRAM_TTS_MODELS,
+        "deepgram_tts_expressivity": cfg["deepgram_tts_expressivity"],
         "voice_mode_enabled": cfg["voice_mode_enabled"],
     }
 
@@ -1560,6 +1578,9 @@ class SpeechConfigUpdate(BaseModel):
     deepgram_model: Optional[str] = None
     tts_provider: Optional[str] = None  # "auto" | "deepgram" | "fal"
     deepgram_tts_model: Optional[str] = None
+    # Calm (-2) to animated (2); Deepgram rejects out-of-range/fractional
+    # values rather than clamping them, and so do we.
+    deepgram_tts_expressivity: Optional[int] = Field(default=None, ge=DEEPGRAM_TTS_EXPRESSIVITY_MIN, le=DEEPGRAM_TTS_EXPRESSIVITY_MAX)
     voice_mode_enabled: Optional[bool] = None
     # Tri-state, same convention as ImageSettingsUpdate.api_key: omitted/None leaves
     # the stored key untouched; "" removes it; a non-empty value replaces it.
@@ -1597,6 +1618,8 @@ def update_speech_config(
         cfg["tts_provider"] = payload.tts_provider
     if payload.deepgram_tts_model is not None:
         cfg["deepgram_tts_model"] = payload.deepgram_tts_model
+    if payload.deepgram_tts_expressivity is not None:
+        cfg["deepgram_tts_expressivity"] = payload.deepgram_tts_expressivity
     if payload.voice_mode_enabled is not None:
         cfg["voice_mode_enabled"] = payload.voice_mode_enabled
 
@@ -1612,6 +1635,7 @@ def update_speech_config(
         "deepgram_model": cfg["deepgram_model"],
         "tts_provider": cfg["tts_provider"],
         "deepgram_tts_model": cfg["deepgram_tts_model"],
+        "deepgram_tts_expressivity": cfg["deepgram_tts_expressivity"],
         "voice_mode_enabled": cfg["voice_mode_enabled"],
         "has_deepgram_key": bool(load_deepgram_api_key(session, user_id)),
     }
@@ -1654,14 +1678,19 @@ def _tts_cache_put(key: str, data: bytes) -> None:
         pass
 
 
-async def _deepgram_tts(api_key: str, voice_model: str, text: str) -> bytes:
-    """Synthesise `text` via Deepgram's REST TTS (Aura) and return mp3 bytes.
+async def _deepgram_tts(api_key: str, voice_model: str, text: str, expressivity: int = DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY) -> bytes:
+    """Synthesise `text` via Deepgram's REST TTS (Flux) and return mp3 bytes.
 
-    /v1/speak returns mp3 by default; we pin encoding=mp3 so the returned bytes
+    /v2/speak returns mp3 by default; we pin encoding=mp3 so the returned bytes
     are byte-for-byte compatible with the existing fal path (audio/mpeg blobs the
-    frontend player already handles). Raises HTTPException on any failure so the
+    frontend player already handles). `expressivity` is Flux-only (Aura-2's
+    /v1/speak doesn't support it) — a signed calm/animated register offset from
+    the voice's tuned default. Raises HTTPException on any failure so the
     caller can decide whether to fall back to fal."""
-    url = f"https://api.deepgram.com/v1/speak?model={urllib.parse.quote(voice_model)}&encoding=mp3"
+    url = (
+        f"https://api.deepgram.com/v2/speak?model={urllib.parse.quote(voice_model)}"
+        f"&encoding=mp3&expressivity={int(expressivity)}"
+    )
     try:
         async with httpx.AsyncClient(timeout=120.0) as http:
             resp = await http.post(
@@ -1784,15 +1813,17 @@ async def synthesize_tts_bytes(
     if not use_deepgram and not fal_key:
         raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
 
-    # ── Deepgram (Aura) path ──────────────────────────────────────────────────
+    # ── Deepgram (Flux) path ──────────────────────────────────────────────────
     if use_deepgram:
         dg_voice = speech_cfg["deepgram_tts_model"] or DEFAULT_DEEPGRAM_TTS_MODEL
-        cache_key = _tts_cache_key("deepgram", dg_voice, text)
+        dg_expressivity = speech_cfg["deepgram_tts_expressivity"]
+        # Expressivity changes the audio itself, so it's part of the cache key.
+        cache_key = _tts_cache_key(f"deepgram:{dg_expressivity}", dg_voice, text)
         cached = _tts_cache_get(cache_key)
         if cached is not None:
             return cached, "audio/mpeg"
         try:
-            data = await _deepgram_tts(deepgram_key, dg_voice, text)
+            data = await _deepgram_tts(deepgram_key, dg_voice, text, dg_expressivity)
         except HTTPException:
             # Under "auto", degrade gracefully to fal rather than failing the
             # read-aloud outright; an explicit "deepgram" choice surfaces the error.

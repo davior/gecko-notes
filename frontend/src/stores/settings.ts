@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, DEFAULT_DEEPGRAM_MODEL, DEFAULT_DEEPGRAM_TTS_MODEL, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate, type SttProvider, type TtsProvider } from '@/api/settings'
+import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, DEFAULT_DEEPGRAM_MODEL, DEFAULT_DEEPGRAM_TTS_MODEL, DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate, type SttProvider, type TtsProvider } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 
 interface SettingsState {
@@ -35,10 +35,12 @@ interface SettingsState {
   sttProvider: SttProvider
   deepgramModel: string
   deepgramModels: STTModel[]
-  // Read-aloud (TTS) provider — Deepgram Aura streaming with fal.ai fallback.
+  // Read-aloud (TTS) provider — Deepgram Flux streaming with fal.ai fallback.
   ttsProvider: TtsProvider
   deepgramTtsModel: string
   deepgramTtsModels: STTModel[]
+  // Calm (-2) to animated (2); Flux-only register offset from the voice's tuned default.
+  deepgramTtsExpressivity: number
   // Per-user opt-in for Flux voice mode.
   voiceModeEnabled: boolean
   updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
@@ -161,6 +163,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ttsProvider: 'auto',
   deepgramTtsModel: DEFAULT_DEEPGRAM_TTS_MODEL,
   deepgramTtsModels: [],
+  deepgramTtsExpressivity: DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY,
   voiceModeEnabled: false,
 
   async loadSettings() {
@@ -214,6 +217,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ttsProvider: speechSettings.tts_provider,
         deepgramTtsModel: speechSettings.deepgram_tts_model,
         deepgramTtsModels: speechSettings.deepgram_tts_models,
+        deepgramTtsExpressivity: speechSettings.deepgram_tts_expressivity,
         voiceModeEnabled: speechSettings.voice_mode_enabled,
       })
     } catch {
@@ -269,6 +273,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       deepgramModel: updated.deepgram_model,
       ttsProvider: updated.tts_provider,
       deepgramTtsModel: updated.deepgram_tts_model,
+      deepgramTtsExpressivity: updated.deepgram_tts_expressivity,
       voiceModeEnabled: updated.voice_mode_enabled,
       deepgramKeyConfigured: updated.has_deepgram_key,
     })
@@ -453,6 +458,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ttsProvider: 'auto',
       deepgramTtsModel: DEFAULT_DEEPGRAM_TTS_MODEL,
       deepgramTtsModels: [],
+      deepgramTtsExpressivity: DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY,
       voiceModeEnabled: false,
       // theme is intentionally not reset — it is device-level, stored in localStorage
     })

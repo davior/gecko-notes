@@ -497,7 +497,7 @@ export default function AIConversationPanel({
 
   // Read-aloud for assistant responses. One player instance for the panel — only
   // one message speaks at a time (tracked by speakingMsgId). The TTS provider
-  // (Deepgram Aura or fal.ai fallback) is resolved server-side.
+  // (Deepgram Flux or fal.ai fallback) is resolved server-side.
   const readAloud = useTextToSpeech()
   useEffect(() => {
     if (readAloud.status === 'idle' || readAloud.status === 'error') setSpeakingMsgId(null)
