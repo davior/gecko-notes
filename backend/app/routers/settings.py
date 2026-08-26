@@ -1350,6 +1350,12 @@ _DEEPGRAM_TTS_VOICE_IDS = {m["id"] for m in DEEPGRAM_TTS_MODELS}
 DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY = 0
 DEEPGRAM_TTS_EXPRESSIVITY_MIN = -2
 DEEPGRAM_TTS_EXPRESSIVITY_MAX = 2
+
+# `speed`: a Flux-only playback-rate multiplier, same non-clamping validation
+# approach as expressivity above.
+DEFAULT_DEEPGRAM_TTS_SPEED = 1.0
+DEEPGRAM_TTS_SPEED_MIN = 0.85
+DEEPGRAM_TTS_SPEED_MAX = 1.15
 _TTS_PROVIDERS = {"auto", "deepgram", "fal"}
 
 # Curated ElevenLabs voices offered in the read-aloud picker. Values are passed
@@ -1363,7 +1369,7 @@ FAL_TTS_VOICES = [
 # Curated TTS/STT model lists now live in ModelCatalogEntry (admin-editable via
 # /model-catalog, seeded in seed.py) — see _load_catalog() above.
 
-_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model, tts_provider, deepgram_tts_model, deepgram_tts_expressivity, voice_mode_enabled}
+_SPEECH_CONFIG = "speech_gen_config"  # JSON: {tts_model, custom_tts_models, stt_model, stt_provider, deepgram_model, tts_provider, deepgram_tts_model, deepgram_tts_expressivity, deepgram_tts_speed, voice_mode_enabled}
 _DEEPGRAM_KEY = "deepgram_api_key"     # encrypted; separate from fal's key
 
 _TTS_MAX_CHARS = 2000
@@ -1399,6 +1405,11 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
         DEEPGRAM_TTS_EXPRESSIVITY_MIN <= expressivity <= DEEPGRAM_TTS_EXPRESSIVITY_MAX
     ):
         expressivity = DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY
+    speed = cfg.get("deepgram_tts_speed", DEFAULT_DEEPGRAM_TTS_SPEED)
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool) or not (
+        DEEPGRAM_TTS_SPEED_MIN <= speed <= DEEPGRAM_TTS_SPEED_MAX
+    ):
+        speed = DEFAULT_DEEPGRAM_TTS_SPEED
     return {
         "tts_model": cfg.get("tts_model") or DEFAULT_TTS_MODEL,
         "custom_tts_models": custom,
@@ -1408,6 +1419,7 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
         "tts_provider": tts_provider,
         "deepgram_tts_model": deepgram_tts_model,
         "deepgram_tts_expressivity": expressivity,
+        "deepgram_tts_speed": speed,
         # Per-user opt-in for Flux voice mode (only usable when the instance-wide
         # feature flag is also on and a Deepgram key is configured).
         "voice_mode_enabled": bool(cfg.get("voice_mode_enabled", False)),
@@ -1483,6 +1495,7 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
         "deepgram_tts_model": cfg["deepgram_tts_model"],
         "deepgram_tts_models": DEEPGRAM_TTS_MODELS,
         "deepgram_tts_expressivity": cfg["deepgram_tts_expressivity"],
+        "deepgram_tts_speed": cfg["deepgram_tts_speed"],
         "voice_mode_enabled": cfg["voice_mode_enabled"],
     }
 
@@ -1561,7 +1574,6 @@ class TTSRequest(BaseModel):
     text: str
     # The voice name; kept as `model` for backwards-compat with the frontend request shape.
     model: str = DEFAULT_TTS_VOICE
-    speed: float = 1.0
 
 
 @router.get("/speech/voices")
@@ -1581,6 +1593,8 @@ class SpeechConfigUpdate(BaseModel):
     # Calm (-2) to animated (2); Deepgram rejects out-of-range/fractional
     # values rather than clamping them, and so do we.
     deepgram_tts_expressivity: Optional[int] = Field(default=None, ge=DEEPGRAM_TTS_EXPRESSIVITY_MIN, le=DEEPGRAM_TTS_EXPRESSIVITY_MAX)
+    # Playback-rate multiplier; same non-clamping convention as expressivity.
+    deepgram_tts_speed: Optional[float] = Field(default=None, ge=DEEPGRAM_TTS_SPEED_MIN, le=DEEPGRAM_TTS_SPEED_MAX)
     voice_mode_enabled: Optional[bool] = None
     # Tri-state, same convention as ImageSettingsUpdate.api_key: omitted/None leaves
     # the stored key untouched; "" removes it; a non-empty value replaces it.
@@ -1620,6 +1634,8 @@ def update_speech_config(
         cfg["deepgram_tts_model"] = payload.deepgram_tts_model
     if payload.deepgram_tts_expressivity is not None:
         cfg["deepgram_tts_expressivity"] = payload.deepgram_tts_expressivity
+    if payload.deepgram_tts_speed is not None:
+        cfg["deepgram_tts_speed"] = payload.deepgram_tts_speed
     if payload.voice_mode_enabled is not None:
         cfg["voice_mode_enabled"] = payload.voice_mode_enabled
 
@@ -1636,6 +1652,7 @@ def update_speech_config(
         "tts_provider": cfg["tts_provider"],
         "deepgram_tts_model": cfg["deepgram_tts_model"],
         "deepgram_tts_expressivity": cfg["deepgram_tts_expressivity"],
+        "deepgram_tts_speed": cfg["deepgram_tts_speed"],
         "voice_mode_enabled": cfg["voice_mode_enabled"],
         "has_deepgram_key": bool(load_deepgram_api_key(session, user_id)),
     }
@@ -1678,18 +1695,23 @@ def _tts_cache_put(key: str, data: bytes) -> None:
         pass
 
 
-async def _deepgram_tts(api_key: str, voice_model: str, text: str, expressivity: int = DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY) -> bytes:
+async def _deepgram_tts(
+    api_key: str, voice_model: str, text: str,
+    expressivity: int = DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY,
+    speed: float = DEFAULT_DEEPGRAM_TTS_SPEED,
+) -> bytes:
     """Synthesise `text` via Deepgram's REST TTS (Flux) and return mp3 bytes.
 
     /v2/speak returns mp3 by default; we pin encoding=mp3 so the returned bytes
     are byte-for-byte compatible with the existing fal path (audio/mpeg blobs the
-    frontend player already handles). `expressivity` is Flux-only (Aura-2's
-    /v1/speak doesn't support it) — a signed calm/animated register offset from
-    the voice's tuned default. Raises HTTPException on any failure so the
-    caller can decide whether to fall back to fal."""
+    frontend player already handles). `expressivity` and `speed` are Flux-only
+    (Aura-2's /v1/speak doesn't support either) — a signed calm/animated
+    register offset and a playback-rate multiplier, respectively. Raises
+    HTTPException on any failure so the caller can decide whether to fall back
+    to fal."""
     url = (
         f"https://api.deepgram.com/v2/speak?model={urllib.parse.quote(voice_model)}"
-        f"&encoding=mp3&expressivity={int(expressivity)}"
+        f"&encoding=mp3&expressivity={int(expressivity)}&speed={speed:.2f}"
     )
     try:
         async with httpx.AsyncClient(timeout=120.0) as http:
@@ -1817,13 +1839,15 @@ async def synthesize_tts_bytes(
     if use_deepgram:
         dg_voice = speech_cfg["deepgram_tts_model"] or DEFAULT_DEEPGRAM_TTS_MODEL
         dg_expressivity = speech_cfg["deepgram_tts_expressivity"]
-        # Expressivity changes the audio itself, so it's part of the cache key.
-        cache_key = _tts_cache_key(f"deepgram:{dg_expressivity}", dg_voice, text)
+        dg_speed = speech_cfg["deepgram_tts_speed"]
+        # Expressivity and speed both change the audio itself, so both are part
+        # of the cache key.
+        cache_key = _tts_cache_key(f"deepgram:{dg_expressivity}:{dg_speed}", dg_voice, text)
         cached = _tts_cache_get(cache_key)
         if cached is not None:
             return cached, "audio/mpeg"
         try:
-            data = await _deepgram_tts(deepgram_key, dg_voice, text, dg_expressivity)
+            data = await _deepgram_tts(deepgram_key, dg_voice, text, dg_expressivity, dg_speed)
         except HTTPException:
             # Under "auto", degrade gracefully to fal rather than failing the
             # read-aloud outright; an explicit "deepgram" choice surfaces the error.

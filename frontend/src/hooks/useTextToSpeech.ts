@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { settingsApi } from '@/api/settings'
+import { settingsApi, DEEPGRAM_TTS_SPEED_MIN, DEEPGRAM_TTS_SPEED_MAX } from '@/api/settings'
+import { useSettingsStore } from '@/stores/settings'
 import { apiErrorMessage } from '@/utils/format'
 
 export type TTSStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -104,9 +105,11 @@ export function chunkTextForPlayback(text: string): string[] {
   return packChunks(text, (i) => PLAYBACK_CHUNK_TARGETS[Math.min(i, PLAYBACK_CHUNK_TARGETS.length - 1)])
 }
 
-// Read-aloud volume and speed are global, device-level preferences shared across notes.
+// Read-aloud volume is a global, device-level preference shared across notes.
+// Speed is a global *account* preference instead (Settings → Speech), shared
+// with the Deepgram Flux TTS `speed` parameter used by video narration and
+// voice mode — see `deepgramTtsSpeed` in the settings store.
 const VOLUME_KEY = 'tts_volume'
-const SPEED_KEY = 'tts_speed'
 
 function loadStoredVolume(): number {
   try {
@@ -119,22 +122,11 @@ function loadStoredVolume(): number {
   return 1
 }
 
-function loadStoredSpeed(): number {
-  try {
-    const raw = localStorage.getItem(SPEED_KEY)
-    if (raw !== null) {
-      const v = parseFloat(raw)
-      if (!Number.isNaN(v)) return Math.min(2, Math.max(0.25, v))
-    }
-  } catch { /* ignore */ }
-  return 1
-}
-
 export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechReturn {
   const [status, setStatus] = useState<TTSStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
   const [volume, setVolumeState] = useState(loadStoredVolume)
-  const [speed, setSpeedState] = useState(loadStoredSpeed)
+  const speed = useSettingsStore((s) => s.deepgramTtsSpeed)
   const [isExporting, setIsExporting] = useState(false)
 
   const modelRef = useRef(options?.model)
@@ -149,7 +141,6 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   const pipelineRef = useRef<Map<number, Promise<Blob>>>(new Map())
   const cancelledRef = useRef(false)
   const volumeRef = useRef(volume)
-  const speedRef = useRef(speed)
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.min(1, Math.max(0, v))
@@ -160,10 +151,8 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   }, [])
 
   const setSpeed = useCallback((s: number) => {
-    const clamped = Math.min(2, Math.max(0.25, s))
-    speedRef.current = clamped
-    setSpeedState(clamped)
-    try { localStorage.setItem(SPEED_KEY, String(clamped)) } catch { /* ignore */ }
+    const clamped = Math.min(DEEPGRAM_TTS_SPEED_MAX, Math.max(DEEPGRAM_TTS_SPEED_MIN, s))
+    void useSettingsStore.getState().updateSpeechConfig({ deepgram_tts_speed: clamped }).catch(() => { /* toolbar stays at last-known value */ })
   }, [])
 
   const revokeUrl = useCallback(() => {
@@ -204,7 +193,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     if (chunk === undefined) return null
     const existing = pipelineRef.current.get(i)
     if (existing) return existing
-    const p = settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current)
+    const p = settingsApi.synthesizeSpeech(chunk, modelRef.current)
     // Pre-attach a no-op catch so an early rejection can't raise an unhandled
     // rejection before the awaiting site handles it.
     p.catch(() => { /* surfaced where awaited */ })
@@ -357,7 +346,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     try {
       const blobs: Blob[] = []
       for (const chunk of chunks) {
-        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current, speedRef.current))
+        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current))
       }
       return new Blob(blobs, { type: 'audio/mpeg' })
     } catch (e) {
