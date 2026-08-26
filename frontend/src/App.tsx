@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
+import { useRecipesStore } from '@/stores/recipes'
 import { useAuthStore } from '@/stores/auth'
 import ListView from '@/views/ListView'
 import EditorView from '@/views/EditorView'
@@ -23,12 +24,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   const loadSettings = useSettingsStore((s) => s.loadSettings)
   const loadCategories = useCategoriesStore((s) => s.loadCategories)
+  const loadRecipes = useRecipesStore((s) => s.loadRecipes)
   const theme = useSettingsStore((s) => s.theme)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
 
   useEffect(() => {
     if (isAuthenticated) {
-      Promise.all([loadSettings(), loadCategories()])
+      Promise.all([loadSettings(), loadCategories(), loadRecipes()])
     }
   }, [isAuthenticated])
 
