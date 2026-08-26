@@ -246,8 +246,7 @@ def render(
                     # A drifting shot is fitted above the frame size, so draw its
                     # background there too: zooming into a frame-sized card would
                     # magnify the type instead of moving in on it.
-                    if F.kenburns_effect_for(shot.kind, index, options,
-                                             duration=duration, width=width):
+                    if F.kenburns_effect_for(shot.kind, index, options):
                         draw_width, draw_height, _w, _h = kenburns_geometry(width, height)
                     else:
                         draw_width, draw_height = width, height

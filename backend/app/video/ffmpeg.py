@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from app.video.options import (
     DIP_TRANSITIONS, XFADE_NAMES, MusicSpec, RenderOptions,
     encoder_tier, frame_size, is_crossfade, kenburns_geometry,
-    kenburns_is_perceptible, transition_colour,
+    kenburns_leg_frames, transition_colour,
 )
 
 logger = logging.getLogger(__name__)
@@ -249,30 +249,20 @@ def _even(value: float) -> int:
     return n - n % 2
 
 
-def kenburns_effect_for(
-    kind: str, index: int, options: RenderOptions,
-    *, duration: Optional[float] = None, width: Optional[int] = None,
-) -> Optional[str]:
+def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Optional[str]:
     """Which drift, if any, this shot gets.
 
     A video background already moves, so only stills and (opt-in) cards drift. A
     card has its text drawn into the picture, so it is only ever allowed to zoom
     from the centre — a pan would walk the type out of frame.
 
-    A drift spread over a very long shot is also refused, because the same
-    travel across more frames is less movement per frame, not more: past a point
-    the picture simply holds still between one-pixel jumps. Rendering that costs
-    a 24-megapixel read and a 4K intermediate for every frame and shows nothing,
-    so `duration` and `width` — when the caller knows them — decide whether the
-    effect is worth its price. Turning the travel up keeps it on for longer.
+    Every qualifying shot gets its drift regardless of how long it runs — a shot
+    long enough that one sweep across it would be too slow to see gets the drift
+    cycled by `kenburns_chain` instead of dropped.
     """
     effect = options.ken_burns.effect
     if effect == "none":
         return None
-    if duration is not None and width:
-        frames = int(math.ceil(max(0.1, duration) * max(1, options.fps)))
-        if not kenburns_is_perceptible(options.ken_burns.amount, width, frames):
-            return None
     if kind == "card":
         if not options.ken_burns.include_cards:
             return None
@@ -307,8 +297,17 @@ def kenburns_chain(
     forever, so `d` is set a couple of frames beyond the shot and the caller's
     `-t` cuts before the ramp can begin again.
 
-    No expression here contains a comma or a colon, which is what keeps the
-    filtergraph free of any escaping.
+    A shot longer than `kenburns_leg_frames` would spread the same travel over
+    so many frames that the sweep crawls below the perceptible floor — so past
+    that length the progress no longer runs A to B once across the whole shot;
+    it cycles A to B to A in legs of that length instead, a rubber band, which
+    holds the same speed regardless of how long the shot runs.
+
+    No expression here — including the cycling one — contains a comma or a
+    colon, which is what keeps the filtergraph free of any escaping: `on mod
+    period` and the triangle wave's peak are written out with `floor` and `abs`
+    rather than ffmpeg's own `mod` and `min`, both of which take a
+    comma-separated argument list.
     """
     read_width, _read_height, write_width, write_height = kenburns_geometry(width, height)
     frames = max(1, int(math.ceil(max(0.1, duration) * max(1, fps))))
@@ -316,23 +315,35 @@ def kenburns_chain(
     # start magnifying pixels, which is the softness this arrangement avoids.
     span = max(0.01, min(amount, read_width / max(1, width) - 1.0))
 
+    leg = kenburns_leg_frames(amount, width)
+    if frames <= leg:
+        progress = f"on/{frames}"
+    else:
+        # A triangle wave of period 2*leg: 0 at on=0, 1 at on=leg, back to 0 at
+        # on=2*leg, repeating. `on mod period` is `on - period*floor(on/period)`
+        # rather than ffmpeg's own `mod(on,period)`, and the peak is
+        # `1-abs(...)` rather than `min(...)`, because both of those take a
+        # comma — see the no-escaping note above.
+        period = 2 * leg
+        progress = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
+
     if effect == "zoom_out":
-        z = f"{1.0 + span:.4f}-{span:.4f}*on/{frames}"
+        z = f"{1.0 + span:.4f}-{span:.4f}*{progress}"
     elif effect.startswith("pan"):
         z = f"{1.0 + span:.4f}"
     else:  # zoom_in and anything unrecognised
-        z = f"1+{span:.4f}*on/{frames}"
+        z = f"1+{span:.4f}*{progress}"
 
     # Centre the frame by default; a pan sweeps one axis end to end instead.
     x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
     if effect == "pan_left":
-        x = f"(iw-iw/zoom)*(1-on/{frames})"
+        x = f"(iw-iw/zoom)*(1-{progress})"
     elif effect == "pan_right":
-        x = f"(iw-iw/zoom)*on/{frames}"
+        x = f"(iw-iw/zoom)*{progress}"
     elif effect == "pan_up":
-        y = f"(ih-ih/zoom)*(1-on/{frames})"
+        y = f"(ih-ih/zoom)*(1-{progress})"
     elif effect == "pan_down":
-        y = f"(ih-ih/zoom)*on/{frames}"
+        y = f"(ih-ih/zoom)*{progress}"
 
     chain = (f"[{src}]zoompan=z={z}:x={x}:y={y}:"
              f"d={frames + 2}:s={write_width}x{write_height}:fps={fps}")
@@ -437,7 +448,7 @@ def build_shot_command(
     # A drifting shot is fitted larger than the output frame so `zoompan` has
     # real pixels to zoom into, and zoompan's own `s=` brings it back down.
     # Fitting at the output size first would just magnify its softness.
-    drift = (kenburns_effect_for(kind, index, options, duration=duration, width=width)
+    drift = (kenburns_effect_for(kind, index, options)
              if "zoompan" in filters else None)
     if drift:
         read_width, read_height, _w, _h = kenburns_geometry(width, height)

@@ -18,7 +18,7 @@ from app.video.narration import (
 )
 from app.video.options import (
     MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
-    kenburns_is_perceptible,
+    kenburns_leg_frames,
 )
 from app.video.renderer import build_timeline, estimate
 from app.video.segmenter import Shot
@@ -583,6 +583,39 @@ def test_no_ken_burns_expression_needs_escaping():
         assert "," not in option
 
 
+def test_a_cycling_zoom_in_and_out_use_the_same_wave():
+    """Past kenburns_leg_frames a single sweep would crawl, so the travel
+    rubber-bands A to B to A instead — the same triangle wave drives both
+    directions, only the sign each one applies it with differs."""
+    leg = kenburns_leg_frames(0.12, 1920)
+    period = 2 * leg
+    wave = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
+    assert f"z=1+0.1200*{wave}" in _graph(_shot(_kb("zoom_in"), duration=200.0))
+    assert f"z=1.1200-0.1200*{wave}" in _graph(_shot(_kb("zoom_out"), duration=200.0))
+
+
+def test_a_cycling_pan_still_only_sweeps_one_axis_and_holds_the_zoom():
+    leg = kenburns_leg_frames(0.12, 1920)
+    period = 2 * leg
+    wave = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
+    right = _graph(_shot(_kb("pan_right"), duration=200.0))
+    left = _graph(_shot(_kb("pan_left"), duration=200.0))
+    assert "z=1.1200:" in right and "z=1.1200:" in left
+    assert f"x=(iw-iw/zoom)*{wave}" in right
+    assert f"x=(iw-iw/zoom)*(1-{wave})" in left
+
+
+def test_no_ken_burns_expression_needs_escaping_when_cycling():
+    """Same invariant as above, for the cycling branch: the wave is built from
+    floor/abs and arithmetic only — never ffmpeg's comma-separated mod() — so
+    nothing here needs escaping either."""
+    chain = F.kenburns_chain("in", "out", width=1920, height=1080, fps=30,
+                             duration=600.0, effect="pan_right", amount=0.2)
+    zoompan = chain[chain.index("zoompan=") + len("zoompan="):].split(",")[0]
+    for option in zoompan.split(":"):
+        assert "," not in option
+
+
 def test_the_zoom_never_travels_further_than_what_was_read():
     """Past that the zoom magnifies pixels rather than revealing them."""
     read_w, _h, _ww, _wh = kenburns_geometry(3840, 2160)
@@ -875,60 +908,64 @@ def test_a_non_zero_exit_is_still_reported_as_before(monkeypatch):
         F.run(["ffmpeg"])
 
 
-# ── Ken Burns is skipped once the drift would not be seen ───────────────────
+# ── Ken Burns cycles instead of stalling on a shot too long for one sweep ───
 
-def test_a_normal_length_shot_still_drifts():
-    assert kenburns_is_perceptible(0.12, 1920, frames=6 * 30)
-
-
-def test_the_exact_failing_shot_would_have_drifted_at_under_a_hundredth_of_a_pixel():
-    """502.678s at 12% travel on a 1920-wide (1080p) frame — this is the shot
-    that cost the render an 8-minute zoompan for a drift nobody could have
-    seen. The rate is judged in output pixels: that is what a viewer would
-    actually see move, regardless of how much bigger the picture is read at
-    internally to keep the crop origin's truncation from being visible."""
-    frames = int(502.678 * 30)
-    assert not kenburns_is_perceptible(0.12, 1920, frames=frames)
+def test_a_normal_length_shot_fits_inside_one_leg():
+    """A 6s shot at 12% travel is nowhere near long enough to need cycling."""
+    assert kenburns_leg_frames(0.12, 1920) > 6 * 30
 
 
-def test_raising_travel_keeps_the_drift_on_for_longer():
-    """Travel is the discoverable lever: the same shot that fails at 12% should
-    still pass at a large enough setting, so turning it up is a real choice."""
-    frames = int(60 * 30)   # a one-minute shot: past 12%'s reach, within 40%'s
-    assert not kenburns_is_perceptible(0.12, 1920, frames=frames)
-    assert kenburns_is_perceptible(0.40, 1920, frames=frames)
+def test_the_exact_shot_that_used_to_go_still_now_needs_many_legs():
+    """502.678s at 12% travel on a 1920-wide (1080p) frame — the shot that used
+    to render eight minutes of a static image because one sweep across it
+    would crawl under a hundredth of a pixel a frame. It still can't sweep
+    once across its own length, but it can sweep the leg below, many times."""
+    leg = kenburns_leg_frames(0.12, 1920)
+    assert leg > 0
+    assert int(502.678 * 30) > leg
 
 
-def test_zero_frames_is_never_perceptible():
-    assert not kenburns_is_perceptible(0.12, 1920, frames=0)
+def test_raising_travel_lengthens_the_leg():
+    """Travel is the discoverable lever: turning it up should let a sweep run
+    longer before it needs to start cycling."""
+    assert kenburns_leg_frames(0.40, 1920) > kenburns_leg_frames(0.12, 1920)
 
 
-def test_kenburns_effect_for_is_unaffected_when_the_caller_omits_duration():
-    """Callers that don't know the shot's length yet (none currently do, but
-    the parameter is optional) get the old behaviour rather than a crash."""
+def test_a_degenerate_amount_or_width_still_returns_a_positive_leg():
+    """A period of zero would divide by zero building the wave, so the leg is
+    floored at one frame no matter how small amount or width is."""
+    assert kenburns_leg_frames(0.0, 1920) == 1
+    assert kenburns_leg_frames(0.12, 0) == 1
+
+
+def test_kenburns_effect_for_no_longer_depends_on_shot_length():
+    """Ken Burns used to be refused outright on a shot long enough that one
+    sweep across it would be too slow to see; kenburns_chain cycles it
+    instead now, so which effect a shot gets never depended on duration in
+    the first place — the parameter was dropped, not just made optional."""
     options = RenderOptions(ken_burns={"effect": "zoom_in"})
     assert F.kenburns_effect_for("still", 0, options) == "zoom_in"
 
 
-def test_kenburns_effect_for_drops_the_drift_on_a_shot_this_long():
+def test_a_long_shot_cycles_instead_of_stalling():
+    """502.678s at 12% travel on a 1920-wide (1080p) frame — the shot that
+    used to render eight minutes of a completely still image. It now gets a
+    rubber-band cycle: A to B, then B to A, repeating in legs short enough to
+    stay visible, instead of one sweep too slow to see or no motion at all."""
     options = RenderOptions(ken_burns={"effect": "zoom_in"})
-    assert F.kenburns_effect_for("still", 0, options, duration=502.678, width=1920) is None
-    assert F.kenburns_effect_for("still", 0, options, duration=6.0, width=1920) == "zoom_in"
-
-
-def test_the_built_shot_command_has_no_zoompan_for_the_failing_shot():
-    """The fix that actually matters: build_shot_command has to receive the
-    same duration and width the renderer already knows, or the perceptibility
-    gate above changes nothing about what ffmpeg is actually asked to do."""
-    options = RenderOptions(ken_burns={"effect": "zoom_in"})
+    leg = kenburns_leg_frames(0.12, 1920)
+    period = 2 * leg
     argv = F.build_shot_command(
         kind="still", background="bg.png", audio="n.wav", duration=502.678,
         output="s.mp4", options=options, preview=False, index=0,
     )
     graph = _graph(argv)
-    assert "zoompan" not in graph
-    # And none of the expense that came with it either.
-    assert "scale=6530" not in graph and "3840x2160" not in graph
+    assert f"z=1+0.1200*(1-abs((on-{period}*floor(on/{period}))/{leg}-1))" in graph
+    # It pays the same supersample cost as any other drifting shot now — Ken
+    # Burns is no longer refused, so the expense the old gate avoided is back
+    # by design.
+    read_w, read_h, _w, _h = kenburns_geometry(1920, 1080)
+    assert f"scale={read_w}:{read_h}" in graph
 
 
 def test_a_short_shot_still_gets_the_full_supersampled_drift():

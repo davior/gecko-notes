@@ -95,17 +95,24 @@ KENBURNS_WRITE_MAX_SCALE = 2.0
 # Below this the drift is not slow, it is invisible: the picture holds still for
 # several frames between each one-pixel move, and no amount of precision changes
 # that. A 12% travel crosses it at about 25 seconds; an 8-minute section — one
-# image carried across a heading and all its subsections — runs at 0.008, where
-# rendering the drift costs a great deal and shows nothing. Expressed as a rate
-# rather than a shot length so it follows the travel the user actually chose.
+# image carried across a heading and all its subsections — would need to spread
+# the same travel across sixteen times the frames, well past where a single
+# sweep could still be seen moving. Past this point `kenburns_chain` doesn't
+# hold the picture still: it repeats the sweep back and forth, A to B then B to
+# A, in legs this long, so a long shot still visibly drifts instead of crawling
+# once at a speed nobody would notice. Expressed as a rate rather than a shot
+# length so it follows the travel the user actually chose.
 KENBURNS_MIN_TRAVEL_PX_PER_FRAME = 0.15
 
 
-def kenburns_is_perceptible(amount: float, width: int, frames: int) -> bool:
-    """Whether a drift of `amount` across `frames` would be seen at all."""
-    if frames <= 0:
-        return False
-    return (amount * width / 2 / frames) >= KENBURNS_MIN_TRAVEL_PX_PER_FRAME
+def kenburns_leg_frames(amount: float, width: int) -> int:
+    """Longest a single A-to-B sweep may run and still be seen moving.
+
+    Past this many frames `kenburns_chain` cycles the sweep — A to B, then B
+    to A — in legs this long, rather than crawl once across a shot at a speed
+    under KENBURNS_MIN_TRAVEL_PX_PER_FRAME.
+    """
+    return max(1, int(amount * width / 2 / KENBURNS_MIN_TRAVEL_PX_PER_FRAME))
 
 
 def _budgeted_scale(width: int, height: int, budget: int, ceiling: float) -> float:
