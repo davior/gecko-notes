@@ -29,6 +29,38 @@ MAX_CHUNK_CHARS = 1500
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 _WHITESPACE = re.compile(r"[ \t]+")
 
+# Matches emoji (pictographs, flag letters, misc symbol blocks with emoji
+# presentation) plus the zero-width joiner / variation-selector / keycap marks
+# used to build compound emoji, so they can be dropped before synthesis —
+# otherwise the TTS engine reads them out by description (e.g. "🚗" becomes
+# the spoken word "car"). `re` has no \p{Extended_Pictographic}, so the
+# ranges are spelled out by hand; mirrors EMOJI_REGEX in the frontend's
+# useTextToSpeech hook so a note read aloud there and rendered into a video
+# here drop the same characters (and keep sharing chunk_text's cache keys).
+_EMOJI = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"  # regional indicators (flag letters)
+    "\U0001F300-\U0001F5FF"  # misc symbols & pictographs (incl. skin-tone modifiers)
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"  # alchemical symbols
+    "\U0001F780-\U0001F7FF"  # geometric shapes extended
+    "\U0001F800-\U0001F8FF"  # supplemental arrows-C
+    "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+    "\U0001FA00-\U0001FA6F"  # chess symbols
+    "\U0001FA70-\U0001FAFF"  # symbols & pictographs extended-A
+    "\u2600-\u26FF"  # misc symbols (e.g. sun, heart)
+    "\u2700-\u27BF"  # dingbats (e.g. scissors, airplane)
+    "\u2300-\u23FF"  # misc technical (e.g. watch, alarm clock)
+    "\u2B00-\u2BFF"  # misc symbols & arrows (e.g. star, block)
+    "\u200D\uFE0F\u20E3"  # ZWJ, variation selector, keycap combiner
+    "]"
+)
+
+
+def strip_emoji(text: str) -> str:
+    return _EMOJI.sub("", text)
+
 
 def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
     """Greedily pack sentences into chunks of at most `max_chars`.
@@ -38,7 +70,7 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
     when the sentence would have fit. Mirrors packChunks() in the frontend's
     useTextToSpeech hook so both sides produce the same cache keys.
     """
-    clean = _WHITESPACE.sub(" ", (text or "").strip())
+    clean = _WHITESPACE.sub(" ", strip_emoji(text or "").strip())
     if not clean:
         return []
     if len(clean) <= max_chars:

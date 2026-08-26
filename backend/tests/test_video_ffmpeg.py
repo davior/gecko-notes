@@ -14,7 +14,7 @@ import pytest
 from app.video import ffmpeg as F
 from app.video.narration import (
     Cue, _srt_timestamp, chunk_narration, chunk_text, shift_cues,
-    split_for_subtitles, write_srt,
+    split_for_subtitles, strip_emoji, write_srt,
 )
 from app.video.options import (
     MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
@@ -304,6 +304,26 @@ def test_an_unbroken_run_is_split_by_length_as_a_last_resort():
     chunks = chunk_text("x" * 4000)
     assert len(chunks) == 3
     assert sum(len(c) for c in chunks) == 4000
+
+
+def test_strip_emoji_drops_pictographs_but_keeps_plain_text():
+    assert strip_emoji("I drove my car \U0001F697 to work.") == "I drove my car  to work."
+    assert strip_emoji("No emoji here, just #hashtag and 100% normal text.") == \
+        "No emoji here, just #hashtag and 100% normal text."
+    assert strip_emoji(":) plain smiley text stays") == ":) plain smiley text stays"
+
+
+def test_strip_emoji_drops_modifiers_and_compound_sequences():
+    # Skin-tone modifier, ZWJ family sequence, flag pair, keycap sequence.
+    assert strip_emoji("Great \U0001F44D\U0001F3FD job") == "Great  job"
+    assert strip_emoji("Family \U0001F468‍\U0001F469‍\U0001F467 photo") == "Family  photo"
+    assert strip_emoji("Flags \U0001F1FA\U0001F1F8 here") == "Flags  here"
+    assert strip_emoji("Step 1️⃣ done") == "Step 1 done"
+
+
+def test_chunk_text_strips_emoji_so_narration_never_speaks_them():
+    chunks = chunk_text("Great job! \U0001F44D Keep it up.")
+    assert chunks == ["Great job! Keep it up."]
 
 
 # ── subtitles ────────────────────────────────────────────────────────────────
