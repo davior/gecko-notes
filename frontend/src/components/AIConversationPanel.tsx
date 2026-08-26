@@ -2,22 +2,28 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
-import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, FilePlus2, History, Volume2, Square, AudioLines } from 'lucide-react'
+import { Sparkles, X, Send, Copy, Check, Plus, Pencil, Trash2, Mic, Paperclip, Lock, LockOpen, ListChecks, FileText, FilePlus2, History, Volume2, Square, AudioLines, BookOpen } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
+import { useRecipesStore } from '@/stores/recipes'
 import { useDictation } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { useVoiceMode } from '@/hooks/useVoiceMode'
 import VoiceModeOverlay from '@/components/VoiceModeOverlay'
 import DictationWaveIcon from '@/components/DictationWaveIcon'
 import NotePickerModal from '@/components/NotePickerModal'
+import RecipesPanel from '@/components/RecipesPanel'
+import RecipePickerDropdown from '@/components/RecipePickerDropdown'
 import { settingsApi } from '@/api/settings'
 import { configApi } from '@/api/config'
 import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
+import type { Recipe } from '@/api/recipes'
+import { renderRecipePrompt, getCurrentSelectionText } from '@/utils/recipeVariables'
+import { matchRecipeVoiceCommand } from '@/utils/recipeVoiceCommand'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
 import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
@@ -400,9 +406,16 @@ export default function AIConversationPanel({
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [sessions, setSessions] = useState<AISession[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  const [showHistory, setShowHistory] = useState(false)
+  // Chat | Recipes | History — three tabs sharing this one side panel.
+  const [panelTab, setPanelTab] = useState<'chat' | 'recipes' | 'history'>('chat')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
+
+  const recipes = useRecipesStore((s) => s.recipes)
+  const recipesLoading = useRecipesStore((s) => s.loading)
+  const createRecipe = useRecipesStore((s) => s.createRecipe)
+  const updateRecipe = useRecipesStore((s) => s.updateRecipe)
+  const deleteRecipe = useRecipesStore((s) => s.deleteRecipe)
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -586,7 +599,7 @@ export default function AIConversationPanel({
     setConversation([])
     setCurrentSessionId(null)
     setSessions([])
-    setShowHistory(false)
+    setPanelTab('chat')
     setAttachedNotes([])
     if (!sessionsEnabled) return
     aiSessionsApi.list(noteId ?? null).then((data) => {
@@ -733,7 +746,7 @@ export default function AIConversationPanel({
     setCurrentSessionId(null)
     setFrozenContext(null)
     setPendingPlan(null)
-    setShowHistory(false)
+    setPanelTab('chat')
     setAttachedNotes([])
   }
 
@@ -751,7 +764,7 @@ export default function AIConversationPanel({
     try { setAttachedNotes(JSON.parse(session.attached_notes)) } catch { setAttachedNotes([]) }
     setFrozenContext(null)
     setPendingPlan(null)
-    setShowHistory(false)
+    setPanelTab('chat')
   }
 
   async function handleDeleteSession(id: string) {
@@ -1428,6 +1441,19 @@ export default function AIConversationPanel({
     void handleSend(input, conversation)
   }
 
+  // Run a Recipe (Overview: selecting one injects its prompt into the chat and sends
+  // it — no manual review). Placeholders ({{title}}, {{selected text}}, {{date}}) are
+  // substituted against the live context first. handleSend already gates multi-step
+  // plans behind Plan mode's confirmation UI, so that's where "if plan mode is on the
+  // user is prompted to confirm" naturally falls out — a respond-only reply still runs
+  // straight through either way.
+  function handleRunRecipe(recipe: Recipe) {
+    const prompt = renderRecipePrompt(recipe.prompt, { title: noteTitle, selectedText: getCurrentSelectionText() })
+    if (!prompt.trim()) return
+    setPanelTab('chat')
+    void handleSend(prompt, conversation)
+  }
+
   function handleEdit(idx: number) {
     const priorMessages = conversation.slice(0, idx)
     setEditingId(null)
@@ -1543,6 +1569,15 @@ export default function AIConversationPanel({
       }
       return
     }
+    // "Run the summary recipe": resolve against the user's saved recipes and send its
+    // (placeholder-substituted) prompt immediately — bypassing the plain-utterance
+    // routing below, so recipes stay a one-shot voice command.
+    const recipeMatch = matchRecipeVoiceCommand(text, recipes)
+    if (recipeMatch) {
+      const prompt = renderRecipePrompt(recipeMatch.prompt, { title: noteTitle, selectedText: getCurrentSelectionText() })
+      await handleSend(prompt, conversationRef.current)
+      return
+    }
     // The user naturally wrapped up ("that'll be all", "goodbye", "exit voice mode"):
     // acknowledge out loud, then close voice mode once the farewell finishes speaking.
     // (endVoiceSession tears down TTS immediately, so it must run only after playback.)
@@ -1651,11 +1686,43 @@ export default function AIConversationPanel({
         onMouseDown={startResize}
       />
 
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700">
-        <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
-          <Sparkles className="w-4 h-4 text-blue-500" />
-          AI Assistant
+      {/* Header: Chat | Recipes | History tabs */}
+      <div className="shrink-0 flex items-center justify-between px-2 py-1.5 border-b border-gray-100 dark:border-gray-700">
+        <div className="flex items-center gap-0.5 text-xs font-semibold">
+          <button
+            onClick={() => setPanelTab('chat')}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              panelTab === 'chat'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Assistant
+          </button>
+          <button
+            onClick={() => setPanelTab('recipes')}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              panelTab === 'recipes'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Recipes
+          </button>
+          <button
+            onClick={() => setPanelTab('history')}
+            disabled={!sessionsEnabled}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors disabled:opacity-40 ${
+              panelTab === 'history'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            History
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {voiceCapable && (
@@ -1674,14 +1741,6 @@ export default function AIConversationPanel({
             disabled={!sessionsEnabled}
           >
             <Plus className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setShowHistory((v) => !v)}
-            className={`btn-ghost p-1 ${showHistory ? 'text-blue-500' : ''}`}
-            title="Session history"
-            disabled={!sessionsEnabled}
-          >
-            <History className="w-4 h-4" />
           </button>
           <button onClick={onToggle} className="btn-ghost p-1" title="Close">
             <X className="w-4 h-4" />
@@ -1711,12 +1770,23 @@ export default function AIConversationPanel({
         />
       )}
 
-      {/* Session history panel */}
-      {showHistory && (
-        <div className="absolute inset-x-0 top-[41px] bottom-0 z-20 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-700 flex flex-col overflow-hidden">
-          <div className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide border-b border-gray-100 dark:border-gray-700 shrink-0">
-            Session History
-          </div>
+      {/* Recipes tab: manage saved prompts (list/add/edit/delete/tags/import-export) */}
+      {panelTab === 'recipes' && (
+        <RecipesPanel
+          recipes={recipes}
+          loading={recipesLoading}
+          onCreate={createRecipe}
+          onUpdate={updateRecipe}
+          onDelete={deleteRecipe}
+          onRun={handleRunRecipe}
+          previewContext={{ title: noteTitle, selectedText: getCurrentSelectionText() }}
+          disabled={!aiService}
+        />
+      )}
+
+      {/* History tab: past AI sessions for this note (or global, in list mode) */}
+      {panelTab === 'history' && (
+        <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             {sessions.length === 0 && (
               <div className="px-3 py-6 text-sm text-gray-400 text-center">No sessions yet.</div>
@@ -1773,6 +1843,8 @@ export default function AIConversationPanel({
         </div>
       )}
 
+      {panelTab === 'chat' && (
+      <>
       {/* Message list */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-4 min-h-0">
         {!aiService && (
@@ -2043,6 +2115,8 @@ export default function AIConversationPanel({
               Plan mode
             </label>
 
+            <RecipePickerDropdown recipes={recipes} disabled={loading || executing} onSelect={handleRunRecipe} />
+
             {!isList && (
               <button
                 onClick={() => void handleFreeze()}
@@ -2215,6 +2289,8 @@ export default function AIConversationPanel({
             <p className="text-xs text-gray-400 mt-0.5">Shift+Enter for new line</p>
           </div>
         </div>
+      )}
+      </>
       )}
 
       {/* Plan confirmation (Plan mode) */}

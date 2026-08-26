@@ -447,6 +447,34 @@ class AISessionRead(BaseModel):
         from_attributes = True
 
 
+# Recipe schemas
+class RecipeCreate(BaseModel):
+    name: str
+    prompt: str
+    tags: List[str] = []
+    sort_order: int = 0
+
+
+class RecipeUpdate(BaseModel):
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    tags: Optional[List[str]] = None
+    sort_order: Optional[int] = None
+
+
+class RecipeRead(BaseModel):
+    id: str
+    name: str
+    prompt: str
+    tags: List[str]
+    sort_order: int
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
+
+    class Config:
+        from_attributes = True
+
+
 # Theme schemas
 class ThemeCreate(BaseModel):
     name: str

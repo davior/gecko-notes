@@ -192,6 +192,21 @@ class AISession(SQLModel, table=True):
     updated_at: datetime
 
 
+class Recipe(SQLModel, table=True):
+    """A saved, reusable prompt the user can trigger from the AI composer (button
+    picker or Deepgram Flux voice command) instead of retyping it. Per-user only —
+    unlike SystemPrompt there is no global/shared concept yet."""
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    name: str
+    prompt: str
+    # JSON array of strings, matching this codebase's existing convention (Note.tags).
+    tags: str = Field(default='[]')
+    sort_order: int = Field(default=0)
+    created_at: datetime
+    updated_at: datetime
+
+
 class TranscriptionJob(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
