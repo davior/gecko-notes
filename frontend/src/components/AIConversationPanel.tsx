@@ -44,6 +44,7 @@ import {
   type ContextNote,
   type ContextFolder,
   type ContextCategory,
+  type ContextRecipe,
 } from '@/services/aiPlan'
 import { executePlan, type PlanEditor, type ActionResult } from '@/services/planExecutor'
 
@@ -139,6 +140,7 @@ interface PlanContext {
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
+  recipes: ContextRecipe[]
   currentFolderId: string | null   // folder being viewed (kept so find_notes can rebuild referenceBlock)
   currentFolderName: string | null
   labelMap: Map<string, string>
@@ -977,17 +979,19 @@ export default function AIConversationPanel({
     } catch { /* folders are optional context */ }
 
     const cats: ContextCategory[] = categories.map((c) => ({ id: c.id, label: c.label }))
+    const recipesForContext: ContextRecipe[] = recipes.map((r) => ({ id: r.id, name: r.name, tags: r.tags, prompt: r.prompt }))
 
     const labelMap = new Map<string, string>()
     targetNotes.forEach((n) => labelMap.set(n.id, n.title || 'Untitled'))
     folders.forEach((f) => labelMap.set(f.id, f.name))
     cats.forEach((c) => labelMap.set(c.id, c.label))
+    recipesForContext.forEach((r) => labelMap.set(r.id, r.name))
 
     const curFolderId = currentFolderId ?? null
     const currentFolderName = curFolderId ? folders.find((f) => f.id === curFolderId)?.name ?? null : null
 
-    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats, currentFolderId: curFolderId, currentFolderName })
-    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, referenceContextText, currentNoteText, attachments, targetNotes, folders, categories: cats, currentFolderId: curFolderId, currentFolderName, labelMap, annotationIds }
+    const referenceBlock = buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories: cats, recipes: recipesForContext, currentFolderId: curFolderId, currentFolderName })
+    return { instructions: PLAN_INSTRUCTIONS, referenceBlock, referenceContextText, currentNoteText, attachments, targetNotes, folders, categories: cats, recipes: recipesForContext, currentFolderId: curFolderId, currentFolderName, labelMap, annotationIds }
   }
 
   async function handleFreeze() {
@@ -1166,6 +1170,7 @@ export default function AIConversationPanel({
         validFolderIds: new Set(ctx.folders.map((f) => f.id)),
         validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
         validAnnotationIds: ctx.annotationIds,
+        validRecipeIds: new Set(ctx.recipes.map((r) => r.id)),
       })
       // Generation failures (excluded from execution) are surfaced alongside execution rows.
       const results = [...genFailures, ...execResults]
@@ -1180,6 +1185,7 @@ export default function AIConversationPanel({
       if (results.some((r) => r.notesChanged)) onNotesChanged?.()
       if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
       if (results.some((r) => r.annotationsChanged)) await onAnnotationsChanged?.()
+      if (results.some((r) => r.recipesChanged)) void useRecipesStore.getState().loadRecipes()
 
       setConversation(finalMessages)
       await persistCurrentSession(finalMessages)
@@ -1348,7 +1354,7 @@ export default function AIConversationPanel({
         ctx = {
           ...ctx,
           referenceContextText: mergedRefText,
-          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
+          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, recipes: ctx.recipes, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
           targetNotes: mergedTargets,
           labelMap: mergedLabelMap,
         }

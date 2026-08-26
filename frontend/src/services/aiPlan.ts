@@ -8,6 +8,7 @@ import { detectMermaidKind, DIAGRAM_KIND_LABELS } from '@/utils/diagram'
 export interface ContextNote { id: string; title: string; createdAt?: string; modifiedAt?: string }
 export interface ContextFolder { id: string; name: string }
 export interface ContextCategory { id: string; label: string }
+export interface ContextRecipe { id: string; name: string; tags: string[]; prompt: string }
 
 
 // All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
@@ -48,6 +49,11 @@ export type PlanAction =
   // `alt` (optional): a short caption for the image block. The prompt is authored by the
   // model from the article content — it is NOT the user's raw request.
   | { type: 'generate_image'; noteId: string; prompt: string; section?: string; alt?: string; description?: string }
+  // Recipes: saved, reusable prompts the user runs later from the composer's picker or by
+  // voice ("run the summary recipe") instead of retyping them — see the "Recipes" rule below.
+  | { type: 'create_recipe'; name: string; prompt: string; tags?: string[]; description?: string }
+  | { type: 'update_recipe'; recipeId: string; name?: string; prompt?: string; tags?: string[]; description?: string }
+  | { type: 'delete_recipe'; recipeId: string; description?: string }
 
 export interface Plan { actions: PlanAction[] }
 
@@ -62,6 +68,9 @@ interface BuildReferenceOpts {
   targetNotes: ContextNote[]
   folders: ContextFolder[]
   categories: ContextCategory[]
+  // The user's saved Recipes, for update_recipe/delete_recipe targeting and so
+  // create_recipe can be written with awareness of what already exists.
+  recipes: ContextRecipe[]
   // The folder the user is currently viewing (list view) or whose note is open (editor).
   // null = the root / top level. Lets the model resolve "here"/"this folder".
   currentFolderId?: string | null
@@ -108,6 +117,9 @@ Action types (every action MAY also include an optional "description": one short
 - create_diagram:    { "type":"create_diagram", "noteId":"<id>", "source":"<complete Mermaid diagram source>" }
 - edit_diagram:      { "type":"edit_diagram", "noteId":"<id>", "diagramId":"<id>", "source":"<complete replacement Mermaid diagram source>" }
 - generate_image:    { "type":"generate_image", "noteId":"<id>", "prompt":"<detailed text-to-image prompt>", "section":"<optional heading to insert under>", "alt":"<optional caption>" }
+- create_recipe:     { "type":"create_recipe", "name":"<short name>", "prompt":"<self-contained prompt text>", "tags":["optional", "lowercase", "tags"] }
+- update_recipe:     { "type":"update_recipe", "recipeId":"<id>", "name":"<optional new name>", "prompt":"<optional new prompt>", "tags":["optional new tags"] }
+- delete_recipe:     { "type":"delete_recipe", "recipeId":"<id>" }
 
 Rules:
 - Valid JSON only (IMPORTANT): your entire output must be a single, strictly-valid JSON object that JSON.parse accepts. Inside every string value — above all a note "content" — escape each double quote as \\" and each newline as \\n. Safer still, use typographic quotes (“ ” ‘ ’) for any quotation marks you write in prose, since those never need escaping — reserve the straight " for JSON's own delimiters. A SINGLE unescaped straight quote inside a string breaks the entire plan, so it is silently shown to the user as raw text instead of running. For a long note body, or when creating/rewriting several notes, this is a strong extra reason to defer the body with "spec" (see "Deferred body generation" below): a deferred body is written as plain text in a later step and needs no JSON escaping at all.
@@ -130,6 +142,7 @@ Rules:
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - Diagrams: use create_diagram to ADD a new diagram to a note, and edit_diagram to change an existing one. A note's existing diagrams are listed under it as "Diagrams on this note" with a "[diagram <id>]" tag and their current Mermaid source — use that "<id>" as "diagramId" for edit_diagram (which REPLACES the whole diagram, so "source" must be the complete new diagram, not a fragment). "source" must be complete, valid Mermaid syntax starting with the right header keyword for the kind: "flowchart TD" (or LR/BT/RL) for flow charts, "mindmap" for mind maps, "sequenceDiagram" for sequence diagrams, "classDiagram" for class diagrams, "stateDiagram-v2" for state diagrams, "erDiagram" for entity-relationship diagrams, "gantt" for Gantt charts, "pie" for pie charts, "timeline" for timelines. Node linking: in flowchart, classDiagram and stateDiagram-v2 ONLY, a node can link to another note or a URL by adding a line "click <nodeId> href \"/notes/<id>\"" (linking to a note id from the lists below) or "click <nodeId> href \"<url>\" \"_blank\"" (linking to the web) — do NOT add click/href lines for mindmap, sequenceDiagram, erDiagram, gantt, pie or timeline diagrams, since Mermaid does not support node links on those kinds (mindmap link support is a currently open Mermaid limitation). Only create or edit a diagram when the user explicitly asks for one (e.g. "make a mind map of this note", "add a step to the flow chart").
 - Images (generate_image): Use ONLY when the user explicitly asks to create/generate/add an image, picture, illustration or photo (e.g. "make an image for this article", "add a picture", "create an image for each chapter and put it under each title"). YOU author the "prompt": write a vivid, self-contained text-to-image prompt derived from the relevant article content (describe subject, setting, style, mood, composition) — do NOT just copy the user's request verbatim. Set "section" to a section/chapter heading's text to insert the image directly beneath that heading; omit "section" to append the image at the end of the note. For "an image for each chapter/section", emit ONE generate_image action per chapter — each with that chapter's heading text as "section" and its own prompt tailored to that chapter. Optionally set "alt" to a short caption. Generating images costs money, so create only the images the user asked for and no more.
+- Recipes (create_recipe / update_recipe / delete_recipe): a Recipe is a saved, reusable prompt the user can run later — from a picker in the AI composer, or by voice ("run the summary recipe") — instead of retyping it each time. The user's existing recipes are listed below under "Recipes". Only create, update or delete a recipe when the user EXPLICITLY asks you to (e.g. "make a recipe that…", "save this as a recipe called…", "create a recipe for X", "rename/update/delete the X recipe") — never as a side effect of an unrelated request, and never in place of simply explaining how recipes work (use a "respond" action for that). When authoring "prompt": it will be sent later as a brand-new message with NO memory of the current conversation, so write it fully self-contained — never reference "this", "what we just discussed", or anything specific to the current chat. Use the placeholders {{title}} (the note open when the recipe is later run), {{selected text}} (the user's text selection at that time) and {{date}} (that day's date) so the recipe adapts to whatever it's run against, instead of hard-coding today's specifics. Give it a short, descriptive "name" and 0+ short lowercase "tags" for grouping (e.g. ["summary"]); omit "tags" if none apply. For update_recipe/delete_recipe, "recipeId" MUST be an id from the "Recipes" list below — never invent one — and update_recipe should omit any field the user isn't changing.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
 
@@ -160,7 +173,7 @@ This applies ONLY to spoken "respond" text. Any note "content" or "spec" you wri
 // *other* in-context notes. Stable within a conversation (it changes only when notes
 // are added/renamed or the scope changes), so it sits behind its own cache breakpoint —
 // after PLAN_INSTRUCTIONS, before the volatile current-note body and the new request.
-export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories, currentFolderId, currentFolderName }: BuildReferenceOpts): string {
+export function buildPlanReferenceBlock({ referenceContextText, targetNotes, folders, categories, recipes, currentFolderId, currentFolderName }: BuildReferenceOpts): string {
   const noteList = targetNotes.length
     ? targetNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
     : '(none)'
@@ -169,6 +182,9 @@ export function buildPlanReferenceBlock({ referenceContextText, targetNotes, fol
     : '(none)'
   const categoryList = categories.length
     ? categories.map((c) => `- ${c.id} — ${c.label}`).join('\n')
+    : '(none)'
+  const recipeList = recipes.length
+    ? recipes.map((r) => `- ${r.id} — ${r.name}${r.tags.length ? ` [${r.tags.join(', ')}]` : ''} — ${truncate(r.prompt, 100)}`).join('\n')
     : '(none)'
 
   // Day precision (not a full timestamp) keeps this cacheable reference block byte-stable
@@ -190,6 +206,9 @@ ${folderList}
 
 Categories (id — label):
 ${categoryList}
+
+Recipes (id — name [tags] — prompt preview):
+${recipeList}
 
 Context (note bodies):
 ${referenceContextText || '(the currently open note is provided in the latest message; no other notes are in context)'}`
@@ -335,6 +354,26 @@ function validateAction(raw: unknown): PlanAction | null {
       const section = asString(a.section)
       const alt = asString(a.alt)
       return { type: 'generate_image', noteId, prompt, ...(section ? { section } : {}), ...(alt ? { alt } : {}), ...d }
+    }
+    case 'create_recipe': {
+      const name = asString(a.name)
+      const prompt = asString(a.prompt)
+      if (!name || !prompt?.trim()) return null
+      const tags = Array.isArray(a.tags) ? { tags: a.tags.map(String) } : {}
+      return { type: 'create_recipe', name, prompt, ...tags, ...d }
+    }
+    case 'update_recipe': {
+      const recipeId = asString(a.recipeId)
+      if (!recipeId) return null
+      const name = asString(a.name)
+      const prompt = asString(a.prompt)
+      const tags = Array.isArray(a.tags) ? { tags: a.tags.map(String) } : {}
+      return { type: 'update_recipe', recipeId, ...(name ? { name } : {}), ...(prompt ? { prompt } : {}), ...tags, ...d }
+    }
+    case 'delete_recipe': {
+      const recipeId = asString(a.recipeId)
+      if (!recipeId) return null
+      return { type: 'delete_recipe', recipeId, ...d }
     }
     default:
       return null
@@ -629,6 +668,9 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'create_diagram': return `Create ${DIAGRAM_KIND_LABELS[detectMermaidKind(action.source)].toLowerCase()} in “${name(action.noteId)}”`
     case 'edit_diagram': return `Update diagram in “${name(action.noteId)}”`
     case 'generate_image': return `Generate image${action.section ? ` under “${action.section}”` : ''} in “${name(action.noteId)}”: ${truncate(action.prompt, 60)}`
+    case 'create_recipe': return `Create recipe “${action.name}”`
+    case 'update_recipe': return `Update recipe “${name(action.recipeId)}”`
+    case 'delete_recipe': return `Delete recipe “${name(action.recipeId)}”`
   }
 }
 
