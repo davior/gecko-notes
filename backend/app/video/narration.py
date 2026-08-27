@@ -266,13 +266,18 @@ def synthesize_shot(
     work_dir: str,
     options: RenderOptions,
     tts: Callable[[str], bytes],
+    chunks: Optional[List[Chunk]] = None,
 ) -> NarrationResult:
     """Synthesise one shot's narration and return its WAV, length and cues.
 
     `tts` is injected (rather than imported) so this stays testable without a
     network call, and so the caller owns provider selection and usage recording.
+
+    `chunks` lets a caller supply its own text/pause split (e.g.
+    `pause_markup.parse_pause_markup`) instead of the default
+    paragraph/heading chunking below.
     """
-    chunks = chunk_narration(
+    chunks = chunks if chunks is not None else chunk_narration(
         text,
         paragraph_pause_ms=options.paragraph_pause_ms,
         heading_pause_ms=options.heading_pause_ms,
