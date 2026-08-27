@@ -400,13 +400,17 @@ def _shot(options, *, kind="still", duration=6.0, index=0):
 
 
 @pytest.mark.parametrize("style,colour", [("fade", "black"), ("fadewhite", "white")])
-def test_a_dip_transition_fades_both_the_picture_and_the_sound(style, colour):
+def test_a_dip_transition_fades_the_picture_and_only_the_sounds_tail(style, colour):
     graph = _graph(_shot(RenderOptions(transition={"style": style, "duration": 0.6})))
     assert f"fade=t=in:st=0:d=0.600:color={colour}" in graph
     assert f"fade=t=out:st=5.400:d=0.600:color={colour}" in graph
-    # Fading the picture without the audio leaves a voice talking over black.
-    assert "afade=t=in:st=0:d=0.600" in graph
+    # The tail is faded to match the picture dipping to colour there, landing in
+    # the trailing hold after the last word rather than on speech.
     assert "afade=t=out:st=5.400:d=0.600" in graph
+    # But not the head: narration starts at st=0 with no lead-in silence, so a
+    # matching fade-in there would ramp up through the sentence's actual first
+    # word instead of the picture's cosmetic fade from black.
+    assert "afade=t=in" not in graph
 
 
 def test_a_dip_never_takes_more_than_a_third_of_a_short_shot():

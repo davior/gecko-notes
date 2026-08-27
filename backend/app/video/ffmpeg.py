@@ -499,8 +499,13 @@ def build_shot_command(
     # narration is shorter (a media block with little text under it).
     audio_chain = f"[{audio_main}]aresample=48000,aformat=channel_layouts=stereo,apad"
     if dip > 0:
-        audio_chain += (f",afade=t=in:st=0:d={dip:.3f}"
-                        f",afade=t=out:st={duration - dip:.3f}:d={dip:.3f}")
+        # Only the tail is faded, to match the picture dipping to colour there —
+        # and it lands in the trailing hold `shot_end_pause_ms` leaves after the
+        # last word, not on speech itself. The start has no equivalent lead-in
+        # silence: narration begins at st=0 of the shot, so a matching fade-in
+        # there was ramping up through the sentence's actual first word,
+        # sometimes past the point of being audible at all.
+        audio_chain += f",afade=t=out:st={duration - dip:.3f}:d={dip:.3f}"
     chains.append(f"{audio_chain}[a]")
 
     argv += ["-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]"]
