@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { settingsApi, DEEPGRAM_TTS_SPEED_MIN, DEEPGRAM_TTS_SPEED_MAX } from '@/api/settings'
 import { useSettingsStore } from '@/stores/settings'
 import { apiErrorMessage } from '@/utils/format'
+import { parsePauseMarkup, type SpeechChunk } from '@/utils/pauseMarkup'
 
 export type TTSStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
@@ -53,56 +54,41 @@ function stripEmoji(text: string): string {
   return text.replace(EMOJI_REGEX, '')
 }
 
-// Greedily pack sentences/lines into chunks, where the size budget for the Nth
-// chunk is `limitFor(N)`. Collapses runs of spaces/tabs but preserves newlines
-// so list items, table rows and other line-delimited content stay separate
-// segments (and the TTS engine pauses between them) rather than being read as
-// one line.
-function packChunks(text: string, limitFor: (index: number) => number): string[] {
-  const clean = stripEmoji(text).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
-  if (!clean) return []
-
-  // Split into sentences / lines, then greedily pack into chunks.
-  const sentences = clean.match(/[^.!?\n]+[.!?\n]*\s*/g) ?? [clean]
-  const chunks: string[] = []
-  let current = ''
-  for (const sentence of sentences) {
-    const limit = limitFor(chunks.length)
-    if (sentence.length > limit) {
-      // A single sentence bigger than the current budget: flush what we have.
-      // Only hard-split (on word boundaries) if it also exceeds the hard cap;
-      // otherwise let it stand as its own chunk so we never split mid-sentence.
-      if (current) { chunks.push(current.trim()); current = '' }
-      let rest = sentence
-      while (rest.length > MAX_CHUNK_CHARS) {
-        let cut = rest.lastIndexOf(' ', MAX_CHUNK_CHARS)
-        if (cut <= 0) cut = MAX_CHUNK_CHARS
-        chunks.push(rest.slice(0, cut).trim())
-        rest = rest.slice(cut)
-      }
-      current = rest
-    } else if ((current + sentence).length > limit) {
-      chunks.push(current.trim())
-      current = sentence
-    } else {
-      current += sentence
+// Split at sentence/paragraph/[pause:...] boundaries (see parsePauseMarkup)
+// and re-split any resulting segment that's still over the Nth chunk's size
+// budget `limitFor(N)`, same word-boundary hard-split the provider's
+// character cap has always needed. Only the final piece of a re-split
+// segment keeps that segment's own pause — the pieces before it are joins
+// forced by length, not a place the narration should actually pause.
+function packSpeechChunks(text: string, limitFor: (index: number) => number): SpeechChunk[] {
+  const segments = parsePauseMarkup(stripEmoji(text).replace(/[ \t]+/g, ' '))
+  const packed: SpeechChunk[] = []
+  for (const segment of segments) {
+    if (segment.text.length <= limitFor(packed.length)) {
+      packed.push(segment)
+      continue
     }
+    let rest = segment.text
+    while (rest.length > MAX_CHUNK_CHARS) {
+      let cut = rest.lastIndexOf(' ', MAX_CHUNK_CHARS)
+      if (cut <= 0) cut = MAX_CHUNK_CHARS
+      packed.push({ text: rest.slice(0, cut).trim(), pauseAfterMs: 0 })
+      rest = rest.slice(cut).trim()
+    }
+    packed.push({ text: rest, pauseAfterMs: segment.pauseAfterMs })
   }
-  if (current.trim()) chunks.push(current.trim())
-  return chunks.filter(Boolean)
+  return packed
 }
 
 // Uniform chunks — used for whole-file synthesis (audio export), where there's
 // no first-audio latency to optimise.
-export function chunkText(text: string): string[] {
-  const clean = stripEmoji(text).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
-  if (clean && clean.length <= MAX_CHUNK_CHARS) return [clean]
-  return packChunks(text, () => MAX_CHUNK_CHARS)
+export function chunkText(text: string): SpeechChunk[] {
+  return packSpeechChunks(text, () => MAX_CHUNK_CHARS)
 }
 
 // Fast-start chunks for playback: a small first chunk, ramping up to full size.
-export function chunkTextForPlayback(text: string): string[] {
-  return packChunks(text, (i) => PLAYBACK_CHUNK_TARGETS[Math.min(i, PLAYBACK_CHUNK_TARGETS.length - 1)])
+export function chunkTextForPlayback(text: string): SpeechChunk[] {
+  return packSpeechChunks(text, (i) => PLAYBACK_CHUNK_TARGETS[Math.min(i, PLAYBACK_CHUNK_TARGETS.length - 1)])
 }
 
 // Read-aloud volume is a global, device-level preference shared across notes.
@@ -133,9 +119,11 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   useEffect(() => { modelRef.current = options?.model })
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const queueRef = useRef<string[]>([])
+  const queueRef = useRef<SpeechChunk[]>([])
   const indexRef = useRef(0)
   const objectUrlRef = useRef<string | null>(null)
+  const pauseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pausedDuringGapRef = useRef(false)
   // In-flight/settled synthesis promises keyed by chunk index, so playback and
   // (for Insert Mode) the background assembly loop share one request per chunk.
   const pipelineRef = useRef<Map<number, Promise<Blob>>>(new Map())
@@ -162,8 +150,17 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     }
   }, [])
 
+  const clearPauseTimeout = () => {
+    if (pauseTimeoutRef.current !== null) {
+      clearTimeout(pauseTimeoutRef.current)
+      pauseTimeoutRef.current = null
+    }
+  }
+
   const stop = useCallback(() => {
     cancelledRef.current = true
+    clearPauseTimeout()
+    pausedDuringGapRef.current = false
     queueRef.current = []
     indexRef.current = 0
     pipelineRef.current.clear()
@@ -181,6 +178,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     cancelledRef.current = false
     return () => {
       cancelledRef.current = true
+      clearPauseTimeout()
       audioRef.current?.pause()
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
     }
@@ -193,7 +191,7 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     if (chunk === undefined) return null
     const existing = pipelineRef.current.get(i)
     if (existing) return existing
-    const p = settingsApi.synthesizeSpeech(chunk, modelRef.current)
+    const p = settingsApi.synthesizeSpeech(chunk.text, modelRef.current)
     // Pre-attach a no-op catch so an early rejection can't raise an unhandled
     // rejection before the awaiting site handles it.
     p.catch(() => { /* surfaced where awaited */ })
@@ -242,12 +240,24 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
       // Free the just-played chunk; the assembly loop (if any) already captured it.
       pipelineRef.current.delete(i)
       indexRef.current = i + 1
-      if (indexRef.current < queueRef.current.length) {
-        void playIndex(indexRef.current)
-      } else {
+      if (indexRef.current >= queueRef.current.length) {
         revokeUrl()
         setStatus('idle')
+        return
       }
+      // Hold real silence between chunks for the pause this chunk's sentence-
+      // ending punctuation, paragraph break, or [pause:...] marker asked for
+      // (see parsePauseMarkup) — nothing else produces that gap for Deepgram,
+      // which has no SSML/break-tag support of its own.
+      const pauseMs = queueRef.current[i]?.pauseAfterMs ?? 0
+      if (pauseMs <= 0) {
+        void playIndex(indexRef.current)
+        return
+      }
+      pauseTimeoutRef.current = setTimeout(() => {
+        pauseTimeoutRef.current = null
+        if (!cancelledRef.current) void playIndex(indexRef.current)
+      }, pauseMs)
     }
     audio.src = url
 
@@ -264,8 +274,10 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   }, [fetchChunk, ensurePipeline, revokeUrl])
 
   // Reset state and begin streaming playback of an already-chunked queue.
-  const startPlayback = useCallback((chunks: string[]) => {
+  const startPlayback = useCallback((chunks: SpeechChunk[]) => {
     cancelledRef.current = false
+    clearPauseTimeout()
+    pausedDuringGapRef.current = false
     if (audioRef.current) audioRef.current.pause()
     revokeUrl()
     pipelineRef.current.clear()
@@ -317,20 +329,38 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   }, [revokeUrl])
 
   const pause = useCallback(() => {
-    if (audioRef.current && status === 'playing') {
+    if (status !== 'playing') return
+    if (pauseTimeoutRef.current !== null) {
+      // Paused during the held silence gap between chunks (see playIndex's
+      // onended) — nothing is actually playing yet; stop the scheduled
+      // advance and resume by starting the next chunk instead of calling
+      // play() on an already-ended audio element.
+      clearPauseTimeout()
+      pausedDuringGapRef.current = true
+      setStatus('paused')
+      return
+    }
+    if (audioRef.current) {
       audioRef.current.pause()
       setStatus('paused')
     }
   }, [status])
 
   const resume = useCallback(() => {
-    if (audioRef.current && status === 'paused') {
+    if (status !== 'paused') return
+    if (pausedDuringGapRef.current) {
+      pausedDuringGapRef.current = false
+      setStatus('playing')
+      void playIndex(indexRef.current)
+      return
+    }
+    if (audioRef.current) {
       void audioRef.current.play().then(() => setStatus('playing')).catch(() => {
         setErrorMessage('Playback was blocked by the browser')
         setStatus('error')
       })
     }
-  }, [status])
+  }, [status, playIndex])
 
   // Synthesize the whole text into a single MP3 blob. Chunks are fetched
   // sequentially (to stay friendly to the provider's rate limits) and the resulting
@@ -344,9 +374,13 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     setErrorMessage('')
     setStatus('loading')
     try {
+      // Markers/pause-worthy boundaries are already stripped to plain text by
+      // chunkText, but — unlike live playback — this concatenates raw MP3
+      // bytes with no gap between chunks, so exported/inserted audio doesn't
+      // yet carry the held silences (see chunkTextForPlayback for that).
       const blobs: Blob[] = []
       for (const chunk of chunks) {
-        blobs.push(await settingsApi.synthesizeSpeech(chunk, modelRef.current))
+        blobs.push(await settingsApi.synthesizeSpeech(chunk.text, modelRef.current))
       }
       return new Blob(blobs, { type: 'audio/mpeg' })
     } catch (e) {
