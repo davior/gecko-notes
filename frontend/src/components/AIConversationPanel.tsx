@@ -17,6 +17,7 @@ import RecipesPanel from '@/components/RecipesPanel'
 import RecipePickerDropdown from '@/components/RecipePickerDropdown'
 import { settingsApi } from '@/api/settings'
 import { configApi } from '@/api/config'
+import { searchApi } from '@/api/search'
 import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
@@ -35,9 +36,12 @@ import {
   buildContentStepInstruction,
   actionNeedsGeneration,
   formatNoteMeta,
+  formatWebSearchResults,
+  webSearchContinuation,
   PLAN_INSTRUCTIONS,
   VOICE_REPLY_INSTRUCTIONS,
-  WEB_SEARCH_INSTRUCTIONS,
+  NATIVE_WEB_SEARCH_INSTRUCTIONS,
+  WEB_SEARCH_ACTION_INSTRUCTIONS,
   defaultActionLabel,
   type Plan,
   type PlanAction,
@@ -123,8 +127,13 @@ function liveExtractText(buf: string): string {
 // How many per-document generation calls to run at once (see Phase 2 plan).
 const GEN_CONCURRENCY = 5
 
-// Max find_notes retrieval rounds per request (bounds an agentic search loop).
-const MAX_SEARCH_ROUNDS = 3
+// Max retrieval rounds per request — find_notes over the note library and web_search
+// over the web share one budget (bounds an agentic search loop, whichever it searches).
+const MAX_RETRIEVAL_ROUNDS = 4
+
+// Web searches run in a single round. Each is a live API call the user waits on, so a
+// plan asking for a dozen angles at once is trimmed to the first few.
+const MAX_WEB_SEARCHES_PER_ROUND = 3
 
 // Everything needed to generate and execute a plan for the current context, split by
 // prompt-cache stability: `instructions` + `referenceBlock` form the cacheable prefix,
@@ -393,12 +402,21 @@ export default function AIConversationPanel({
   // when unknown (no provider yet) so we never over-block; text-only backends like
   // DeepSeek set this false and the attach flow drops images before they're sent.
   const supportsImages = activeProvider?.supports_images ?? true
-  // Native web search is wired up only for the Anthropic provider path (ai.ts attaches the
-  // web_search_20250305 server tool there; the OpenAI/Ollama paths send no tools). Gate BOTH
-  // the tool and the prompt's mention of it on this: a provider told it has web_search but
-  // given no tool emits the tool call as raw text (<tool_calls><invoke name="web_search">…)
-  // instead of searching — the bug this guards against.
-  const supportsWebSearch = activeProvider?.provider_type === 'anthropic'
+  // How this provider searches the web — the two mechanisms are mutually exclusive:
+  //   'native' — Anthropic only: ai.ts attaches the web_search_20250305 server tool and
+  //              the search happens inside the model call.
+  //   'action' — everyone else (DeepSeek, OpenAI-compatible, Ollama): their APIs expose no
+  //              search tool, so the model asks for a search with a `web_search` plan
+  //              action and the app runs it (see the retrieval loop in handleSend).
+  //              Requires a configured search backend — Settings → AI → Assistant.
+  //   'none'   — no native tool and no backend configured.
+  // The prompt's promise of search and the mechanism behind it are gated together on this:
+  // a model told it can search but given nothing to search with either emits tool-call
+  // markup as raw text (<tool_calls><invoke name="web_search">…) or tells the user it has
+  // no web access — the two bugs this guards against.
+  const webSearchConfigured = useSettingsStore((s) => s.webSearchConfigured)
+  const webSearchMode: 'native' | 'action' | 'none' =
+    activeProvider?.provider_type === 'anthropic' ? 'native' : webSearchConfigured ? 'action' : 'none'
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const deepgramKeyConfigured = useSettingsStore((s) => s.deepgramKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)
@@ -1267,23 +1285,33 @@ export default function AIConversationPanel({
           setStreamingText(liveExtractText(streamBufRef.current))
         })
       }
+      // Put a status line in that same bubble while something other than the model is
+      // working (a web search between planning rounds). Any frame still queued from the
+      // last stream is cancelled first, or it would overwrite the status a moment later.
+      const showStatus = (text: string) => {
+        if (liveRafRef.current !== null) { cancelAnimationFrame(liveRafRef.current); liveRafRef.current = null }
+        streamBufRef.current = ''
+        setStreamingText(text)
+      }
       // Stream when the provider supports it (all three do); fall back to the blocking
       // call otherwise. Either way the returned string is fed to parsePlan unchanged —
       // the live bubble is cosmetic. `ctx`/`history` are read fresh each call because the
-      // find_notes loop reassigns them between rounds.
+      // retrieval loop reassigns them between rounds.
       const planOnce = async (): Promise<Plan> => {
         streamBufRef.current = ''
         setStreamingText('')
         // Compose the planner's system instructions from the static base plus two optional
-        // blocks: the web-search guidance (only when the active provider actually has the
-        // tool — see supportsWebSearch) and, in voice mode, the spoken-reply guidance. Both
-        // are appended only to THIS planning call; deferred note-body generation keeps the
-        // base instructions, so saved note content stays fully formatted Markdown and is
-        // never told about a tool it isn't given. Voice guidance stays last so its "every
-        // rule above is unchanged" wording still refers to everything before it.
+        // blocks: the web-search guidance for however this provider searches (see
+        // webSearchMode — native tool, app-run action, or nothing) and, in voice mode, the
+        // spoken-reply guidance. Both are appended only to THIS planning call; deferred
+        // note-body generation keeps the base instructions, so saved note content stays
+        // fully formatted Markdown and is never told about a capability it isn't given.
+        // Voice guidance stays last so its "every rule above is unchanged" wording still
+        // refers to everything before it.
         const planInstructions = [
           ctx.instructions,
-          ...(supportsWebSearch ? [WEB_SEARCH_INSTRUCTIONS] : []),
+          ...(webSearchMode === 'native' ? [NATIVE_WEB_SEARCH_INSTRUCTIONS] : []),
+          ...(webSearchMode === 'action' ? [WEB_SEARCH_ACTION_INSTRUCTIONS] : []),
           ...(voiceActiveRef.current ? [VOICE_REPLY_INSTRUCTIONS] : []),
         ].join('\n\n')
         const req = {
@@ -1293,9 +1321,9 @@ export default function AIConversationPanel({
           history,
           userRequest,
           attachments: ctx.attachments.length ? ctx.attachments : undefined,
-          // Only enable the native web-search tool where it's actually wired up; otherwise
-          // the prompt above never mentions it, so the model won't fake a tool call.
-          enableWebSearch: supportsWebSearch,
+          // Only enable the native tool where it's actually wired up; otherwise the prompt
+          // above never mentions it, so the model won't fake a tool call.
+          enableWebSearch: webSearchMode === 'native',
         }
         const raw = svc.streamConversation
           ? await svc.streamConversation(req, (t) => { streamBufRef.current += t; scheduleLive() }, abortRef.current?.signal)
@@ -1306,78 +1334,128 @@ export default function AIConversationPanel({
       let plan = await planOnce()
       setPendingFiles([])
 
-      // find_notes is a retrieval step: run the search(es), surface the hits in the list
-      // view, fold the found notes into the planning context, then re-plan so the model
-      // can act on them. Bounded so a looping model can't search forever.
-      let searchRounds = 0
-      while (searchRounds < MAX_SEARCH_ROUNDS && plan.actions.some((a) => a.type === 'find_notes')) {
-        searchRounds++
+      // Retrieval steps, both resolved here rather than by planExecutor: find_notes
+      // searches the note library, web_search searches the web (only in 'action' mode —
+      // Anthropic searches inside its own model call instead). Both work the same way:
+      // run the search(es), fold what came back into the conversation, then re-plan so
+      // the model can act on it. They share one bounded round budget so a looping model
+      // can't search forever, and a single round may carry both kinds.
+      let retrievalRounds = 0
+      const isRetrieval = (a: PlanAction) =>
+        a.type === 'find_notes' || (webSearchMode === 'action' && a.type === 'web_search')
+      while (retrievalRounds < MAX_RETRIEVAL_ROUNDS && plan.actions.some(isRetrieval)) {
+        retrievalRounds++
         const findActions = plan.actions.filter(
           (a): a is Extract<PlanAction, { type: 'find_notes' }> => a.type === 'find_notes',
         )
+        const webActions = (webSearchMode === 'action'
+          ? plan.actions.filter((a): a is Extract<PlanAction, { type: 'web_search' }> => a.type === 'web_search')
+          : []
+        ).slice(0, MAX_WEB_SEARCHES_PER_ROUND)
+        // One block per retrieval kind, joined into the single user turn below.
+        const summaries: string[] = []
 
-        // Search the library; dedupe hits across all find_notes actions in this round.
-        // Each action independently scopes by free-text query, folder, or both.
-        const seen = new Set<string>()
-        const foundListItems: NoteListItem[] = []
-        for (const a of findActions) {
-          try {
-            const res = await notesApi.list(findNotesParams(a, ctx))
-            for (const item of res.data) {
-              if (!seen.has(item.id)) { seen.add(item.id); foundListItems.push(item) }
+        if (findActions.length) {
+          // Search the library; dedupe hits across all find_notes actions in this round.
+          // Each action independently scopes by free-text query, folder, or both.
+          const seen = new Set<string>()
+          const foundListItems: NoteListItem[] = []
+          for (const a of findActions) {
+            try {
+              const res = await notesApi.list(findNotesParams(a, ctx))
+              for (const item of res.data) {
+                if (!seen.has(item.id)) { seen.add(item.id); foundListItems.push(item) }
+              }
+            } catch { /* skip a failed search */ }
+          }
+
+          // Reflect the search in the list view (Search Results header + populated
+          // results). The label is never empty: an explicit action.description wins,
+          // else describeFindNotes always synthesizes something (query, folder scope,
+          // or the literal "notes" fallback) — this matters because the list view uses
+          // an empty search box to reset out of its search-results display.
+          const label = findActions.map((a) => a.description || describeFindNotes(a, ctx)).join(', ') || 'Search results'
+          onSearchResults?.(label, foundListItems)
+
+          // Fetch full bodies and fold them into the context so the model can consolidate/edit them.
+          const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
+          const foundTargets: ContextNote[] = foundNotes
+            .filter((n): n is typeof n & { id: string } => Boolean(n.id))
+            .map((n) => ({ id: n.id, title: n.title || 'Untitled', createdAt: n.createdAt, modifiedAt: n.modifiedAt }))
+          const foundRendered = foundNotes.map((n) =>
+            `## ${n.title || 'Untitled'} [id: ${n.id}]${formatNoteMeta(n.createdAt, n.modifiedAt)}\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
+
+          const mergedTargets: ContextNote[] = [...ctx.targetNotes]
+          const mergedIds = new Set(mergedTargets.map((n) => n.id))
+          for (const t of foundTargets) if (!mergedIds.has(t.id)) { mergedIds.add(t.id); mergedTargets.push(t) }
+          const mergedRefText = [ctx.referenceContextText, ...foundRendered].filter(Boolean).join('\n\n---\n\n')
+          const mergedLabelMap = new Map(ctx.labelMap)
+          mergedTargets.forEach((n) => mergedLabelMap.set(n.id, n.title || 'Untitled'))
+          ctx = {
+            ...ctx,
+            referenceContextText: mergedRefText,
+            referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, recipes: ctx.recipes, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
+            targetNotes: mergedTargets,
+            labelMap: mergedLabelMap,
+          }
+
+          // Record the search as a turn so the model sees its own query and the results.
+          const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
+          const scopeDescriptions = findActions.map((a) => describeFindNotes(a, ctx))
+          summaries.push(foundListItems.length
+            ? `Search results for ${scopeDescriptions.join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
+            : `Search for ${scopeDescriptions.join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`)
+        }
+
+        if (webActions.length) {
+          // Run the searches in sequence and hand the model the hits verbatim. A search
+          // that fails is reported as a failed search rather than dropped: told nothing,
+          // the model answers from memory as though it had searched.
+          const blocks: string[] = []
+          let anySucceeded = false
+          for (const a of webActions) {
+            showStatus(`_Searching the web for “${a.query}”…_`)
+            try {
+              const res = await searchApi.web(a.query, a.maxResults, abortRef.current?.signal)
+              blocks.push(formatWebSearchResults(res))
+              anySucceeded = true
+            } catch (e) {
+              // Stop mid-search: hand the caller the same AbortError a stopped
+              // completion throws, so it takes the soft-cancel path rather than
+              // reporting a failed search and planning another round.
+              if (abortRef.current?.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+              blocks.push(`Web search for “${a.query}” failed: ${errorMessage(e, 'the search could not be run')}`)
             }
-          } catch { /* skip a failed search */ }
+          }
+          summaries.push([...blocks, webSearchContinuation(anySucceeded)].join('\n\n'))
         }
 
-        // Reflect the search in the list view (Search Results header + populated
-        // results). The label is never empty: an explicit action.description wins,
-        // else describeFindNotes always synthesizes something (query, folder scope,
-        // or the literal "notes" fallback) — this matters because the list view uses
-        // an empty search box to reset out of its search-results display.
-        const label = findActions.map((a) => a.description || describeFindNotes(a, ctx)).join(', ') || 'Search results'
-        onSearchResults?.(label, foundListItems)
-
-        // Fetch full bodies and fold them into the context so the model can consolidate/edit them.
-        const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
-        const foundTargets: ContextNote[] = foundNotes
-          .filter((n): n is typeof n & { id: string } => Boolean(n.id))
-          .map((n) => ({ id: n.id, title: n.title || 'Untitled', createdAt: n.createdAt, modifiedAt: n.modifiedAt }))
-        const foundRendered = foundNotes.map((n) =>
-          `## ${n.title || 'Untitled'} [id: ${n.id}]${formatNoteMeta(n.createdAt, n.modifiedAt)}\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
-
-        const mergedTargets: ContextNote[] = [...ctx.targetNotes]
-        const mergedIds = new Set(mergedTargets.map((n) => n.id))
-        for (const t of foundTargets) if (!mergedIds.has(t.id)) { mergedIds.add(t.id); mergedTargets.push(t) }
-        const mergedRefText = [ctx.referenceContextText, ...foundRendered].filter(Boolean).join('\n\n---\n\n')
-        const mergedLabelMap = new Map(ctx.labelMap)
-        mergedTargets.forEach((n) => mergedLabelMap.set(n.id, n.title || 'Untitled'))
-        ctx = {
-          ...ctx,
-          referenceContextText: mergedRefText,
-          referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, recipes: ctx.recipes, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
-          targetNotes: mergedTargets,
-          labelMap: mergedLabelMap,
-        }
-
-        // Record the search as a turn so the model sees its own query and the results.
-        const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
-        const scopeDescriptions = findActions.map((a) => describeFindNotes(a, ctx))
-        const summary = foundListItems.length
-          ? `Search results for ${scopeDescriptions.join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
-          : `Search for ${scopeDescriptions.join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`
         history = [
           ...history,
-          { role: 'assistant', content: JSON.stringify({ actions: findActions }) },
-          { role: 'user', content: summary },
+          { role: 'assistant', content: JSON.stringify({ actions: [...findActions, ...webActions] }) },
+          { role: 'user', content: summaries.join('\n\n---\n\n') },
         ]
 
         plan = await planOnce()
       }
 
-      // Drop any leftover find_notes (retrieval-only; never executed by planExecutor).
-      if (plan.actions.some((a) => a.type === 'find_notes')) {
-        plan = { actions: plan.actions.filter((a) => a.type !== 'find_notes') }
-        if (plan.actions.length === 0) plan = { actions: [{ type: 'respond', text: '_(No matching notes found.)_' }] }
+      // Drop any leftover retrieval actions — they're resolved above, never executed.
+      // A web_search also lands here when no backend is configured (the loop only runs
+      // them in 'action' mode), so this doubles as the guard for a model that asks for a
+      // search it was never offered.
+      const leftoverRetrieval = plan.actions.filter((a) => a.type === 'find_notes' || a.type === 'web_search')
+      if (leftoverRetrieval.length) {
+        plan = { actions: plan.actions.filter((a) => a.type !== 'find_notes' && a.type !== 'web_search') }
+        if (plan.actions.length === 0) {
+          plan = {
+            actions: [{
+              type: 'respond',
+              text: leftoverRetrieval.every((a) => a.type === 'find_notes')
+                ? '_(No matching notes found.)_'
+                : '_(The search didn’t turn up an answer — try rephrasing, or check Settings → AI → Assistant for web search.)_',
+            }],
+          }
+        }
       }
 
       const onlyRespond = plan.actions.every((a) => a.type === 'respond')

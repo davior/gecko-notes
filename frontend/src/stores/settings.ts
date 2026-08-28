@@ -23,6 +23,10 @@ interface SettingsState {
   // Whether a Substack publication URL + session cookie are configured (Publishing
   // tab); gates the note Export menu's "Publish to Substack" item.
   substackConfigured: boolean
+  // Whether the assistant's web search backend is ready to run (Assistant tab). Gates
+  // the `web_search` plan action offered to providers with no native search tool —
+  // see webSearchMode in AIConversationPanel.
+  webSearchConfigured: boolean
   ttsModel: string
   ttsModels: TTSModel[]
   voice: string
@@ -47,6 +51,9 @@ interface SettingsState {
   // Per-user opt-in for Flux voice mode.
   voiceModeEnabled: boolean
   updateSpeechConfig: (config: SpeechConfigUpdate) => Promise<void>
+  // Kept in sync by the Web Search settings panel so the assistant picks up a newly
+  // configured (or cleared) backend without a page reload.
+  setWebSearchConfigured: (configured: boolean) => void
   loadSettings: () => Promise<void>
   updateAppSettings: (settings: Record<string, unknown>) => Promise<void>
   loadAIProviders: () => Promise<void>
@@ -152,6 +159,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sharedThemeId: null,
   falKeyConfigured: false,
   substackConfigured: false,
+  webSearchConfigured: false,
   ttsModel: DEFAULT_TTS_MODEL,
   ttsModels: [],
   voice: DEFAULT_TTS_VOICE,
@@ -237,6 +245,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch {
       // no substack endpoint (e.g. older backend) — substackConfigured stays false.
     }
+    // The assistant's web search backend, likewise.
+    try {
+      const webSearch = await settingsApi.getWebSearchSettings()
+      set({ webSearchConfigured: webSearch.configured })
+    } catch {
+      // no web-search endpoint — webSearchConfigured stays false, so the assistant
+      // simply isn't told it can search.
+    }
+  },
+
+  setWebSearchConfigured(configured) {
+    set({ webSearchConfigured: configured })
   },
 
   async updateAppSettings(settings) {
@@ -450,6 +470,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       sharedThemeId: null,
       falKeyConfigured: false,
       substackConfigured: false,
+      webSearchConfigured: false,
       ttsModel: DEFAULT_TTS_MODEL,
       voice: DEFAULT_TTS_VOICE,
       ttsModels: [],

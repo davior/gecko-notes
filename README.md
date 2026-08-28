@@ -20,7 +20,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 ### AI assistant
 - Conversational AI assistant (Anthropic, OpenAI, DeepSeek, Ollama, or any OpenAI-compatible endpoint)
 - **Agentic note plans** — the assistant turns requests into executable, multi-step plans that edit the note (insert/edit sections, add references, move notes) with per-step checkboxes
-- **Web search** via Anthropic's built-in tool
+- **Web search for every model** — Claude models use Anthropic's built-in tool; DeepSeek, OpenAI, Ollama and custom endpoints search through the app itself (DuckDuckGo, Brave, Tavily or your own SearXNG) and cite what they find
 - Context scope controls (current note, selection, attachments) with prompt-cache freezing to reduce token cost
 - File and PDF attachments as context
 - Per-note AI session history
@@ -82,7 +82,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 | Frontend | React 18 + Vite + TypeScript + Zustand + Tailwind CSS v3 |
 | Editor | BlockNote (`@blocknote/react`) |
 | Backend | FastAPI + SQLModel (SQLite) |
-| AI | Anthropic / OpenAI / DeepSeek / Ollama / OpenAI-compatible; web search via Anthropic |
+| AI | Anthropic / OpenAI / DeepSeek / Ollama / OpenAI-compatible; web search via Anthropic, DuckDuckGo, Brave, Tavily or SearXNG |
 | Voice & Images | fal.ai (TTS + STT + image generation) |
 | Container | Docker Compose + Nginx |
 
@@ -209,7 +209,7 @@ Go to **Settings → AI Providers** to configure an AI provider:
 
 | Provider | Notes |
 |----------|-------|
-| Anthropic | Requires an API key from console.anthropic.com. Required for the AI assistant's web search tool. |
+| Anthropic | Requires an API key from console.anthropic.com. Searches the web using Anthropic's own built-in tool. |
 | OpenAI | Requires an API key from platform.openai.com |
 | DeepSeek | Requires an API key from platform.deepseek.com. Models: `deepseek-chat` or `deepseek-reasoner` |
 | Ollama | Point to your local Ollama instance (e.g. `http://localhost:11434`) |
@@ -218,6 +218,25 @@ Go to **Settings → AI Providers** to configure an AI provider:
 Tune assistant behavior under **Settings → AI Settings** (system prompts, temperature, prefill) and review token usage under **Settings → Usage**.
 
 API keys are stored encrypted in the local SQLite database — never transmitted to any third party except the AI provider you configure.
+
+## Web Search
+
+The assistant can look things up online — current events, recent facts, research — and
+cite its sources. How it searches depends on the model:
+
+- **Claude models** search inside the model call, using Anthropic's own built-in search tool. Nothing to configure.
+- **Every other model** (DeepSeek, OpenAI, Ollama, custom endpoints) has no search tool of its own, so the *app* runs the search and hands the results back to the model. Pick the backend under **Settings → AI Services → Assistant → Web Search**:
+
+| Backend | Notes |
+|---------|-------|
+| DuckDuckGo | **Default. No account or key.** Scrapes DuckDuckGo's no-JS endpoint, which throttles automated traffic — a busy or shared-IP server may see searches refused, and then it's worth moving to one of the others. |
+| Brave | A real search API with a free tier. Key from [brave.com/search/api](https://brave.com/search/api/). |
+| Tavily | Built for LLMs: each hit carries an extracted passage rather than a one-line snippet, which suits research. Key from [tavily.com](https://tavily.com). |
+| SearXNG | Queries your own instance — give it the `https://` URL. The instance must allow the JSON API (`json` under `search.formats` in its `settings.yml`). |
+
+The key is stored encrypted and belongs to the selected backend; **Test search** runs a
+throwaway query so a wrong key or unreachable instance shows up immediately. Searches are
+counted under **Settings → AI Services → Usage** alongside tokens, speech and images.
 
 ## Speech (Read-Aloud & Dictation)
 

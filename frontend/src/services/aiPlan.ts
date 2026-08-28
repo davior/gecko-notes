@@ -4,6 +4,7 @@
 // degrade gracefully to a plain "respond" action when the output isn't valid JSON.
 
 import { detectMermaidKind, DIAGRAM_KIND_LABELS } from '@/utils/diagram'
+import type { WebSearchResponse } from '@/api/search'
 
 export interface ContextNote { id: string; title: string; createdAt?: string; modifiedAt?: string }
 export interface ContextFolder { id: string; name: string }
@@ -26,6 +27,13 @@ export type PlanAction =
   // folders — ignored when `folderId` is absent. At least one of `query`/`folderId`
   // must be set (enforced by validateAction).
   | { type: 'find_notes'; query?: string; folderId?: string | null; recursive?: boolean; description?: string }
+  // Retrieval step against the WEB rather than the note library, for providers with no
+  // search tool of their own (DeepSeek, OpenAI-compatible, Ollama). Resolved inside the
+  // panel exactly like find_notes — the app runs the search and feeds the hits back for
+  // a follow-up planning round — so it is never handed to planExecutor. Anthropic
+  // searches inside its own model call instead and is never offered this action; see
+  // WEB_SEARCH_ACTION_INSTRUCTIONS.
+  | { type: 'web_search'; query: string; maxResults?: number; description?: string }
   | { type: 'create_note'; title: string; content: string; spec?: string; ref?: string; description?: string }
   | { type: 'edit_note'; noteId: string; mode: 'replace' | 'amend'; content: string; spec?: string; description?: string }
   | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
@@ -59,6 +67,10 @@ export interface Plan { actions: PlanAction[] }
 
 // Defensive ceiling so a runaway model can't queue thousands of mutations.
 export const MAX_PLAN_ACTIONS = 50
+
+// Hits a single web_search action may ask for. The server clamps to the same ceiling;
+// this stops a runaway "maxResults": 500 from ever leaving the browser.
+export const MAX_WEB_SEARCH_RESULTS = 10
 
 interface BuildReferenceOpts {
   // Bodies of the *other* in-context notes (folder/children scopes). The currently
@@ -149,12 +161,30 @@ Rules:
 // Extra guidance appended to the instructions ONLY for providers whose API actually wires
 // up a native web_search tool — currently just Anthropic (see AnthropicProvider in ai.ts,
 // which attaches the web_search_20250305 server tool). It is deliberately kept OUT of the
-// base PLAN_INSTRUCTIONS: a provider that is TOLD it has a web_search tool but is given no
-// such tool "calls" it the only way it can — by emitting Claude's text tool-call markup
-// (<tool_calls><invoke name="web_search"><parameter …>…) as ordinary output, which then
-// shows up verbatim in the chat instead of running a search. So the promise of the tool and
-// the tool itself are gated together, on the same provider check (see supportsWebSearch).
-export const WEB_SEARCH_INSTRUCTIONS = `You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfil the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else, exactly as specified above.`
+// base PLAN_INSTRUCTIONS: a provider that is TOLD it has a native web_search tool but is
+// given no such tool "calls" it the only way it can — by emitting Claude's text tool-call
+// markup (<tool_calls><invoke name="web_search"><parameter …>…) as ordinary output, which
+// then shows up verbatim in the chat instead of running a search. So the promise of the
+// tool and the tool itself are gated together (see webSearchMode in AIConversationPanel).
+export const NATIVE_WEB_SEARCH_INSTRUCTIONS = `You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfil the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else, exactly as specified above.`
+
+// The other half of that gate: guidance for every provider WITHOUT a native search tool
+// (DeepSeek, OpenAI-compatible endpoints, Ollama). They get web search as an extra PLAN
+// ACTION — the app runs the search and feeds the hits back — which needs no tool support
+// from the provider at all, only the ability to emit one more kind of JSON object. Two
+// failure modes this text is written against: a model that answers "I have no web access"
+// (it does now — the app searches for it), and a model that reaches for tool-call markup
+// out of habit (there is no tool to call; the action IS the search).
+// Appended only when a search backend is configured — promising search the app can't run
+// would recreate the first failure mode with extra steps.
+export const WEB_SEARCH_ACTION_INSTRUCTIONS = `WEB SEARCH — you CAN search the web. Do not say you have no web access, and never emit a tool call, function call, or XML markup of any kind (there is no tool to call). You search by returning one more action type, in the same JSON plan format as every action above:
+- web_search:        { "type":"web_search", "query":"<search terms>", "maxResults":5 }
+Rules:
+- Use it whenever the request needs information you don't already have: current events, recent facts, prices, product or API documentation, anything past your training cutoff, or research the user explicitly asks for. Do NOT use it for questions about the user's own notes (that's find_notes) or things you already know.
+- When you search, return a plan whose ONLY actions are web_search — one, or up to 3 covering different angles of the same question. Write each "query" the way you would type it into a search engine (keywords, not a sentence), and make each one different from the others.
+- The results — title, URL and a short snippet per hit — are then added to the conversation and you are asked to continue. At that point either return a "respond" action answering from what you found, or emit note actions that use it. You may search again with better queries if the first round was unhelpful, but rounds are limited: answer with what you have rather than searching indefinitely.
+- CITE what you used: link sources inline as Markdown, e.g. [Title](https://example.com/page). Never invent a URL — only ever link one that appeared in the results.
+- Snippets are short, and can be outdated or wrong. Say what the results actually support, prefer facts more than one source agrees on, and say plainly when the results don't answer the question rather than filling the gap from memory.`
 
 // Extra guidance appended to PLAN_INSTRUCTIONS only when the request comes from voice
 // mode. The user is speaking and will HEAR the "respond" text via text-to-speech, so
@@ -253,6 +283,16 @@ function validateAction(raw: unknown): PlanAction | null {
         ...(a.recursive === true ? { recursive: true } : {}),
         ...d,
       }
+    }
+    case 'web_search': {
+      const query = asString(a.query)?.trim()
+      if (!query) return null
+      // "maxResults":"5" from a model that quoted the number is still a number.
+      const asked = typeof a.maxResults === 'number' ? a.maxResults : Number(a.maxResults)
+      const maxResults = Number.isFinite(asked) && asked > 0
+        ? Math.min(Math.round(asked), MAX_WEB_SEARCH_RESULTS)
+        : undefined
+      return { type: 'web_search', query, ...(maxResults ? { maxResults } : {}), ...d }
     }
     case 'create_note': {
       const title = asString(a.title)
@@ -651,6 +691,7 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
       }
       return `Search notes${parts.length ? ' for ' + parts.join(' ') : ''}`
     }
+    case 'web_search': return `Search the web for “${truncate(action.query, 60)}”`
     case 'create_note': return `Create note “${action.title || 'Untitled'}”`
     case 'edit_note': return `${action.mode === 'amend' ? 'Amend' : 'Replace'} note “${name(action.noteId)}”`
     case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`
@@ -672,6 +713,34 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'update_recipe': return `Update recipe “${name(action.recipeId)}”`
     case 'delete_recipe': return `Delete recipe “${name(action.recipeId)}”`
   }
+}
+
+// ─── Web search results ───────────────────────────────────────────────────────
+
+// Render one search's hits as the conversation text the model reads on the next round.
+// Numbered so it can refer to a specific hit, with each URL written out in full: the
+// model is told to cite only links that appeared in the results, so those links have to
+// be in front of it verbatim rather than paraphrased.
+export function formatWebSearchResults(response: WebSearchResponse): string {
+  if (!response.results.length) {
+    return `Web search for “${response.query}” returned no results.`
+  }
+  const hits = response.results.map((r, i) => {
+    const published = r.published ? ` (published ${r.published})` : ''
+    const snippet = r.snippet ? `\n   ${r.snippet}` : ''
+    return `${i + 1}. ${r.title}${published}\n   ${r.url}${snippet}`
+  })
+  return `Web search results for “${response.query}” (via ${response.provider_label}):\n${hits.join('\n')}`
+}
+
+// The turn that follows the rendered results: what the model should do with them.
+// `anySucceeded` is false when every search in the round errored (no key, a throttled
+// backend, a dead SearXNG instance) — then the model is told to say so, because the
+// alternative is a confident answer invented to fill the gap.
+export function webSearchContinuation(anySucceeded: boolean): string {
+  return anySucceeded
+    ? 'Continue with the original request using these results: reply with a "respond" action (citing the sources you used as Markdown links), or emit note actions that use what you found. Only search again if these results genuinely do not answer the question.'
+    : 'The search did not run, so you have no results to work from. Tell the user plainly that the web search failed and repeat the reason above — do not answer from memory as though you had searched, and do not retry the same search.'
 }
 
 // ─── Two-phase content generation ─────────────────────────────────────────────
