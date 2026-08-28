@@ -219,6 +219,7 @@ def create_ai_provider(payload: AIProviderCreate, request: Request, session: Ses
         model=payload.model,
         max_tokens=payload.max_tokens,
         supports_images=payload.supports_images,
+        use_anthropic_api=payload.use_anthropic_api,
         extra_params=json.dumps(payload.extra_params) if payload.extra_params else None,
         enabled=payload.enabled,
         is_active=payload.is_active,
@@ -247,7 +248,14 @@ def update_ai_provider(
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
 
-    for field in ["name", "provider_type", "base_url", "model", "max_tokens", "supports_images", "enabled", "is_active"]:
+    # Validate a new base_url BEFORE storing it. This used to ride inside the
+    # `if payload.api_key:` block below, so changing only the URL skipped the check —
+    # and the stored URL is what the proxies POST to (both the OpenAI-compatible one
+    # and, for an Anthropic-compatible gateway, the Messages one).
+    if payload.base_url and (payload.provider_type or provider.provider_type) in ("openai", "custom"):
+        _require_safe_external_url(payload.base_url)
+
+    for field in ["name", "provider_type", "base_url", "model", "max_tokens", "supports_images", "use_anthropic_api", "enabled", "is_active"]:
         val = getattr(payload, field, None)
         if val is not None:
             setattr(provider, field, val)
@@ -255,8 +263,6 @@ def update_ai_provider(
     if payload.extra_params is not None:
         provider.extra_params = json.dumps(payload.extra_params) if payload.extra_params else None
     if payload.api_key:
-        if payload.provider_type in ("openai", "custom") and payload.base_url:
-            _require_safe_external_url(payload.base_url)
         provider.api_key = encrypt_api_key(payload.api_key)
 
     if payload.is_active:
@@ -321,16 +327,33 @@ async def test_ai_provider(
         api_key = decrypt_api_key(provider.api_key)
         base_url = base_url or provider.base_url
 
+    # A provider that speaks the Anthropic protocol is tested against THAT endpoint
+    # whatever its type — otherwise a DeepSeek provider on api.deepseek.com/anthropic
+    # would be tested against the OpenAI-compatible endpoint it no longer uses, and
+    # report success (or failure) for the wrong URL entirely.
+    speaks_anthropic = payload.provider_type == "anthropic" or payload.use_anthropic_api
+
     try:
-        if payload.provider_type == "anthropic":
+        if speaks_anthropic:
+            probe = AIProvider(
+                id="probe",
+                name="probe",
+                provider_type=payload.provider_type,
+                api_key="",
+                base_url=base_url,
+                model=payload.model,
+                use_anthropic_api=payload.use_anthropic_api,
+            )
+            headers = _anthropic_headers(probe, uses_web_search=False)
+            # The probe carries no stored key, so put the one under test in by hand
+            # (both header names, for the same reason _anthropic_headers sends both).
+            headers["x-api-key"] = api_key
+            if "Authorization" in headers:
+                headers["Authorization"] = f"Bearer {api_key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
+                    f"{_anthropic_base(probe)}/v1/messages",
+                    headers=headers,
                     json={
                         "model": payload.model,
                         "max_tokens": 10,
@@ -680,6 +703,84 @@ async def _stream_anthropic_message(
     return message
 
 
+# ─── The Anthropic Messages protocol ─────────────────────────────────────────
+#
+# The Messages protocol is no longer only Anthropic's. DeepSeek publishes an
+# Anthropic-compatible endpoint at api.deepseek.com/anthropic, and — this is the
+# point of it here — that endpoint runs the same SERVER-SIDE web_search tool Claude
+# does. So a DeepSeek provider pointed at it searches the web natively, exactly the
+# way a Claude one does: no third-party search key, no per-search fee, nothing for
+# the app to run. Its OpenAI-compatible endpoint (see `_openai_compat_base`) has no
+# such tool, which is why DeepSeek could not search before.
+#
+# A provider opts in per row with `use_anthropic_api`; `anthropic` itself is always
+# on this path. Everything downstream — the proxies, the frontend's AnthropicProvider,
+# the assistant's native web-search mode — keys off that, not off the vendor name.
+
+_ANTHROPIC_BASE = "https://api.anthropic.com"
+_DEEPSEEK_ANTHROPIC_BASE = "https://api.deepseek.com/anthropic"
+
+
+# Types that may be pointed at an Anthropic-compatible endpoint instead of their own.
+# `ollama` is deliberately excluded: it speaks only its own protocol, and its base_url is
+# allowed to be a private address (the one place the app permits that), so honouring the
+# flag there would aim the Messages proxy at an internal host.
+_ANTHROPIC_CAPABLE_TYPES = ("deepseek", "custom")
+
+
+def _speaks_anthropic(provider: AIProvider) -> bool:
+    """Whether this provider is addressed over the Anthropic Messages protocol."""
+    if provider.provider_type == "anthropic":
+        return True
+    return bool(provider.use_anthropic_api) and provider.provider_type in _ANTHROPIC_CAPABLE_TYPES
+
+
+def _anthropic_base(provider: AIProvider) -> str:
+    """Base URL for a provider's Messages endpoint.
+
+    Anthropic's own is fixed, and so is DeepSeek's — its stored `base_url` describes
+    the OpenAI-compatible endpoint, so it is deliberately ignored here (the same
+    reasoning as `_openai_compat_base`: a fixed managed endpoint spares the user a
+    field and stops a crafted base_url redirecting the proxy). Any other provider
+    opting in supplies its own gateway URL, already SSRF-checked when it was saved.
+    """
+    if provider.provider_type == "anthropic":
+        return _ANTHROPIC_BASE
+    if provider.provider_type == "deepseek":
+        return _DEEPSEEK_ANTHROPIC_BASE
+    return (provider.base_url or _ANTHROPIC_BASE).rstrip("/")
+
+
+def _anthropic_headers(provider: AIProvider, *, uses_web_search: bool) -> Dict[str, str]:
+    """Auth and protocol headers for one Messages request.
+
+    Beta flags go only to Anthropic: they name Anthropic-internal features, and a
+    gateway that doesn't recognise one could reject the whole request over a feature
+    it was never asked for. Compatible gateways get BOTH auth headers because they
+    disagree about which to read — DeepSeek documents `x-api-key`, while Claude Code's
+    own `ANTHROPIC_AUTH_TOKEN` path sends a bearer token — and an unread header is
+    simply ignored.
+    """
+    key = decrypt_api_key(provider.api_key)
+    headers = {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    if provider.provider_type == "anthropic":
+        beta_flags = "pdfs-2024-09-25"
+        if uses_web_search:
+            beta_flags += ",web-search-2025-03-05"
+        headers["anthropic-beta"] = beta_flags
+    else:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _requests_web_search(tools: Optional[List[Dict[str, Any]]]) -> bool:
+    return bool(tools) and any(t.get("type", "").startswith("web_search") for t in tools)
+
+
 class AnthropicProxyRequest(BaseModel):
     provider_id: str
     model: str
@@ -696,8 +797,8 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
-    if provider.provider_type != "anthropic":
-        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})
+    if not _speaks_anthropic(provider):
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider does not use the Anthropic API"})
 
     messages = list(payload.messages)
     if payload.prefill:
@@ -718,13 +819,6 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     # builders to preserve the prompt-cache breakpoints.
     body.update(parse_extra_params(provider.extra_params))
 
-    uses_web_search = payload.tools and any(
-        t.get("type", "").startswith("web_search") for t in payload.tools
-    )
-    beta_flags = "pdfs-2024-09-25"
-    if uses_web_search:
-        beta_flags += ",web-search-2025-03-05"
-
     # Stream the completion rather than blocking on one big POST: a large note plus
     # web-search latency easily exceeds a fixed total timeout, and a non-streaming
     # request returns nothing until it's fully generated, so it fails with a
@@ -732,13 +826,8 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
     # timeout only bounds the gap between events. We reassemble the final message
     # so the response shape is unchanged for the caller.
     data = await _stream_anthropic_message(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": decrypt_api_key(provider.api_key),
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": beta_flags,
-            "content-type": "application/json",
-        },
+        f"{_anthropic_base(provider)}/v1/messages",
+        headers=_anthropic_headers(provider, uses_web_search=_requests_web_search(payload.tools)),
         json_body=body,
         read_timeout=120.0,
     )
@@ -755,10 +844,12 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
         total = inp + out + cache_read + cache_write
         if total:
             # Cache reads/writes are billable input; fold them into the input side for costing.
-            _record_ai_usage(session, user_id, "anthropic", payload.model, inp + cache_read + cache_write, out)
+            # Attributed to the provider's own type, not the protocol it speaks — a DeepSeek
+            # provider on the Anthropic endpoint is still DeepSeek spend.
+            _record_ai_usage(session, user_id, provider.provider_type, payload.model, inp + cache_read + cache_write, out)
         logger.info(
-            "anthropic usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
-            payload.model, inp, out, cache_read, cache_write,
+            "%s (anthropic protocol) usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
+            provider.provider_type, payload.model, inp, out, cache_read, cache_write,
         )
     except Exception:
         pass
@@ -923,8 +1014,11 @@ def _error_frame(exc: Exception) -> str:
     return _sse("error", data)
 
 
-def _record_anthropic_usage(user_id: str, model: str, data: Dict[str, Any]) -> None:
-    """Mirror the usage accounting in proxy_anthropic, using a fresh Session."""
+def _record_anthropic_usage(user_id: str, provider_type: str, model: str, data: Dict[str, Any]) -> None:
+    """Mirror the usage accounting in proxy_anthropic, using a fresh Session.
+
+    `provider_type` is the provider's own type rather than the protocol it speaks, so a
+    DeepSeek provider on the Anthropic endpoint is costed and charted as DeepSeek."""
     try:
         usage = data.get("usage") or {}
         inp = int(usage.get("input_tokens", 0) or 0)
@@ -934,10 +1028,10 @@ def _record_anthropic_usage(user_id: str, model: str, data: Dict[str, Any]) -> N
         total = inp + out + cache_read + cache_write
         if total:
             with Session(engine) as s:
-                _record_ai_usage(s, user_id, "anthropic", model, inp + cache_read + cache_write, out)
+                _record_ai_usage(s, user_id, provider_type, model, inp + cache_read + cache_write, out)
         logger.info(
-            "anthropic stream usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
-            model, inp, out, cache_read, cache_write,
+            "%s (anthropic protocol) stream usage model=%s input=%d output=%d cache_read=%d cache_write=%d",
+            provider_type, model, inp, out, cache_read, cache_write,
         )
     except Exception:
         pass
@@ -949,8 +1043,8 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
-    if provider.provider_type != "anthropic":
-        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Anthropic type"})
+    if not _speaks_anthropic(provider):
+        raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider does not use the Anthropic API"})
 
     # Body construction is identical to proxy_anthropic — keeping it byte-for-byte
     # matched preserves the prompt-cache breakpoints in the messages/system blocks.
@@ -973,25 +1067,15 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
     # builders to preserve the prompt-cache breakpoints.
     body.update(parse_extra_params(provider.extra_params))
 
-    uses_web_search = payload.tools and any(
-        t.get("type", "").startswith("web_search") for t in payload.tools
-    )
-    beta_flags = "pdfs-2024-09-25"
-    if uses_web_search:
-        beta_flags += ",web-search-2025-03-05"
-
-    headers = {
-        "x-api-key": decrypt_api_key(provider.api_key),
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": beta_flags,
-        "content-type": "application/json",
-    }
+    headers = _anthropic_headers(provider, uses_web_search=_requests_web_search(payload.tools))
+    url = f"{_anthropic_base(provider)}/v1/messages"
     model = payload.model
+    provider_type = provider.provider_type  # captured before the request session closes
 
     async def gen():
         try:
             async for kind, val in _iter_anthropic_events(
-                "https://api.anthropic.com/v1/messages",
+                url,
                 headers=headers,
                 json_body=body,
                 read_timeout=120.0,
@@ -999,7 +1083,7 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
                 if kind == "delta":
                     yield _sse("delta", {"text": val})
                 else:
-                    _record_anthropic_usage(user_id, model, val)
+                    _record_anthropic_usage(user_id, provider_type, model, val)
                     yield _sse("final", val)
         except Exception as e:  # surfaced to the client as an error frame
             if not isinstance(e, HTTPException):

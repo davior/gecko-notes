@@ -3,13 +3,16 @@ import { Eye, EyeOff, Globe } from 'lucide-react'
 import { settingsApi, type WebSearchSettings as WebSearch } from '@/api/settings'
 import { useSettingsStore } from '@/stores/settings'
 
-// Which backend the AI assistant searches the web with.
+// Which backend the AI assistant searches the web with — the FALLBACK for providers
+// that can't search on their own.
 //
-// Anthropic models search inside the model call using Anthropic's own server-side
-// tool and never touch this. No other provider has such a tool — DeepSeek, OpenAI,
-// Ollama and custom endpoints would otherwise just tell the user they have no web
-// access — so for those the app runs the search itself against the backend chosen
-// here and hands the hits back to the model.
+// A provider on the Anthropic Messages protocol runs the search itself, server-side,
+// and never touches this: Claude, and equally a DeepSeek provider pointed at
+// api.deepseek.com/anthropic (tick "Use the Anthropic-compatible API" on it under
+// Providers). That route is always the better one — no second key, no per-search fee.
+// This panel exists for what's left: Ollama, OpenAI-compatible endpoints, and a
+// DeepSeek provider still on the OpenAI-compatible endpoint. Without it those models
+// simply tell the user they have no web access.
 //
 // One API key is stored, and it belongs to whichever backend is selected: switching
 // backends means entering that backend's own key. A wrong key isn't silent — "Test
@@ -92,9 +95,11 @@ export default function WebSearchSettings() {
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
         Lets the assistant look things up online — current events, recent facts, research —
-        and cite what it found. Claude models search using Anthropic&rsquo;s own built-in tool;
-        every other model (DeepSeek, OpenAI, Ollama, custom endpoints) has no search tool of its
-        own, so the app runs the search here and hands the results back to the model.
+        and cite what it found. Models that can search <span className="font-medium">themselves</span> do:
+        Claude, and DeepSeek when its provider is set to use the Anthropic-compatible API
+        (tick that box under <span className="font-medium">Providers</span> — it needs no key or
+        backend here, and costs nothing per search). This is the fallback for the rest —
+        Ollama and OpenAI-compatible endpoints, which have no search tool at all.
       </p>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
