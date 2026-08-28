@@ -1380,6 +1380,14 @@ _TTS_MAX_CHARS = 2000
 # Cap the downloaded audio so a hostile/broken upstream can't exhaust memory.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+# Floor on a response we are willing to call audio. An MP3 of a single spoken
+# word runs to several KB, so anything under this is an empty body or a short
+# error payload returned with a 2xx — which, passed on as audio, reaches ffmpeg
+# as an undecodable file and fails a whole video render with a message about
+# pixel formats. Catching it here keeps the error legible and, because both
+# provider helpers check before returning, keeps it out of the disk cache.
+_MIN_AUDIO_BYTES = 256
+
 
 def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
     """Per-user speech config with defaults. Returns tts_model and custom_tts_models."""
@@ -1679,7 +1687,13 @@ def _tts_cache_get(key: str) -> Optional[bytes]:
     try:
         path = _TTS_CACHE_DIR / f"{key}.mp3"
         if path.is_file():
-            return path.read_bytes()
+            data = path.read_bytes()
+            # Too small to be audio — an empty or error body cached before the
+            # providers checked for that. Report a miss so the entry is
+            # re-fetched and overwritten, rather than serving the same
+            # undecodable bytes to every future render of the same note.
+            if len(data) >= _MIN_AUDIO_BYTES:
+                return data
     except Exception:
         pass
     return None
@@ -1731,6 +1745,11 @@ async def _deepgram_tts(
     data = resp.content
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
+    if len(data) < _MIN_AUDIO_BYTES:
+        raise HTTPException(status_code=502, detail={
+            "code": "audio_empty",
+            "message": f"Deepgram returned {len(data)} bytes, which is not audio, for: {text[:80]!r}",
+        })
     return data
 
 
@@ -1788,6 +1807,11 @@ async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voic
     data = audio_resp.content
     if len(data) > _MAX_AUDIO_BYTES:
         raise HTTPException(status_code=502, detail={"code": "audio_too_large", "message": "Generated audio exceeds the size limit"})
+    if len(data) < _MIN_AUDIO_BYTES:
+        raise HTTPException(status_code=502, detail={
+            "code": "audio_empty",
+            "message": f"fal.ai returned {len(data)} bytes, which is not audio, for: {text[:80]!r}",
+        })
 
     cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, tts_model, resp)
     _record_usage(

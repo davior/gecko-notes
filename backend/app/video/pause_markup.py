@@ -100,6 +100,26 @@ _EVENT = re.compile(
 _LOOKAHEAD_MARKER = re.compile(rf"[ \t]*{_MARKER}", re.IGNORECASE)
 _MARKER_ONLY = re.compile(_MARKER, re.IGNORECASE)
 
+# A voice can say letters and digits; punctuation, symbols and emoji on their
+# own are not speech. `[^\W_]` excludes emoji naturally — they are
+# symbol-category, not word characters — while keeping accented, Greek and CJK
+# text speakable.
+_SPEAKABLE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def has_speech(text: str) -> bool:
+    """Is there anything here a TTS engine could actually pronounce?
+
+    A chunk of pure punctuation is not a smaller request, it is a broken one:
+    the provider has nothing to synthesise and answers with an empty or
+    non-audio body, which then reaches ffmpeg as an undecodable file and fails
+    the whole render with a message about pixel formats. So a beat written as
+    "...", a "---" separator, or a paragraph holding nothing but an emoji must
+    never become a request of its own.
+    """
+    return bool(_SPEAKABLE.search(text or ""))
+
+
 # Words that end in a period without ending a sentence. Lowercased for lookup.
 _ABBREVIATIONS = frozenset({
     "dr", "mr", "mrs", "ms", "prof", "rev", "sr", "jr", "st", "mt", "ft",
@@ -212,7 +232,12 @@ def parse_pause_markup(
 
     Two boundaries with no words between them (e.g. a sentence-ending period
     immediately followed by a blank line) don't produce an empty chunk — the
-    longer of the two pauses is kept on the previous chunk instead.
+    longer of the two pauses is kept on the previous chunk instead. The same
+    holds for anything between them that isn't speech: a "..." beat on its own
+    line, a "---" rule, a lone emoji. Those mark a pause without being one, so
+    the pause survives on the previous chunk and no chunk is emitted for them —
+    see `has_speech`, and never remove that guard: a wordless TTS request comes
+    back as a non-audio body and fails the render at the ffmpeg decode.
 
     The final chunk always carries `pause_after_ms == 0`; the shot's trailing
     pause is a separate, caller-level concern (e.g.
@@ -226,9 +251,13 @@ def parse_pause_markup(
         nonlocal current
         segment = "".join(current).strip()
         current = []
-        if segment:
+        if has_speech(segment):
             chunks.append(Chunk(segment, ms))
         elif chunks:
+            # Nothing sayable between this boundary and the last one — a beat
+            # written as "..." on its own line, a "---" rule, a lone emoji.
+            # It still marks a pause, so the pause is kept on the chunk before
+            # it; what must not happen is a TTS request with no words in it.
             chunks[-1] = Chunk(chunks[-1].text, max(chunks[-1].pause_after_ms, ms))
         # A pause before any spoken text has nothing to attach to — dropped.
 
@@ -280,7 +309,7 @@ def parse_pause_markup(
 
     current.append(body[pos:])
     tail = "".join(current).strip()
-    if tail:
+    if has_speech(tail):
         chunks.append(Chunk(tail, 0))
     elif chunks:
         chunks[-1] = Chunk(chunks[-1].text, 0)

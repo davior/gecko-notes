@@ -16,9 +16,17 @@ from pathlib import Path
 
 import pytest
 
-from app.routers.settings import _EXPORT_CHUNK_CHARS, _pack_export_chunks
+from app.routers.settings import (
+    _EXPORT_CHUNK_CHARS,
+    _MIN_AUDIO_BYTES,
+    _TTS_CACHE_DIR,
+    _pack_export_chunks,
+    _tts_cache_get,
+    _tts_cache_put,
+)
 from app.video import ffmpeg as F
-from app.video.narration import stitch_chunks_to_mp3
+from app.video.narration import stitch_chunks_to_mp3, synthesize_shot
+from app.video.options import RenderOptions
 
 
 # ── chunking ──────────────────────────────────────────────────────────────────
@@ -151,3 +159,60 @@ _FIXTURE = json.loads(
 def test_shared_chunk_cases(case):
     chunks = _pack_export_chunks(case["text"])
     assert [[c.text, c.pause_after_ms] for c in chunks] == case["expect"]
+
+
+# ── the export path never asks the TTS engine to say nothing ──────────────────
+
+@pytest.mark.parametrize("body", ["...", "..", ". . .", "---", "\U0001F697"])
+def test_a_wordless_paragraph_is_not_exported_as_a_chunk(body):
+    chunks = _pack_export_chunks(f"Before this.\n\n{body}\n\nAfter this.")
+    assert [c.text for c in chunks] == ["Before this.", "After this."]
+    assert chunks[0].pause_after_ms > 0
+
+
+def test_nothing_sayable_exports_no_chunks():
+    assert _pack_export_chunks("...\n\n---") == []
+
+
+# ── a non-audio provider response is refused, not passed on ───────────────────
+
+def test_the_audio_floor_is_below_any_real_speech():
+    """An MP3 of one spoken word runs to several KB; an empty body or a short
+    JSON error is what the floor is there to catch."""
+    assert 0 < _MIN_AUDIO_BYTES < 1024
+
+
+def test_a_short_body_is_not_served_from_the_cache():
+    """An entry poisoned before the providers checked must read as a miss, or
+    the same undecodable bytes come back on every future render of the note."""
+    key = "0" * 64
+    try:
+        _tts_cache_put(key, b'{"err":"no speakable text"}')
+        assert _tts_cache_get(key) is None
+        _tts_cache_put(key, b"\xff\xfb" + b"\x00" * _MIN_AUDIO_BYTES)
+        assert _tts_cache_get(key) is not None
+    finally:
+        try:
+            (_TTS_CACHE_DIR / f"{key}.mp3").unlink()
+        except OSError:
+            pass
+
+
+@needs_ffmpeg
+def test_an_undecodable_chunk_names_itself_instead_of_pixel_formats():
+    """The bare ffmpeg error talks about rawvideo and pixel formats, which sends
+    anyone reading a failed job looking for a video bug in an audio path."""
+    work_dir = tempfile.mkdtemp()
+    try:
+        with pytest.raises(F.FFmpegError) as excinfo:
+            synthesize_shot(
+                "Some narration here.", index=2, work_dir=work_dir,
+                options=RenderOptions(title_card=False),
+                tts=lambda text: b'{"err":"not audio"}',
+            )
+        message = str(excinfo.value)
+        assert "could not decode as audio" in message
+        assert "Some narration here." in message
+        assert "pixel format" not in message
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)

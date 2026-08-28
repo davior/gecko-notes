@@ -189,7 +189,16 @@ def build_narration_chunks(text: str, *, options: RenderOptions) -> List[Chunk]:
     if options.heading_pause_ms > 0:
         pause_ms["\n\n"] = options.heading_pause_ms
 
-    marked = pause_markup.parse_pause_markup(text, pause_ms=pause_ms)
+    # Emoji come out before the split, not during it. `chunk_text` below strips
+    # them too, but it only runs for a chunk too long for one request — which
+    # nearly none are — so relying on it left every ordinary chunk with its
+    # emoji intact and the voice reading "🚗" aloud as "car". Stripping first
+    # also matches the order `packSpeechChunks` uses client-side.
+    # Runs of spaces and tabs collapse with them, closing the gap a removed
+    # emoji leaves behind. Newlines are deliberately untouched: a blank line is
+    # what the paragraph trigger is made of.
+    cleaned = _WHITESPACE.sub(" ", strip_emoji(text or ""))
+    marked = pause_markup.parse_pause_markup(cleaned, pause_ms=pause_ms)
 
     chunks: List[Chunk] = []
     for chunk in marked:
@@ -377,7 +386,20 @@ def synthesize_shot(
         # whatever rate they like, and the concat demuxer silently drops inputs
         # that don't match the first one — which quietly ate the pauses.
         part_name = f"chunk_{index:04d}_{position:03d}.wav"
-        F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+        try:
+            F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+        except F.FFmpegError as exc:
+            # ffmpeg cannot say what it choked on: given bytes it can't identify
+            # it falls back to the demuxer matching the ".raw" name and reports
+            # "Invalid pixel format", which sends anyone reading the job error
+            # looking for a video problem in an audio path. Name the real cause
+            # — the provider handed back something that isn't audio — and the
+            # text it did it for. `has_speech` should mean this never fires.
+            raise F.FFmpegError(
+                f"Narration chunk {position} of shot {index} came back as "
+                f"{len(audio)} bytes that ffmpeg could not decode as audio. "
+                f"Chunk text: {chunk.text[:120]!r}"
+            ) from exc
         parts.append(part_name)
         scratch.append(part_name)
 

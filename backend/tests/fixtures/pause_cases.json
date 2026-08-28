@@ -13,7 +13,9 @@
     "narration.build_narration_chunks builds, where a bare '.' is deliberately",
     "not a boundary.",
     "",
-    "chunk: whole-text splitting, after emoji removal and whitespace collapse. The frontend's chunkText and the backend's _pack_export_chunks must agree exactly or the export re-synthesises audio the cache already holds."
+    "chunk: whole-text splitting, after emoji removal and whitespace collapse. The frontend's chunkText and the backend's _pack_export_chunks must agree exactly or the export re-synthesises audio the cache already holds.",
+    "",
+    "A segment with nothing a voice could pronounce is never emitted as a chunk: its pause is kept on the chunk before it. A wordless TTS request comes back as a non-audio body, which fails the video render at the ffmpeg decode."
   ],
   "pauseMsSets": {
     "video": {
@@ -531,6 +533,113 @@
       "pauseMs": null,
       "text": "",
       "expect": []
+    },
+    {
+      "name": "an ellipsis beat on its own line is silence, not a chunk",
+      "text": "Before this.\n\n...\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a two-dot beat likewise",
+      "text": "Before this.\n\n..\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "spaced dots likewise",
+      "text": "Before this.\n\n. . .\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a quoted ellipsis likewise",
+      "text": "Before this.\n\n“...”\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a rule of dashes is not speech",
+      "text": "Before this.\n\n---\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a lone emoji is not speech",
+      "text": "Before this.\n\n🚗\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a note with nothing sayable yields no chunks",
+      "text": "...\n\n---",
+      "pauseMs": "video",
+      "expect": []
+    },
+    {
+      "name": "a trailing beat keeps the last chunk at zero",
+      "text": "All done.\n\n...",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "All done.",
+          0
+        ]
+      ]
     }
   ],
   "strip": [

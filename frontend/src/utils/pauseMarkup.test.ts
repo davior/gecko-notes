@@ -14,6 +14,7 @@ import {
   DEFAULT_MARKER_MS,
   DEFAULT_PAUSE_MS,
   MAX_PAUSE_MS,
+  hasSpeech,
   parsePauseMarkup,
   stripPauseMarkup,
 } from '@/utils/pauseMarkup'
@@ -97,5 +98,38 @@ describe('parsePauseMarkup — frontend-specific guards', () => {
       expect(spoken.toLowerCase()).not.toContain('pause')
       expect(spoken).toBe('before after')
     }
+  })
+})
+
+describe('hasSpeech', () => {
+  // A wordless TTS request comes back as an empty or error body — silence in
+  // the player, and in the video renderer an undecodable file that fails the
+  // whole render at the ffmpeg decode.
+  it.each([
+    ['hello', true], ['7', true], ['café', true], ['日本語', true], ['Ω', true], ['¿qué?', true],
+    ['...', false], ['..', false], ['. . .', false], ['“...”', false],
+    ['---', false], ['—', false], ['_', false], ['   ', false], ['', false],
+    ['🚗', false], ['👨‍👩‍👧', false], ['🇬🇧', false],
+  ])('%j -> %s', (text, speakable) => {
+    expect(hasSpeech(text as string)).toBe(speakable)
+  })
+
+  it('agrees with the Python module on every shared-table chunk', () => {
+    // Nothing the shared table expects may be a chunk without speech in it.
+    for (const testCase of fixture.parse) {
+      for (const [text] of testCase.expect) {
+        expect(hasSpeech(text)).toBe(true)
+      }
+    }
+  })
+
+  it('keeps a beat as silence on the previous chunk', () => {
+    const chunks = parsePauseMarkup('Before this.\n\n...\n\nAfter this.')
+    expect(chunks.map((c) => c.text)).toEqual(['Before this.', 'After this.'])
+    expect(chunks[0].pauseAfterMs).toBeGreaterThan(0)
+  })
+
+  it('emits no chunk at all when nothing is sayable', () => {
+    expect(parsePauseMarkup('...\n\n---\n\n🚗')).toEqual([])
   })
 })

@@ -177,3 +177,37 @@ def test_shared_parse_cases(case):
 @pytest.mark.parametrize("case", _FIXTURE["strip"], ids=lambda c: c["text"][:30])
 def test_shared_strip_cases(case):
     assert pause_markup.strip_pause_markup(case["text"]) == case["expect"]
+
+
+# ── nothing sayable is never its own chunk ────────────────────────────────────
+# A wordless TTS request comes back as an empty or error body, which reaches
+# ffmpeg as an undecodable file and fails a whole video render ("Invalid pixel
+# format", from the rawvideo demuxer it falls back to on the ".raw" name).
+
+@pytest.mark.parametrize("text,speakable", [
+    ("hello", True), ("7", True), ("café", True), ("日本語", True), ("Ω", True),
+    ("¿qué?", True),
+    ("...", False), ("..", False), (". . .", False), ("“...”", False),
+    ("---", False), ("—", False), ("_", False), ("   ", False), ("", False),
+    ("🚗", False), ("👨‍👩‍👧", False), ("🇬🇧", False),
+])
+def test_has_speech(text, speakable):
+    assert pause_markup.has_speech(text) is speakable
+
+
+def test_a_beat_becomes_silence_on_the_previous_chunk():
+    chunks = parse_pause_markup("Before this.\n\n...\n\nAfter this.")
+    assert [c.text for c in chunks] == ["Before this.", "After this."]
+    assert chunks[0].pause_after_ms > 0
+
+
+def test_the_longer_of_two_pauses_around_a_beat_wins():
+    """The beat's own pause competes with the paragraph breaks either side
+    rather than stacking with them, same as any other collapsed boundary."""
+    chunks = parse_pause_markup("A.\n\n...\n\nB.", pause_ms={".": 100, "…": 5000, "\n\n": 200})
+    assert [c.text for c in chunks] == ["A.", "B."]
+    assert chunks[0].pause_after_ms == 5000
+
+
+def test_no_chunk_survives_a_note_with_nothing_to_say():
+    assert parse_pause_markup("...\n\n---\n\n🚗") == []

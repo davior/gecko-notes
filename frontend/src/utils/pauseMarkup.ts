@@ -64,6 +64,27 @@ const EVENT_RE = new RegExp(
 const LOOKAHEAD_MARKER_RE = new RegExp(String.raw`[ \t]*` + MARKER_SRC, 'iy')
 const MARKER_ONLY_RE = new RegExp(MARKER_SRC, 'gi')
 
+// A voice can say letters and digits; punctuation, symbols and emoji on their
+// own are not speech. The negated class excludes emoji naturally — they are
+// symbol-category, not word characters — while keeping accented, Greek and CJK
+// text speakable. (`\w` is ASCII-only in JS, hence the explicit Unicode
+// property escapes rather than the `[^\W_]` the Python module can use.)
+const SPEAKABLE_RE = /[\p{L}\p{N}]/u
+
+/**
+ * Is there anything here a TTS engine could actually pronounce?
+ *
+ * A chunk of pure punctuation is not a smaller request, it is a broken one: the
+ * provider has nothing to synthesise and answers with an empty or non-audio
+ * body. In the player that is a chunk of silence where speech should be; in the
+ * video renderer the same body reaches ffmpeg as an undecodable file and fails
+ * the whole render. So a beat written as "...", a "---" rule, or a paragraph
+ * holding nothing but an emoji must never become a request of its own.
+ */
+export function hasSpeech(text: string): boolean {
+  return SPEAKABLE_RE.test(text || '')
+}
+
 // Words that end in a period without ending a sentence. Lowercased for lookup.
 const ABBREVIATIONS = new Set([
   'dr', 'mr', 'mrs', 'ms', 'prof', 'rev', 'sr', 'jr', 'st', 'mt', 'ft',
@@ -163,7 +184,13 @@ export function stripPauseMarkup(text: string): string {
  *
  * Two boundaries with no words between them (e.g. a sentence-ending period
  * immediately followed by a blank line) don't produce an empty chunk — the
- * longer of the two pauses is kept on the previous chunk instead.
+ * longer of the two pauses is kept on the previous chunk instead. The same
+ * holds for anything between them that isn't speech: a "..." beat on its own
+ * line, a "---" rule, a lone emoji. Those mark a pause without being one, so
+ * the pause survives on the previous chunk and no chunk is emitted for them —
+ * see `hasSpeech`, and never remove that guard: a wordless TTS request comes
+ * back as a non-audio body, which is silence here and a failed render in the
+ * video pipeline.
  *
  * The final chunk always carries `pauseAfterMs === 0` — there is nothing
  * after it to hold a gap before.
@@ -180,9 +207,13 @@ export function parsePauseMarkup(
   const emit = (ms: number) => {
     const segment = current.join('').trim()
     current = []
-    if (segment) {
+    if (hasSpeech(segment)) {
       chunks.push({ text: segment, pauseAfterMs: ms })
     } else if (chunks.length > 0) {
+      // Nothing sayable between this boundary and the last one — a beat written
+      // as "..." on its own line, a "---" rule, a lone emoji. It still marks a
+      // pause, so the pause is kept on the chunk before it; what must not
+      // happen is a TTS request with no words in it.
       const last = chunks[chunks.length - 1]
       chunks[chunks.length - 1] = { text: last.text, pauseAfterMs: Math.max(last.pauseAfterMs, ms) }
     }
@@ -244,7 +275,7 @@ export function parsePauseMarkup(
 
   current.push(body.slice(pos))
   const tail = current.join('').trim()
-  if (tail) {
+  if (hasSpeech(tail)) {
     chunks.push({ text: tail, pauseAfterMs: 0 })
   } else if (chunks.length > 0) {
     const last = chunks[chunks.length - 1]
