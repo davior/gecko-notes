@@ -1,3 +1,9 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from app.video import pause_markup
 from app.video.pause_markup import (
     DEFAULT_PAUSE_MS,
     NAMED_PAUSE_MS,
@@ -143,3 +149,31 @@ def test_an_explicit_marker_overrides_even_a_disabled_trigger():
     )
     assert [c.text for c in chunks] == ["Ends here.", "Starts here."]
     assert chunks[0].pause_after_ms == NAMED_PAUSE_MS["xlong"]
+
+
+# ── shared parity table ───────────────────────────────────────────────────────
+# The cases in tests/fixtures/pause_cases.json are asserted here and, verbatim,
+# by frontend/src/utils/pauseMarkup.test.ts. Both implementations have to agree
+# with the table, which is what keeps them mirrored — see the file's _comment.
+
+_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "pause_cases.json").read_text(encoding="utf-8")
+)
+
+
+def _pause_ms_for(case):
+    named = case["pauseMs"]
+    if named is None:
+        return pause_markup.DEFAULT_PAUSE_MS
+    return _FIXTURE["pauseMsSets"][named]
+
+
+@pytest.mark.parametrize("case", _FIXTURE["parse"], ids=lambda c: c["name"])
+def test_shared_parse_cases(case):
+    chunks = pause_markup.parse_pause_markup(case["text"], pause_ms=_pause_ms_for(case))
+    assert [[c.text, c.pause_after_ms] for c in chunks] == case["expect"]
+
+
+@pytest.mark.parametrize("case", _FIXTURE["strip"], ids=lambda c: c["text"][:30])
+def test_shared_strip_cases(case):
+    assert pause_markup.strip_pause_markup(case["text"]) == case["expect"]

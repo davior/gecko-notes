@@ -11,11 +11,17 @@ caller stitch real silence between them (`build_silence` + the concat step in
 `parse_pause_markup` turns punctuation, blank lines, and explicit
 `[pause:...]` markers in the source prose into a `List[Chunk]`. The prose
 itself is left untouched other than removing the markers.
+
+The marker grammar is deliberately forgiving. Anything it fails to recognise
+is not silently ignored — it is *spoken*, because the literal text travels on
+to the TTS engine — so `[Pause: 2s]` missing by a capital letter and a space
+is far worse than a marker that never existed. Separator, spacing, case, unit
+and even the value itself are all optional; see `_MARKER`.
 """
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -43,6 +49,17 @@ DEFAULT_PAUSE_MS: Dict[str, int] = {".": 900, "…": 1300, "\n\n": 1600}
 # Named levels for the `[pause:short|medium|long|xlong]` marker.
 NAMED_PAUSE_MS: Dict[str, int] = {"short": 350, "medium": 750, "long": 1200, "xlong": 2000}
 
+# What a marker means when it names no duration (`[pause]`) or names one that
+# isn't in `named_pause_ms` (`[pause:xxlong]`). An unrecognised level resolves
+# here rather than raising: a typo in a note must not take down a render
+# worker halfway through a job.
+DEFAULT_MARKER_MS = NAMED_PAUSE_MS["medium"]
+
+# Ceiling on one explicit marker. A bare number is milliseconds, so somebody
+# reaching for seconds and writing `[pause:120000]` would otherwise wedge two
+# minutes of silence into the middle of a render.
+MAX_PAUSE_MS = 10_000
+
 # Deepgram Flux's `speed` query param (see `DEEPGRAM_TTS_SPEED_MIN/MAX` in
 # `app/routers/settings.py`, range 0.85-1.15) is the real, working equivalent
 # of the SSML `<prosody rate='0.88'>` wrap this feature was originally
@@ -51,17 +68,116 @@ NAMED_PAUSE_MS: Dict[str, int] = {"short": 350, "medium": 750, "long": 1200, "xl
 # as `speed` to `_deepgram_tts`/`synthesize_tts_bytes`.
 DEFAULT_NARRATION_SPEED = 0.88
 
-_MARKER = r"\[pause:(?P<mval>[A-Za-z]+|\d+)\]"
+# `[pause]`, `[pause:long]`, `[Pause: 2s]`, `[PAUSE 1500]`, `[pause=400ms]` —
+# the separator, the value and the unit are each optional, and the whole thing
+# is matched case-insensitively (see `_EVENT`). Only spaces and tabs are
+# allowed inside, never a newline: a marker must not be able to swallow the
+# blank line that a paragraph break is made of.
+_MARKER = (
+    r"(?P<marker>\[[ \t]*pause[ \t]*"
+    r"(?:(?:[:=][ \t]*|[ \t]+)(?P<mval>[A-Za-z]+|\d+(?:\.\d+)?)[ \t]*"
+    r"(?P<munit>ms|seconds|second|secs|sec|s)?[ \t]*)?"
+    r"\])"
+)
 _PARA_BREAK = r"\n[ \t]*\n+"
-_TRIGGER = r"\.\.\.|…|\."
-_EVENT = re.compile(f"(?:{_MARKER})|(?P<para>{_PARA_BREAK})|(?P<trig>{_TRIGGER})")
-_LOOKAHEAD_MARKER = re.compile(rf"[ \t]*{_MARKER}")
+# Quote and bracket characters that close a sentence *after* its full stop.
+# Both triggers below swallow them so `He said "go." Then left.` keeps the
+# closing quote on the chunk it belongs to instead of opening the next one.
+_CLOSERS = r"[\"'’”)\]]*"
+# Two or more periods, however they're spaced, are one ellipsis. Matching them
+# as a single event is what stops "Wait...." leaving a stray "." to open the
+# next chunk — which the TTS engine then reads aloud as its own utterance.
+_ELLIPSIS = rf"(?:\.(?:[ \t]*\.)+|…){_CLOSERS}"
+# A lone period. Never inside a number ("3.5", "$1,200.50"); `_ends_a_sentence`
+# rules out the rest.
+_SENTENCE_END = rf"(?<!\d)\.(?!\d){_CLOSERS}"
+
+_EVENT = re.compile(
+    f"(?:{_MARKER})|(?P<para>{_PARA_BREAK})"
+    f"|(?P<ell>{_ELLIPSIS})|(?P<dot>{_SENTENCE_END})",
+    re.IGNORECASE,
+)
+_LOOKAHEAD_MARKER = re.compile(rf"[ \t]*{_MARKER}", re.IGNORECASE)
+_MARKER_ONLY = re.compile(_MARKER, re.IGNORECASE)
+
+# Words that end in a period without ending a sentence. Lowercased for lookup.
+_ABBREVIATIONS = frozenset({
+    "dr", "mr", "mrs", "ms", "prof", "rev", "sr", "jr", "st", "mt", "ft",
+    "vs", "etc", "al", "cf", "approx", "est", "dept", "no", "fig", "vol",
+    "ch", "pp", "inc", "ltd", "co", "corp", "univ",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+})
+
+# Longest abbreviation above, plus room for the word to start mid-slice.
+_ABBREV_WINDOW = 32
+_WORD_BEFORE = re.compile(r"([A-Za-z]+)$")
+_AFTER_DOT = re.compile(r"\s|$")
 
 
-def _resolve_marker(value: str, named_pause_ms: Dict[str, int]) -> int:
-    if value.isdigit():
-        return int(value)
-    return named_pause_ms[value.lower()]
+def _ends_a_sentence(body: str, start: int, end: int) -> bool:
+    """Is the "." at `body[start:end]` a sentence end, or part of a word?
+
+    A period only ends a sentence when what follows it (past any closing quote
+    or bracket, which `_SENTENCE_END` has already consumed) is whitespace or the
+    end of the text, and what precedes it is neither a single letter — an initial, or one leg of "e.g."/"U.S." — nor a
+    known abbreviation. Without this the read-aloud player pauses inside "3.5",
+    after "Dr", and three separate times inside "www.example.com".
+    """
+    if not _AFTER_DOT.match(body, end):
+        return False
+    word = _WORD_BEFORE.search(body[max(0, start - _ABBREV_WINDOW):start])
+    if word is None:
+        return True
+    token = word.group(1)
+    return len(token) > 1 and token.lower() not in _ABBREVIATIONS
+
+
+def _resolve_marker(
+    value: Optional[str], unit: Optional[str], named_pause_ms: Dict[str, int],
+) -> int:
+    """Resolve one `[pause:...]` marker to milliseconds.
+
+    A bare number is milliseconds — `[pause:1500]` is a second and a half — and
+    an `s`/`sec`/`second` suffix opts into seconds instead. A bare *decimal* is
+    read as seconds as well: `[pause:1.5]` can only have meant 1.5 seconds,
+    since a millisecond and a half is far below anything a listener could hear.
+
+    A marker with no value at all, or with a level this caller doesn't define,
+    falls back to `DEFAULT_MARKER_MS` rather than raising — see that constant.
+    """
+    if value is None:
+        return DEFAULT_MARKER_MS
+    if not value[0].isdigit():
+        return named_pause_ms.get(value.lower(), DEFAULT_MARKER_MS)
+
+    amount = float(value)
+    suffix = (unit or "").lower()
+    if suffix == "ms":
+        milliseconds = amount
+    elif suffix or "." in value:
+        milliseconds = amount * 1000
+    else:
+        milliseconds = amount
+    return max(0, min(MAX_PAUSE_MS, int(round(milliseconds))))
+
+
+def strip_pause_markup(text: str) -> str:
+    """Remove `[pause:...]` markers from text that is *drawn* rather than spoken.
+
+    `parse_pause_markup` already strips them out of narration, but a heading and
+    a quote are also rendered to the screen — see `segmenter`'s `card_title` and
+    `quote_text` — and those paths never went through the parser, so a marker
+    typed into a heading was drawn onto the video.
+    """
+    if not text:
+        return text
+    cleaned = _MARKER_ONLY.sub("", text)
+    # Close up the gap a mid-line marker leaves behind, without touching
+    # newlines: a card's line breaks are laid out on purpose.
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return "\n".join(line.strip() for line in cleaned.split("\n")).strip()
 
 
 def parse_pause_markup(
@@ -74,7 +190,7 @@ def parse_pause_markup(
 
     Implicit pauses come from `pause_ms` — `.`/`...`/`…` end a sentence,
     `\\n\\n` (a blank line) ends a paragraph, with each additional blank line
-    multiplying that pause. Explicit `[pause:1200]` / `[pause:LEVEL]` markers
+    multiplying that pause. Explicit `[pause:1500]` / `[pause:LEVEL]` markers
     are always stripped from the output text; one directly following (only
     whitespace between) an implicit trigger overrides that trigger's pause
     instead of adding to it — e.g. a period immediately followed by
@@ -89,6 +205,10 @@ def parse_pause_markup(
     a caller opt the bare "." out without forcing every sentence into its
     own request. An explicit `[pause:...]` marker immediately following a
     disabled trigger still overrides it, same as with an enabled one.
+
+    A period that doesn't actually end a sentence — inside a decimal, an
+    initial, or an abbreviation — is never a boundary regardless of
+    `pause_ms`; see `_ends_a_sentence`.
 
     Two boundaries with no words between them (e.g. a sentence-ending period
     immediately followed by a blank line) don't produce an empty chunk — the
@@ -116,31 +236,37 @@ def parse_pause_markup(
     for m in _EVENT.finditer(body):
         if m.start() < pos:
             continue  # already consumed as an override lookahead below
-        gap = body[pos:m.start()]
-        mval = m.group("mval")
+        # A period mid-word isn't a boundary at all: leave it where it is and
+        # let the next event's `gap` carry it into the chunk being built.
+        if m.group("dot") is not None and not _ends_a_sentence(body, m.start(), m.end()):
+            continue
 
-        if mval is not None:
+        gap = body[pos:m.start()]
+
+        if m.group("marker") is not None:
             current.append(gap)
             pos = m.end()
-            emit(_resolve_marker(mval, named_pause_ms))
+            emit(_resolve_marker(m.group("mval"), m.group("munit"), named_pause_ms))
             continue
 
         current.append(gap)
-        is_para = bool(m.group("para"))
+        para = m.group("para")
+        is_para = para is not None
         if is_para:
-            blank_lines = m.group("para").count("\n") - 1
+            blank_lines = para.count("\n") - 1
             base = pause_ms.get("\n\n")
             ms = None if base is None else base * max(1, blank_lines)
         else:
-            trig_text = m.group("trig")
-            key = "." if trig_text == "." else "…"
-            current.append(trig_text)
-            ms = pause_ms.get(key)
+            ellipsis = m.group("ell")
+            current.append(ellipsis if ellipsis is not None else m.group("dot"))
+            ms = pause_ms.get("…" if ellipsis is not None else ".")
         pos = m.end()
 
         override = _LOOKAHEAD_MARKER.match(body, pos)
         if override:
-            ms = _resolve_marker(override.group("mval"), named_pause_ms)
+            ms = _resolve_marker(
+                override.group("mval"), override.group("munit"), named_pause_ms,
+            )
             pos = override.end()
 
         if ms is not None:

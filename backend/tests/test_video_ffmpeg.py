@@ -1124,3 +1124,38 @@ def test_a_shot_with_no_narration_gets_no_end_pause():
         options=RenderOptions(title_card=False, shot_end_pause_ms=2000),
     )
     assert silent_image[2] == RenderOptions().min_shot_seconds
+
+
+# ── the estimate sees the same pauses the render will make ────────────────────
+# estimate() used to call chunk_narration, which has no notion of pause markup,
+# so the options dialog silently ignored every [pause:...] and ellipsis and
+# under-reported the length of exactly the scripts that lean on them.
+
+def test_an_explicit_marker_lengthens_the_estimate():
+    plain = _estimate(LONG_PARAGRAPH + "Then this. And this.")
+    marked = _estimate(LONG_PARAGRAPH + "Then this. [pause:4s] And this.")
+    assert marked[2] > plain[2] + 3.5
+
+
+def test_an_ellipsis_lengthens_the_estimate():
+    plain = _estimate(LONG_PARAGRAPH + "Wait for it. Here it comes.")
+    dotted = _estimate(LONG_PARAGRAPH + "Wait for it... Here it comes.")
+    assert dotted[2] > plain[2]
+
+
+def test_the_estimate_does_not_bill_marker_text_as_speech():
+    """The character count is what will be spoken — and what the render is
+    checked against — so a stripped marker must not inflate it."""
+    plain = _estimate("Hello world.")
+    marked = _estimate("Hello [pause:2s] world.")
+    assert marked[1] == plain[1]
+
+
+def test_the_estimate_agrees_with_the_split_the_render_will_use():
+    """Held time in the estimate is the sum of the chunk pauses synthesize_shot
+    will actually lay down, not a second, drifting calculation."""
+    text = "Ends here.\n\nA New Chapter.\n\nBegins now... [pause:2s] and on."
+    opts = RenderOptions(title_card=False, heading_pause_ms=1500)
+    chunks = build_narration_chunks(text, options=opts)
+    assert sum(c.pause_after_ms for c in chunks) == 1500 + 1500 + 2000
+    assert chunks[-1].pause_after_ms == 0

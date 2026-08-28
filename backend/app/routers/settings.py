@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import re
 from pathlib import Path
 import logging
 import urllib.parse
@@ -22,6 +23,9 @@ from app.model_profiles import parse_extra_params
 from app.pricing import cost_for
 from app.routers.media import MEDIA_DIR as _MEDIA_ROOT
 from app.substack_publish import SubstackError, create_substack_draft, test_substack_connection
+from app.video.ffmpeg import FFmpegError, ffmpeg_available
+from app.video.narration import stitch_chunks_to_mp3, strip_emoji
+from app.video.pause_markup import Chunk, parse_pause_markup
 from app.models import AIProvider, AppSetting, ModelCatalogEntry, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -1864,6 +1868,93 @@ async def synthesize_tts_bytes(
 
     # ── fal.ai path ───────────────────────────────────────────────────────────
     return await _fal_tts(session, user_id, fal_key, text, voice_hint=voice)
+
+
+# Mirrors MAX_CHUNK_CHARS in the frontend's useTextToSpeech hook. Chunk text
+# has to match that hook's byte for byte or the disk cache above misses and an
+# export right after a listen pays for the same audio twice.
+_EXPORT_CHUNK_CHARS = 1500
+
+# One narrate call fans out into a TTS request per chunk, so unlike /speech/tts
+# it needs a ceiling of its own. ~50k characters is a little under an hour of
+# speech — far past any note anyone reads aloud in one go.
+_NARRATE_MAX_CHARS = 50_000
+
+
+def _pack_export_chunks(text: str) -> List[Chunk]:
+    """Split text for export exactly as `packSpeechChunks` does client-side.
+
+    Same order of operations as the hook: strip emoji, collapse runs of spaces
+    and tabs (never newlines — the paragraph trigger is made of those), split on
+    pause markup, then hard-split anything still over the per-request budget on
+    a word boundary. Those forced splits carry no pause; only the final piece of
+    a segment keeps the pause the segment actually asked for.
+
+    This is the only split the frontend produces: `chunkTextForPlayback`'s
+    ramped sizes only gate whether a segment enters the re-split branch, and
+    that branch cuts at `MAX_CHUNK_CHARS` regardless, so playback and export
+    chunk text identically today. `speechChunks.test.ts` asserts that, because
+    if the ramp is ever made to bite, Insert Mode would stop hitting the cache
+    here and start paying for the same audio twice.
+    """
+    cleaned = re.sub(r"[ \t]+", " ", strip_emoji(text or ""))
+    packed: List[Chunk] = []
+    for segment in parse_pause_markup(cleaned):
+        rest = segment.text
+        while len(rest) > _EXPORT_CHUNK_CHARS:
+            cut = rest.rfind(" ", 0, _EXPORT_CHUNK_CHARS)
+            if cut <= 0:
+                cut = _EXPORT_CHUNK_CHARS
+            packed.append(Chunk(rest[:cut].strip(), 0))
+            rest = rest[cut:].strip()
+        if rest:
+            packed.append(Chunk(rest, segment.pause_after_ms))
+    return packed
+
+
+@router.post("/speech/narrate")
+async def narrate_speech(
+    payload: TTSRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Synthesise a whole passage as one MP3, with its pauses held as silence.
+
+    `/speech/tts` synthesises one chunk; the caller is on its own for the gaps
+    between them. Live playback can hold those gaps with a timer, but an
+    exported or inserted file cannot — concatenating the chunks client-side
+    produced audio with every pause missing, which is what this endpoint exists
+    to fix. Splitting and stitching both happen here because ffmpeg is already
+    installed for the video renderer and is the only thing on either side that
+    can lay real silence between two clips.
+    """
+    user_id = _get_user_id(request)
+    if len(payload.text or "") > _NARRATE_MAX_CHARS:
+        raise HTTPException(status_code=400, detail={
+            "code": "text_too_long",
+            "message": f"Text exceeds {_NARRATE_MAX_CHARS:,} characters",
+        })
+
+    chunks = _pack_export_chunks(payload.text)
+    if not chunks:
+        raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
+
+    pieces: List[Tuple[bytes, int]] = []
+    for chunk in chunks:
+        data, _media_type = await synthesize_tts_bytes(session, user_id, chunk.text, voice=payload.model)
+        pieces.append((data, chunk.pause_after_ms))
+
+    # Nothing to lay silence between, or no ffmpeg to lay it with: hand back the
+    # plain concatenation rather than failing an export over a missing pause.
+    if len(pieces) > 1 and ffmpeg_available():
+        try:
+            joined = await run_in_threadpool(stitch_chunks_to_mp3, pieces)
+            if joined:
+                return Response(content=joined, media_type="audio/mpeg")
+        except FFmpegError:
+            logger.warning("narrate: ffmpeg join failed, returning gapless audio", exc_info=True)
+
+    return Response(content=b"".join(audio for audio, _ in pieces), media_type="audio/mpeg")
 
 
 @router.post("/speech/tts")

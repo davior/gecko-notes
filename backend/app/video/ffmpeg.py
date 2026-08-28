@@ -717,6 +717,22 @@ def build_silence_command(output: str, seconds: float) -> List[str]:
     ]
 
 
+def build_join_mp3_command(list_name: str, output: str) -> List[str]:
+    """Join a concat playlist of WAV parts back into one MP3.
+
+    `build_narration_command`'s counterpart for the read-aloud export path: no
+    speed change and no minimum length, just the re-encode. It does not stay
+    WAV because an exported or inserted clip is written into the user's media
+    directory and re-fetched on every playback, and 48 kHz stereo PCM is an
+    order of magnitude larger than a 128 kbps MP3 of the same narration.
+    """
+    return [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", list_name,
+        "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", output,
+    ]
+
+
 def write_concat_list(path: str, filenames: Sequence[str]) -> None:
     """Concat-demuxer playlist. Single quotes in a name are escaped per its
     (unusual) quoting rules; in practice every name here is a generated one."""

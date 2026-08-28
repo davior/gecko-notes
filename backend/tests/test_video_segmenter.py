@@ -712,3 +712,52 @@ def test_a_new_image_after_a_chapter_screen_still_takes_over_as_normal():
     b = os.path.join(root, "u1", "b.png")
     body = next(s for s in shots if s.narration == "On the new image.")
     assert body.background == b
+
+
+# ── pause markers never reach the picture ─────────────────────────────────────
+# `parse_pause_markup` strips markers on the way to a TTS request, but a heading
+# and a quote are also *drawn*, and those fields never went through it — so
+# "[pause:2s]" typed into a heading was rendered onto the video. Shot's
+# __post_init__ is what closes that off; these guard it per drawn field.
+
+def test_a_marker_in_a_chapter_heading_is_not_drawn_on_the_card():
+    root = _media()
+    blocks = [{"type": "heading", "content": _text("Chapter One [pause:2s]")}]
+    result = _run(blocks, media_root=root,
+                  options=RenderOptions(title_card=False, chapter_screens=True))
+    cards = [s for s in result.shots if s.card_title]
+    assert cards, "expected a chapter card"
+    assert cards[0].card_title == "Chapter One"
+    assert cards[0].chapter == "Chapter One"
+    # The spoken copy keeps the marker on purpose: parse_pause_markup needs it
+    # there to place the silence, and strips it on the way to the TTS request.
+    assert "[pause:2s]" in cards[0].narration
+
+
+def test_a_marker_in_a_quote_is_not_drawn_in_the_panel():
+    root = _media()
+    blocks = [_quote("Hold this thought [pause:long] — Someone")]
+    result = _run(blocks, media_root=root, options=_quotes())
+    quotes = [s for s in result.shots if s.quote_text]
+    assert quotes, "expected a quote shot"
+    assert quotes[0].quote_text == "Hold this thought"
+    assert "[pause" not in (quotes[0].quote_attribution or "")
+
+
+def test_a_marker_in_the_note_title_is_not_drawn_on_the_title_card():
+    root = _media()
+    result = _run([{"type": "paragraph", "content": _text("Body.")}], media_root=root,
+                  options=RenderOptions(title_card=True), title="My Note [pause:1s]")
+    titles = [s for s in result.shots if s.card_kind == "title"]
+    assert titles, "expected a title card"
+    assert titles[0].card_title == "My Note"
+
+
+def test_markers_are_not_counted_as_narration_characters():
+    """The figure the options dialog shows, and the one checked against
+    max_narration_chars, is what will actually be spoken."""
+    root = _media()
+    plain = _run([{"type": "paragraph", "content": _text("Hello world.")}], media_root=root)
+    marked = _run([{"type": "paragraph", "content": _text("Hello [pause:2s] world.")}],
+                  media_root=root)
+    assert marked.narration_chars == plain.narration_chars

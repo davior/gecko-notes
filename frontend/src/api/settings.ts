@@ -453,6 +453,17 @@ export const settingsApi = {
     }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
   },
 
+  // A whole passage as one MP3, with its pauses held as real silence between
+  // the chunks. Only the backend can do that — it has ffmpeg — which is why
+  // this exists alongside synthesizeSpeech's single-chunk request. It splits
+  // the text exactly as chunkText does, so anything already played is served
+  // from the server's TTS cache rather than synthesised again.
+  narrateSpeech(text: string, model = DEFAULT_TTS_VOICE): Promise<Blob> {
+    return client.post('/settings/speech/narrate', { text, model }, {
+      responseType: 'arraybuffer',
+    }).then((r) => new Blob([r.data as ArrayBuffer], { type: 'audio/mpeg' }))
+  },
+
   getUsage(days = 30): Promise<UsageSummary> {
     return client.get('/settings/usage', { params: { days } }).then((r) => r.data)
   },

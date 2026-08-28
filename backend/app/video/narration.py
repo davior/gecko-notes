@@ -14,6 +14,8 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -199,6 +201,46 @@ def build_narration_chunks(text: str, *, options: RenderOptions) -> List[Chunk]:
             last = position == len(pieces) - 1
             chunks.append(Chunk(piece, chunk.pause_after_ms if last else options.paragraph_pause_ms))
     return chunks
+
+
+def stitch_chunks_to_mp3(pieces: Sequence[Tuple[bytes, int]]) -> bytes:
+    """Join already-synthesised chunks into one MP3, holding each one's pause.
+
+    The whole-file counterpart to `synthesize_shot`'s concat step, for the
+    read-aloud export/insert path. It takes the same route for the same reason:
+    decode every piece to a common PCM layout first, because joined MP3 frames
+    click at the seams and the concat demuxer silently drops inputs that don't
+    match the first one — which is exactly how pauses get quietly eaten.
+
+    `pieces` is `(audio_bytes, pause_after_ms)` in playback order. The last
+    piece's pause is ignored: there is nothing after it to separate it from.
+    """
+    if not pieces:
+        return b""
+
+    work_dir = tempfile.mkdtemp(prefix="tts_join_")
+    try:
+        entries: List[str] = []
+        for index, (audio, pause_after_ms) in enumerate(pieces):
+            raw_name = f"part_{index:04d}.raw"
+            with open(os.path.join(work_dir, raw_name), "wb") as f:
+                f.write(audio)
+            part_name = f"part_{index:04d}.wav"
+            F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+            entries.append(part_name)
+            if index < len(pieces) - 1:
+                pad = build_silence(work_dir, pause_after_ms)
+                if pad:
+                    entries.append(pad)
+
+        list_name = "join.txt"
+        F.write_concat_list(os.path.join(work_dir, list_name), entries)
+        out_name = "joined.mp3"
+        F.run(F.build_join_mp3_command(list_name, out_name), cwd=work_dir, timeout=600)
+        with open(os.path.join(work_dir, out_name), "rb") as f:
+            return f.read()
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # Two lines of roughly 42 characters is the long-standing broadcast convention
