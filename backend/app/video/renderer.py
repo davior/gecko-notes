@@ -298,14 +298,22 @@ def render(
                     shot_overlay = f"overlay_text_{index:04d}.png"
                     shot_layer.save(os.path.join(work_dir, shot_overlay), "PNG")
 
-            # A quote is drawn per shot with the shot's overlay layer composited
-            # on top, so the watermark still sits above the quotation and ffmpeg
-            # still receives exactly one overlay input.
+            # A quote or a code block is drawn per shot with the shot's overlay
+            # layer composited on top, so the watermark still sits above it and
+            # ffmpeg still receives exactly one overlay input. A shot only ever
+            # carries one of the two (see segment()), so this is either/or.
             if shot.quote_text:
                 panel = compose.quote_panel(
                     width, height, text=shot.quote_text,
                     attribution=shot.quote_attribution or "", spec=options.quotes,
                 )
+                if panel is not None:
+                    if shot_layer is not None:
+                        panel.alpha_composite(shot_layer)
+                    shot_overlay = f"overlay_{index:04d}.png"
+                    panel.save(os.path.join(work_dir, shot_overlay), "PNG")
+            elif shot.code_text:
+                panel = compose.code_panel(width, height, text=shot.code_text, spec=options.code)
                 if panel is not None:
                     if shot_layer is not None:
                         panel.alpha_composite(shot_layer)

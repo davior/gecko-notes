@@ -347,6 +347,30 @@ class QuoteSpec(BaseModel):
         return max(0.0, min(1.0, float(v)))
 
 
+class CodeSpec(BaseModel):
+    """Code panel drawn over the section a code block interrupts.
+
+    Unlike QuoteSpec there is no `enabled` toggle: a code block always gets
+    its panel, on screen until the next shot replaces it — this only styles
+    it. Whether it's also *read aloud* is `RenderOptions.narrate_code`, a
+    separate concern the way a blockquote's own narration is always on but a
+    code block's is opt-in.
+    """
+
+    position: QuotePosition = "center"
+    size_pct: float = 3.4
+    color: str = "#e2e8f0"
+    # Darkened panel behind the text so it stays legible over a bright photo.
+    scrim: float = 0.72
+
+    _size = field_validator("size_pct")(_clamp_pct(1.0, 12.0))
+
+    @field_validator("scrim")
+    @classmethod
+    def _sane_scrim(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+
 class RenderOptions(BaseModel):
     """The complete render configuration. Persisted as JSON on the job row."""
 
@@ -371,6 +395,7 @@ class RenderOptions(BaseModel):
     ken_burns: KenBurnsSpec = Field(default_factory=KenBurnsSpec)
     music: MusicSpec = Field(default_factory=MusicSpec)
     quotes: QuoteSpec = Field(default_factory=QuoteSpec)
+    code: CodeSpec = Field(default_factory=CodeSpec)
 
     # Append the finished video to the note as a playable block. Done by the
     # worker rather than the browser so a render survives the tab being closed.
@@ -399,6 +424,9 @@ class RenderOptions(BaseModel):
     # gap paragraph_pause_ms and heading_pause_ms don't cover — both only ever
     # sit *between* two chunks inside one shot, never after the shot's last one.
     shot_end_pause_ms: int = 600
+    # A code block always gets its own on-screen panel (see CodeSpec); this
+    # only controls whether its text is *read aloud* too. Off, the panel is
+    # still shown, silently, for at least min_shot_seconds.
     narrate_code: bool = False
 
     # Shortest a shot may be, so a media block with little or no text under it

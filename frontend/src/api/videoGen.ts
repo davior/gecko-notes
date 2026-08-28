@@ -126,6 +126,14 @@ export interface RenderOptions {
     size_pct: number
     color: string; accent: string; scrim: number
   }
+  /** Styling for a code block's on-screen panel. There's no `enabled` here —
+   *  unlike a quote, a code block always gets its panel; narrate_code below
+   *  only controls whether it's also read aloud. */
+  code: {
+    position: QuotePosition
+    size_pct: number
+    color: string; scrim: number
+  }
   insert_into_note: boolean
   title_card: boolean
   chapter_screens: boolean
@@ -141,6 +149,8 @@ export interface RenderOptions {
    *  whatever comes next — without it a shot's audio stops the instant
    *  speech does, often mid-decay on the voice's own trailing intonation. */
   shot_end_pause_ms: number
+  /** A code block's panel is always shown; this only controls whether its
+   *  text is also read aloud. */
   narrate_code: boolean
   min_shot_seconds: number
   card_seconds: number
@@ -164,6 +174,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   ken_burns: { effect: 'none', amount: 0.12, include_cards: false },
   music: { enabled: false, url: null, volume: 0.18, duck: true, fade_in: 1.5, fade_out: 3.0 },
   quotes: { enabled: false, position: 'center', size_pct: 4.2, color: '#ffffff', accent: '#818cf8', scrim: 0.55 },
+  code: { position: 'center', size_pct: 3.4, color: '#e2e8f0', scrim: 0.72 },
   insert_into_note: true,
   title_card: true,
   chapter_screens: false,

@@ -256,15 +256,81 @@ def test_navigation_blocks_are_never_narrated():
     assert plan.shots[0].narration == "Kept."
 
 
-def test_code_blocks_are_narrated_only_when_asked_for():
+def _code(value):
+    return {"type": "codeBlock", "content": _text(value)}
+
+
+def test_a_code_block_always_gets_its_own_shot_regardless_of_narration():
+    """Unlike the old fold-into-the-prose behaviour, a code block is drawn on
+    screen unconditionally — narrate_code only ever gates whether it's read."""
     root = _media()
-    blocks = [
-        {"id": "1", "type": "paragraph", "content": _text("Prose.")},
-        {"id": "2", "type": "codeBlock", "content": _text("print(1)")},
-    ]
-    assert "print(1)" not in _run(blocks, media_root=root).shots[0].narration
-    on = RenderOptions(title_card=False, narrate_code=True)
-    assert "print(1)" in _run(blocks, media_root=root, options=on).shots[0].narration
+    shots = _run([_para("Before."), _code("print(1)"), _para("After.")],
+                 media_root=root).shots
+    assert [s.narration for s in shots] == ["Before.", "", "After."]
+    assert [s.code_text for s in shots] == [None, "print(1)", None]
+
+
+def test_a_code_blocks_narration_is_gated_by_narrate_code():
+    root = _media()
+    blocks = [_para("Before."), _code("print(1)"), _para("After.")]
+    off = _run(blocks, media_root=root).shots
+    assert off[1].code_text == "print(1)" and off[1].narration == ""
+
+    on = _run(blocks, media_root=root, options=RenderOptions(title_card=False, narrate_code=True)).shots
+    assert on[1].code_text == "print(1)" and "print(1)" in on[1].narration
+
+
+def test_a_code_block_keeps_the_picture_of_the_section_it_interrupts():
+    root = _media("photo.png")
+    shots = _run([
+        {"type": "image", "props": {"url": "/media/u1/photo.png"}},
+        _para("Some prose."),
+        _code("print(1)"),
+        _para("More prose."),
+    ], media_root=root).shots
+    photo = os.path.join(root, "u1", "photo.png")
+    assert [s.background for s in shots] == [photo, photo, photo]
+    assert [s.kind for s in shots] == ["still", "still", "still"]
+
+
+def test_a_code_block_over_a_sounded_clip_carries_it_muted():
+    root = _media("clip.mp4")
+    shots = _run([
+        {"type": "videoFile", "props": {"url": "/media/u1/clip.mp4"}},
+        _code("print(1)"),
+    ], media_root=root, loud={"clip.mp4"}).shots
+    assert [s.kind for s in shots] == ["video_sound", "video_muted"]
+    assert shots[1].code_text == "print(1)"
+
+
+def test_a_code_block_before_any_media_falls_back_like_any_other_opening_text():
+    root = _media()
+    shots = _run([_code("print(1)")], media_root=root).shots
+    assert len(shots) == 1
+    assert shots[0].background is None and shots[0].code_text == "print(1)"
+
+
+def test_consecutive_code_blocks_each_get_their_own_shot():
+    root = _media()
+    shots = _run([_code("first()"), _code("second()")], media_root=root).shots
+    assert [s.code_text for s in shots] == ["first()", "second()"]
+
+
+def test_an_empty_code_block_is_ignored():
+    root = _media()
+    shots = _run([_para("Before."), _code("   "), _para("After.")], media_root=root).shots
+    assert len(shots) == 1
+    assert shots[0].code_text is None
+
+
+def test_a_code_block_straight_after_an_image_gets_no_blank_shot_in_front_of_it():
+    root = _media("photo.png")
+    shots = _run([
+        {"type": "image", "props": {"url": "/media/u1/photo.png"}},
+        _code("print(1)"),
+    ], media_root=root).shots
+    assert len(shots) == 1
+    assert shots[0].code_text == "print(1)"
 
 
 def test_link_text_is_narrated():

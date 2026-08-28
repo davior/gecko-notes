@@ -159,7 +159,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   }
   type GroupKey = 'waveform' | 'watermark' | 'overlay_text' | 'fallback'
     | 'title_card_text' | 'chapter_card_text'
-    | 'transition' | 'ken_burns' | 'music' | 'quotes'
+    | 'transition' | 'ken_burns' | 'music' | 'quotes' | 'code'
   function patchGroup<K extends GroupKey>(group: K, changes: Partial<RenderOptions[K]>) {
     setOptions((prev) => ({ ...prev, [group]: { ...prev[group], ...changes } }))
   }
@@ -364,6 +364,11 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                        onChange={(e) => patch({ narrate_code: e.target.checked })} />
                 Read code blocks aloud
               </label>
+              <p className="text-xs text-gray-500 dark:text-gray-400 -mt-1">
+                A code block's panel is always shown on screen — this only
+                controls whether it's also narrated. Styling is under
+                Structure → Code blocks.
+              </p>
 
               <div className="pt-2">
                 <label className="label">Subtitles</label>
@@ -786,6 +791,39 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                     </p>
                   </div>
                 )}
+              </section>
+
+              <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
+                <label className="label pt-3">Code blocks</label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="label">Position</label>
+                    <select className="input" value={options.code.position}
+                            onChange={(e) => patchGroup('code', { position: e.target.value as QuotePosition })}>
+                      <option value="top">Top</option>
+                      <option value="center">Centre</option>
+                      <option value="bottom">Bottom</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Text</label>
+                    <input type="color" className="input h-9 p-1 w-full" value={options.code.color}
+                           onChange={(e) => patchGroup('code', { color: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="label">Panel shade — {Math.round(options.code.scrim * 100)}%</label>
+                    <input type="range" min={0} max={1} step={0.05} className="w-full"
+                           value={options.code.scrim}
+                           onChange={(e) => patchGroup('code', { scrim: Number(e.target.value) })} />
+                  </div>
+                </div>
+                <SizeSlider label="Code size" min={1} max={12} value={options.code.size_pct}
+                            onChange={(v) => patchGroup('code', { size_pct: v })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  A code block gets its own segment over the same picture, staying
+                  on screen until the next one replaces it — narrated only when
+                  “Read code blocks aloud” is on, in the Narration tab.
+                </p>
               </section>
             </>
           )}

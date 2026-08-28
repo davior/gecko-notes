@@ -9,10 +9,11 @@ import pytest
 from PIL import Image
 
 from app.video.compose import (
-    _edge_of, _side_of, card_image, overlay_layer, quote_panel, wrap_text, load_font, SEMIBOLD,
+    _edge_of, _side_of, card_image, code_panel, overlay_layer, quote_panel,
+    wrap_text, load_font, SEMIBOLD,
 )
 from app.video.options import (
-    CardTextSpec, OverlayTextSpec, QuoteSpec, RenderOptions, WatermarkSpec,
+    CardTextSpec, CodeSpec, OverlayTextSpec, QuoteSpec, RenderOptions, WatermarkSpec,
 )
 
 WIDTH, HEIGHT = 1280, 720
@@ -279,4 +280,80 @@ def test_an_out_of_range_size_clamps_rather_than_failing_the_render():
 def test_a_quote_panel_is_transparent_where_nothing_was_drawn():
     """It is composited over the section's own picture, so it cannot be opaque."""
     layer = _panel(position="bottom", scrim=1.0)
+    assert layer.getpixel((WIDTH // 2, 2))[3] == 0
+
+
+# ── code panels ──────────────────────────────────────────────────────────────
+
+CODE = "def greet(name):\n    print(f\"hello, {name}\")\n\ngreet(\"world\")"
+
+
+def _code(text=CODE, **spec):
+    return code_panel(WIDTH, HEIGHT, text=text, spec=CodeSpec(**spec))
+
+
+def test_a_code_panel_draws_something_and_an_empty_one_draws_nothing():
+    assert _box(_code()) is not None
+    assert _code(text="   ") is None
+    assert _code(text="") is None
+    assert _code(text="\n\n") is None
+
+
+def test_a_bigger_setting_makes_a_taller_code_panel():
+    small = _height_of(_box(_code(size_pct=2.0)))
+    large = _height_of(_box(_code(size_pct=6.0)))
+    assert large > small * 1.5
+
+
+def test_code_lines_are_never_reflowed():
+    """Word-wrapping a line of code would scramble its indentation and
+    structure, so an over-wide line is truncated with an ellipsis instead of
+    being wrapped onto a second line the way a quotation would be."""
+    wide_line = "x = " + " + ".join(f"variable_{i}" for i in range(40))
+    layer = _code(text=wide_line)
+    box = _box(layer)
+    assert box[2] - box[0] <= WIDTH - 1  # never wider than the frame
+    # A single logical line stays a single visual line: about one line's
+    # worth of height, not several.
+    single_line_h = _height_of(_box(_code(text="short_line = 1")))
+    assert _height_of(box) < single_line_h * 1.5
+
+
+def test_multi_line_code_keeps_its_own_line_breaks():
+    two_lines = _height_of(_box(_code(text="line_one()\nline_two()")))
+    one_line = _height_of(_box(_code(text="line_one()")))
+    assert two_lines > one_line * 1.3
+
+
+def test_a_code_block_too_tall_for_the_frame_is_capped_not_shrunk():
+    """A code block that doesn't fit is meant to be trimmed by whoever wrote
+    it — the panel caps the line count rather than shrinking the type."""
+    many_lines = "\n".join(f"line_{i} = {i}" for i in range(200))
+    layer = _code(text=many_lines, size_pct=6.0)
+    box = _box(layer)
+    assert box[3] - box[1] <= HEIGHT
+
+
+@pytest.mark.parametrize("position", ["top", "center", "bottom"])
+def test_the_code_panel_lands_in_the_band_it_was_asked_for(position):
+    box = _box(_code(position=position))
+    middle = (box[1] + box[3]) / 2
+    if position == "top":
+        assert middle < HEIGHT / 2
+    elif position == "bottom":
+        assert middle > HEIGHT / 2
+    else:
+        assert abs(middle - HEIGHT / 2) < HEIGHT * 0.1
+
+
+def test_an_out_of_range_code_size_clamps_rather_than_failing_the_render():
+    assert CodeSpec(size_pct=999).size_pct == 12.0
+    assert CodeSpec(size_pct=0).size_pct == 1.0
+    assert CodeSpec(scrim=5).scrim == 1.0
+    assert _box(_code(size_pct=999)) is not None
+
+
+def test_a_code_panel_is_transparent_where_nothing_was_drawn():
+    """It is composited over the section's own picture, so it cannot be opaque."""
+    layer = _code(position="bottom", scrim=1.0)
     assert layer.getpixel((WIDTH // 2, 2))[3] == 0
