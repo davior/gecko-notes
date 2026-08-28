@@ -147,9 +147,10 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     return () => { cancelled = true; clearTimeout(timer) }
   }, [
     noteId, payload.speed, payload.title_card, payload.chapter_screens,
-    payload.narrate_code, payload.min_shot_seconds, payload.quotes.enabled,
+    payload.narrate_code, payload.min_shot_seconds, payload.card_seconds,
+    payload.quotes.enabled,
     payload.shot_end_pause_ms,
-    payload.heading_pause_ms,
+    payload.heading_pause_ms, payload.paragraph_pause_ms,
     payload.transition.style, payload.transition.duration,
   ])
 
@@ -325,6 +326,21 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Held going into a heading and coming out of it. Without one the
                   voice runs the section above straight into the one below.
+                </p>
+              </div>
+              <div>
+                <label className="label">
+                  Pause inside a long segment — {options.paragraph_pause_ms === 0
+                    ? 'none' : `${(options.paragraph_pause_ms / 1000).toFixed(2)}s`}
+                </label>
+                <input type="range" min={0} max={3000} step={50} className="w-full"
+                       value={options.paragraph_pause_ms}
+                       onChange={(e) => patch({ paragraph_pause_ms: Number(e.target.value) })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Only comes up when one segment's narration is long enough to need
+                  more than one text-to-speech request — around 1,500 characters or
+                  more without a heading to split on. Short, ordinary segments
+                  never reach it.
                 </p>
               </div>
               <div>
@@ -694,6 +710,35 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                                 onChange={(v) => patchGroup('chapter_card_text', { subtitle_pct: v })} />
                   </div>
                 )}
+              </section>
+
+              <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
+                <label className="label pt-3">Segment length</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">
+                      Shortest a segment may be — {options.min_shot_seconds.toFixed(1)}s
+                    </label>
+                    <input type="range" min={0.5} max={10} step={0.5} className="w-full"
+                           value={options.min_shot_seconds}
+                           onChange={(e) => patch({ min_shot_seconds: Number(e.target.value) })} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      A media segment with little or no text under it still holds
+                      the screen for at least this long.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label">
+                      Title / chapter screen length — {options.card_seconds.toFixed(1)}s
+                    </label>
+                    <input type="range" min={0.5} max={10} step={0.5} className="w-full"
+                           value={options.card_seconds}
+                           onChange={(e) => patch({ card_seconds: Number(e.target.value) })} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      How long a silent title or chapter screen is held on screen.
+                    </p>
+                  </div>
+                </div>
               </section>
 
               <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
