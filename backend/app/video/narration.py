@@ -15,10 +15,12 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from app.video import ffmpeg as F
+from app.video import pause_markup
 from app.video.options import RenderOptions
+from app.video.pause_markup import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -112,14 +114,6 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
 _HARD_BREAK = re.compile(r"\n[ \t]*\n+")
 
 
-@dataclass
-class Chunk:
-    """One TTS request, and the silence held after it."""
-
-    text: str
-    pause_after_ms: int = 0
-
-
 def chunk_narration(
     text: str, *, paragraph_pause_ms: int, heading_pause_ms: int,
     max_chars: int = MAX_CHUNK_CHARS,
@@ -161,6 +155,49 @@ def chunk_narration(
             else:
                 pause = paragraph_pause_ms
             chunks.append(Chunk(piece, pause))
+    return chunks
+
+
+def build_narration_chunks(text: str, *, options: RenderOptions) -> List[Chunk]:
+    """The default split for a shot's narration: heading pauses plus whatever
+    pause markup the writer typed into the prose themselves.
+
+    Two independent sources of pauses, combined:
+
+    - `options.heading_pause_ms`, wherever a heading wrapped its section in a
+      blank line (see `segmenter._set_apart`) — the coarse, article-structure
+      pause `chunk_narration` also makes, driven by the render options rather
+      than anything the writer typed.
+    - `[pause:...]` markers and an ellipsis ("..." or "…"), via
+      `pause_markup.parse_pause_markup` — fine-grained pauses the writer
+      places explicitly in the text.
+
+    A bare sentence-ending "." is deliberately not a trigger here, unlike the
+    read-aloud player: forcing every sentence into its own TTS request with a
+    hard silence after it would cost an ordinary paragraph its natural
+    one-breath prosody, which nobody asked for when they typed a normal
+    sentence. Only the punctuation someone put there on purpose — an
+    ellipsis, an explicit marker, a blank line — becomes a pause.
+
+    Any resulting piece still longer than one TTS request is packed down
+    further exactly like `chunk_narration` does, holding
+    `options.paragraph_pause_ms` between the pieces that split created.
+    """
+    pause_ms: Dict[str, int] = {"…": pause_markup.DEFAULT_PAUSE_MS["…"]}
+    if options.heading_pause_ms > 0:
+        pause_ms["\n\n"] = options.heading_pause_ms
+
+    marked = pause_markup.parse_pause_markup(text, pause_ms=pause_ms)
+
+    chunks: List[Chunk] = []
+    for chunk in marked:
+        if len(chunk.text) <= MAX_CHUNK_CHARS:
+            chunks.append(chunk)
+            continue
+        pieces = chunk_text(chunk.text, MAX_CHUNK_CHARS)
+        for position, piece in enumerate(pieces):
+            last = position == len(pieces) - 1
+            chunks.append(Chunk(piece, chunk.pause_after_ms if last else options.paragraph_pause_ms))
     return chunks
 
 
@@ -273,15 +310,11 @@ def synthesize_shot(
     `tts` is injected (rather than imported) so this stays testable without a
     network call, and so the caller owns provider selection and usage recording.
 
-    `chunks` lets a caller supply its own text/pause split (e.g.
-    `pause_markup.parse_pause_markup`) instead of the default
-    paragraph/heading chunking below.
+    `chunks` lets a caller supply its own text/pause split instead of the
+    default — heading pauses plus the pause markup in the prose itself, see
+    `build_narration_chunks`.
     """
-    chunks = chunks if chunks is not None else chunk_narration(
-        text,
-        paragraph_pause_ms=options.paragraph_pause_ms,
-        heading_pause_ms=options.heading_pause_ms,
-    )
+    chunks = chunks if chunks is not None else build_narration_chunks(text, options=options)
     if not chunks:
         # A shot with no text still needs an audio track — the concat demuxer
         # requires every part to have the same stream layout — so it gets

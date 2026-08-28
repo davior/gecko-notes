@@ -147,9 +147,10 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     return () => { cancelled = true; clearTimeout(timer) }
   }, [
     noteId, payload.speed, payload.title_card, payload.chapter_screens,
-    payload.narrate_code, payload.min_shot_seconds, payload.quotes.enabled,
+    payload.narrate_code, payload.min_shot_seconds, payload.card_seconds,
+    payload.quotes.enabled,
     payload.shot_end_pause_ms,
-    payload.heading_pause_ms,
+    payload.heading_pause_ms, payload.paragraph_pause_ms,
     payload.transition.style, payload.transition.duration,
   ])
 
@@ -158,7 +159,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   }
   type GroupKey = 'waveform' | 'watermark' | 'overlay_text' | 'fallback'
     | 'title_card_text' | 'chapter_card_text'
-    | 'transition' | 'ken_burns' | 'music' | 'quotes'
+    | 'transition' | 'ken_burns' | 'music' | 'quotes' | 'code'
   function patchGroup<K extends GroupKey>(group: K, changes: Partial<RenderOptions[K]>) {
     setOptions((prev) => ({ ...prev, [group]: { ...prev[group], ...changes } }))
   }
@@ -329,6 +330,21 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
               </div>
               <div>
                 <label className="label">
+                  Pause inside a long segment — {options.paragraph_pause_ms === 0
+                    ? 'none' : `${(options.paragraph_pause_ms / 1000).toFixed(2)}s`}
+                </label>
+                <input type="range" min={0} max={3000} step={50} className="w-full"
+                       value={options.paragraph_pause_ms}
+                       onChange={(e) => patch({ paragraph_pause_ms: Number(e.target.value) })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Only comes up when one segment's narration is long enough to need
+                  more than one text-to-speech request — around 1,500 characters or
+                  more without a heading to split on. Short, ordinary segments
+                  never reach it.
+                </p>
+              </div>
+              <div>
+                <label className="label">
                   Pause at the end of every segment — {options.shot_end_pause_ms === 0
                     ? 'none' : `${(options.shot_end_pause_ms / 1000).toFixed(2)}s`}
                 </label>
@@ -348,6 +364,11 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                        onChange={(e) => patch({ narrate_code: e.target.checked })} />
                 Read code blocks aloud
               </label>
+              <p className="text-xs text-gray-500 dark:text-gray-400 -mt-1">
+                A code block's panel is always shown on screen — this only
+                controls whether it's also narrated. Styling is under
+                Structure → Code blocks.
+              </p>
 
               <div className="pt-2">
                 <label className="label">Subtitles</label>
@@ -697,6 +718,35 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
               </section>
 
               <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
+                <label className="label pt-3">Segment length</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">
+                      Shortest a segment may be — {options.min_shot_seconds.toFixed(1)}s
+                    </label>
+                    <input type="range" min={0.5} max={10} step={0.5} className="w-full"
+                           value={options.min_shot_seconds}
+                           onChange={(e) => patch({ min_shot_seconds: Number(e.target.value) })} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      A media segment with little or no text under it still holds
+                      the screen for at least this long.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="label">
+                      Title / chapter screen length — {options.card_seconds.toFixed(1)}s
+                    </label>
+                    <input type="range" min={0.5} max={10} step={0.5} className="w-full"
+                           value={options.card_seconds}
+                           onChange={(e) => patch({ card_seconds: Number(e.target.value) })} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      How long a silent title or chapter screen is held on screen.
+                    </p>
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 pt-3">
                   <input type="checkbox" checked={options.quotes.enabled}
                          onChange={(e) => patchGroup('quotes', { enabled: e.target.checked })} />
@@ -741,6 +791,39 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                     </p>
                   </div>
                 )}
+              </section>
+
+              <section className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
+                <label className="label pt-3">Code blocks</label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="label">Position</label>
+                    <select className="input" value={options.code.position}
+                            onChange={(e) => patchGroup('code', { position: e.target.value as QuotePosition })}>
+                      <option value="top">Top</option>
+                      <option value="center">Centre</option>
+                      <option value="bottom">Bottom</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Text</label>
+                    <input type="color" className="input h-9 p-1 w-full" value={options.code.color}
+                           onChange={(e) => patchGroup('code', { color: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="label">Panel shade — {Math.round(options.code.scrim * 100)}%</label>
+                    <input type="range" min={0} max={1} step={0.05} className="w-full"
+                           value={options.code.scrim}
+                           onChange={(e) => patchGroup('code', { scrim: Number(e.target.value) })} />
+                  </div>
+                </div>
+                <SizeSlider label="Code size" min={1} max={12} value={options.code.size_pct}
+                            onChange={(v) => patchGroup('code', { size_pct: v })} />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  A code block gets its own segment over the same picture, staying
+                  on screen until the next one replaces it — narrated only when
+                  “Read code blocks aloud” is on, in the Narration tab.
+                </p>
               </section>
             </>
           )}

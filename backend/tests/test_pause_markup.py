@@ -105,3 +105,41 @@ def test_a_trailing_explicit_marker_still_yields_zero_pause_on_the_last_chunk():
 def test_empty_text_produces_no_chunks():
     assert parse_pause_markup("") == []
     assert parse_pause_markup("   ") == []
+
+
+# ── omitting a trigger from pause_ms disables it, rather than zeroing it ────
+# This is what lets a caller (narration.build_narration_chunks) turn off the
+# bare "." without forcing every sentence into its own TTS request.
+
+def test_a_trigger_missing_from_pause_ms_is_not_a_boundary_at_all():
+    chunks = parse_pause_markup(
+        "First sentence. Second sentence.", pause_ms={"…": 1300, "\n\n": 1600},
+    )
+    assert len(chunks) == 1
+    assert chunks[0].text == "First sentence. Second sentence."
+
+
+def test_a_disabled_period_still_lets_ellipsis_and_markers_split():
+    chunks = parse_pause_markup(
+        "One. Two... Three [pause:medium] four.", pause_ms={"…": 1300, "\n\n": 1600},
+    )
+    assert [c.text for c in chunks] == ["One. Two...", "Three", "four."]
+    assert chunks[0].pause_after_ms == 1300
+    assert chunks[1].pause_after_ms == NAMED_PAUSE_MS["medium"]
+
+
+def test_a_disabled_blank_line_collapses_to_a_space_not_nothing():
+    """A period keeps its own character either way, but a blank line's
+    newlines are otherwise dropped outright — without a substitute space,
+    'text.\\n\\nHeading' would glue into 'text.Heading'."""
+    chunks = parse_pause_markup("Ends here.\n\nStarts here.", pause_ms={"…": 1300})
+    assert len(chunks) == 1
+    assert chunks[0].text == "Ends here. Starts here."
+
+
+def test_an_explicit_marker_overrides_even_a_disabled_trigger():
+    chunks = parse_pause_markup(
+        "Ends here. [pause:xlong] Starts here.", pause_ms={"…": 1300, "\n\n": 1600},
+    )
+    assert [c.text for c in chunks] == ["Ends here.", "Starts here."]
+    assert chunks[0].pause_after_ms == NAMED_PAUSE_MS["xlong"]

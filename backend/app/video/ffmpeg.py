@@ -382,7 +382,7 @@ def crossfade_overlap(
     if len(durations) > XFADE_MAX_SHOTS:
         return None
     names = available_filters() if filters is None else filters
-    if "xfade" not in names or "acrossfade" not in names:
+    if "xfade" not in names or "concat" not in names:
         return None
     overlap = min(max(0.0, requested), 0.5 * min(durations))
     return overlap if overlap >= MIN_TRANSITION_SECONDS else None
@@ -539,6 +539,17 @@ def build_xfade_command(
     Each shot is its own input and the graph chains pairwise, carrying the
     running total so every `offset` lands where the previous blend left off:
     shot k starts `overlap` seconds before the accumulated stream ends.
+
+    The audio does not blend the way the picture does. An `acrossfade` here
+    would mix the outgoing shot's trailing hold — the very silence
+    `shot_end_pause_ms`/`heading_pause_ms` puts there — with the incoming
+    shot's opening words ramping up underneath it, which is exactly what
+    used to muffle the start of every segment after the first and swallow
+    the configured pause along with it. Instead the accumulated audio is
+    trimmed to end exactly where the picture starts blending, and the next
+    shot's track is appended untouched: a clean cut under a blended
+    picture, eating the same `overlap` seconds the video xfade does so the
+    two streams stay in sync without the words ever overlapping.
     """
     argv = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     for name in shot_files:
@@ -554,9 +565,8 @@ def build_xfade_command(
             f"[{video}][{index}:v]xfade=transition={transition}:"
             f"duration={overlap:.3f}:offset={offset:.3f}[vx{index}]"
         )
-        chains.append(
-            f"[{audio}][{index}:a]acrossfade=d={overlap:.3f}:c1=tri:c2=tri[ax{index}]"
-        )
+        chains.append(f"[{audio}]atrim=end={offset:.3f},asetpts=PTS-STARTPTS[at{index}]")
+        chains.append(f"[at{index}][{index}:a]concat=n=2:v=0:a=1[ax{index}]")
         video, audio = f"vx{index}", f"ax{index}"
         total += durations[index] - overlap
 

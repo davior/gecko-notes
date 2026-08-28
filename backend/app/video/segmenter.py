@@ -53,6 +53,10 @@ class Shot:
     # A pull quote drawn over this shot's background while it is read.
     quote_text: Optional[str] = None
     quote_attribution: Optional[str] = None
+    # A code block drawn over this shot's background. Always drawn when set;
+    # `narration` above only carries its text when narrate_code is on — see
+    # segment()'s codeBlock branch.
+    code_text: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
     label: str = ""
 
@@ -259,8 +263,6 @@ def _block_narration(block: Dict[str, Any], options: RenderOptions) -> str:
     btype = block.get("type")
     if btype in SILENT_TYPES:
         return ""
-    if btype == "codeBlock":
-        return _inline_text(block.get("content")) if options.narrate_code else ""
     if btype == "table":
         return _table_text(block)
     if btype in NARRATED_TYPES:
@@ -434,6 +436,36 @@ def segment(
                                label="after quote"))
                     continue
 
+            if btype == "codeBlock":
+                code = _inline_text(block.get("content"))
+                if code.strip():
+                    # A code block gets its own screen time the same way a
+                    # quote does — its own shot, over whatever background the
+                    # section it interrupts was already showing — but unlike a
+                    # quote it is drawn unconditionally: only whether it is
+                    # *narrated* depends on narrate_code, not whether it shows
+                    # up at all.
+                    carry_kind: ShotKind = (
+                        "video_muted"
+                        if open_shot is not None and open_shot.kind.startswith("video")
+                        else "still"
+                    )
+                    carry_background = open_shot.background if open_shot is not None else None
+                    code_shot = Shot(
+                        kind=carry_kind, background=carry_background,
+                        code_text=code, label="code",
+                    )
+                    if (any(t.strip() for t in pending_text)
+                            or pending_chapter is not None or pending_card is not None):
+                        flush(code_shot)
+                    else:
+                        open_shot = code_shot
+                    if options.narrate_code:
+                        pending_text.append(_as_sentence(code))
+                    flush(Shot(kind=carry_kind, background=carry_background,
+                               label="after code"))
+                continue
+
             text = _block_narration(block, options)
             if text.strip():
                 spoken = _as_sentence(text)
@@ -476,19 +508,22 @@ def segment(
 
     # Drop a trailing shot that ended up with nothing to show or say. A media
     # shot with no narration is kept — it still displays for min_shot_seconds.
+    # So is a silent code block (narrate_code off, nothing narrated yet) — it
+    # still has its panel to show, even with no background of its own.
     result.shots = [
         s for s in result.shots
-        if s.kind != "still" or s.background is not None or s.narration.strip()
+        if s.kind != "still" or s.background is not None or s.narration.strip() or s.code_text
     ]
 
-    # The section reopened after a quote is a continuation, not a shot of its
-    # own: when nothing followed the quote it would replay the same background
-    # in silence, so drop it.
+    # The section reopened after a quote or a code block is a continuation,
+    # not a shot of its own: when nothing followed it, it would replay the
+    # same background in silence, so drop it.
     trimmed: List[Shot] = []
     for shot in result.shots:
         previous = trimmed[-1] if trimmed else None
-        if (previous is not None and previous.quote_text is not None
-                and shot.quote_text is None and not shot.narration.strip()
+        if (previous is not None and (previous.quote_text is not None or previous.code_text is not None)
+                and shot.quote_text is None and shot.code_text is None
+                and not shot.narration.strip()
                 and shot.chapter is None
                 and shot.kind == previous.kind
                 and shot.background == previous.background):

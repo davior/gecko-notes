@@ -13,8 +13,8 @@ import pytest
 
 from app.video import ffmpeg as F
 from app.video.narration import (
-    Cue, _srt_timestamp, chunk_narration, chunk_text, shift_cues,
-    split_for_subtitles, strip_emoji, write_srt,
+    Cue, _srt_timestamp, build_narration_chunks, chunk_narration, chunk_text,
+    shift_cues, split_for_subtitles, strip_emoji, write_srt,
 )
 from app.video.options import (
     MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
@@ -29,7 +29,7 @@ def _all_filters_present(monkeypatch):
     """Pretend the host ffmpeg has everything, so tests exercise the full graph."""
     monkeypatch.setattr(F, "_filter_cache", frozenset({
         "showwaves", "gblur", "subtitles", "drawbox", "overlay", "asplit", "apad",
-        "zoompan", "xfade", "acrossfade", "sidechaincompress", "fade", "afade",
+        "zoompan", "xfade", "concat", "sidechaincompress", "fade", "afade",
     }))
 
 
@@ -440,7 +440,7 @@ def test_no_transition_leaves_the_graph_as_it_was():
 
 # ── the crossfade stitch ─────────────────────────────────────────────────────
 
-ALL = frozenset({"xfade", "acrossfade"})
+ALL = frozenset({"xfade", "concat"})
 
 
 def test_crossfade_offsets_accumulate_across_the_whole_video():
@@ -453,9 +453,14 @@ def test_crossfade_offsets_accumulate_across_the_whole_video():
     graph = _graph(argv)
     assert "[0:v][1:v]xfade=transition=dissolve:duration=0.600:offset=4.400[vx1]" in graph
     assert "[vx1][2:v]xfade=transition=dissolve:duration=0.600:offset=7.800[vx2]" in graph
-    # Audio has to be crossfaded on the same boundaries or it slides out of sync.
-    assert "[0:a][1:a]acrossfade=d=0.600:c1=tri:c2=tri[ax1]" in graph
-    assert "[ax1][2:a]acrossfade=d=0.600:c1=tri:c2=tri[ax2]" in graph
+    # The audio cuts cleanly at the same offset the picture starts blending at,
+    # rather than crossfading — an acrossfade would mix the outgoing shot's
+    # trailing hold with the next shot's opening words fading in underneath it.
+    assert "acrossfade" not in graph
+    assert "[0:a]atrim=end=4.400,asetpts=PTS-STARTPTS[at1]" in graph
+    assert "[at1][1:a]concat=n=2:v=0:a=1[ax1]" in graph
+    assert "[ax1]atrim=end=7.800,asetpts=PTS-STARTPTS[at2]" in graph
+    assert "[at2][2:a]concat=n=2:v=0:a=1[ax2]" in graph
     assert argv[argv.index("-map") + 1] == "[v]"
     assert argv[argv.index("-movflags") + 1] == "+faststart" and argv[-1] == "out.mp4"
 
@@ -866,6 +871,72 @@ def test_nothing_is_held_after_the_final_chunk():
 def test_blank_narration_produces_no_chunks():
     assert _narration("") == []
     assert _narration("\n\n   \n\n") == []
+
+
+# ── build_narration_chunks: heading pauses + pause markup, combined ─────────
+# This is what synthesize_shot actually calls by default — chunk_narration
+# above is only exercised directly any more by estimate()'s rough duration
+# guess. The markup handling (ellipsis, [pause:...], blank lines) was wired
+# in here after users found it had never been reachable at all: RenderOptions
+# only ever fed chunk_narration, which has no notion of pause markup.
+
+def _chunks(text, **kwargs):
+    opts = RenderOptions(**kwargs)
+    return build_narration_chunks(text, options=opts)
+
+
+def test_a_plain_sentence_period_never_forces_a_split():
+    """Unlike the read-aloud player, an ordinary paragraph keeps its natural
+    one-breath prosody — only punctuation someone typed on purpose pauses."""
+    chunks = _chunks("First sentence. Second sentence. Third sentence.")
+    assert len(chunks) == 1
+    assert chunks[0].text == "First sentence. Second sentence. Third sentence."
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "…"])
+def test_an_ellipsis_pauses_regardless_of_spelling(ellipsis):
+    chunks = _chunks(f"Wait for it{ellipsis} here it comes.")
+    assert [c.text for c in chunks] == ["Wait for it" + ellipsis, "here it comes."]
+    assert chunks[0].pause_after_ms > 0
+    assert chunks[-1].pause_after_ms == 0
+
+
+def test_an_explicit_pause_marker_is_honoured_and_stripped():
+    chunks = _chunks("Then you took a side [pause:1200] really took a side.")
+    assert [c.text for c in chunks] == ["Then you took a side", "really took a side."]
+    assert chunks[0].pause_after_ms == 1200
+    assert "[pause" not in "".join(c.text for c in chunks)
+
+
+def test_a_heading_boundary_still_pauses_through_pause_markup():
+    """The blank line _set_apart wraps a heading in is exactly the "\\n\\n"
+    trigger pause_markup already understands — heading_pause_ms drives it."""
+    chunks = _chunks("Ends here.\n\nA New Chapter.\n\nBegins now.", heading_pause_ms=2000)
+    assert [c.text for c in chunks] == ["Ends here.", "A New Chapter.", "Begins now."]
+    assert [c.pause_after_ms for c in chunks] == [2000, 2000, 0]
+
+
+def test_heading_pause_off_disables_the_blank_line_without_gluing_words():
+    """A regression guard: dropping the "\\n\\n" trigger entirely used to also
+    drop its whitespace, gluing 'text.Heading' together with no space."""
+    chunks = _chunks("Ends here.\n\nA New Chapter.", heading_pause_ms=0)
+    assert len(chunks) == 1
+    assert chunks[0].text == "Ends here. A New Chapter."
+
+
+def test_a_long_stretch_with_no_markup_still_falls_back_to_length_splitting():
+    """paragraph_pause_ms's one remaining job: a section pause_markup left as
+    a single chunk that is still too long for one TTS request."""
+    section = " ".join(f"Sentence number {i}." for i in range(400))
+    chunks = _chunks(section, paragraph_pause_ms=3000, heading_pause_ms=0)
+    assert len(chunks) > 1
+    assert chunks[0].pause_after_ms == 3000
+    assert chunks[-1].pause_after_ms == 0
+
+
+def test_blank_narration_produces_no_chunks_via_markup_too():
+    assert _chunks("") == []
+    assert _chunks("   ") == []
 
 
 # ── the per-shot timeout scales with the shot, instead of being flat ────────

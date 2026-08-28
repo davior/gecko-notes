@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
-from app.video.options import CardTextSpec, OverlayTextSpec, Position, QuoteSpec, WatermarkSpec
+from app.video.options import CardTextSpec, CodeSpec, OverlayTextSpec, Position, QuoteSpec, WatermarkSpec
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,16 @@ _FALLBACKS = (
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 )
 
+# No monospace face is vendored alongside Inter, so code leans on whichever of
+# these the host has — the same Debian font packages _FALLBACKS already
+# assumes are present — before finally giving up proportional spacing
+# entirely and falling back to a normal one.
+MONO_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+_MONO_FALLBACKS = ("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", *_FALLBACKS)
 
-def load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
-    for candidate in (path, *_FALLBACKS):
+
+def load_font(path: str, size: int, fallbacks: Sequence[str] = _FALLBACKS) -> ImageFont.FreeTypeFont:
+    for candidate in (path, *fallbacks):
         try:
             return ImageFont.truetype(candidate, size)
         except OSError:
@@ -330,6 +337,73 @@ def quote_panel(
     for line in credit_lines:
         draw.text((x, y), line, font=credit_font, fill=(226, 232, 240, 225))
         y += credit_h
+
+    return layer
+
+
+def code_panel(
+    width: int, height: int, *, text: str, spec: Optional[CodeSpec] = None,
+) -> Optional[Image.Image]:
+    """A code panel drawn over whatever the shot is already showing — the same
+    idea as `quote_panel`, but for a code block.
+
+    Lines are never reflowed the way quote_panel wraps prose: word-wrapping a
+    line of code would scramble its indentation and structure. An over-wide
+    line is truncated with an ellipsis instead, and the block is capped to as
+    many lines as comfortably fit at the configured size rather than shrinking
+    the type to squeeze more in — a code block that doesn't fit is meant to be
+    trimmed by whoever wrote it, not silently minified.
+
+    Returns a full-frame RGBA layer, same as quote_panel, so the caller can
+    composite it into the single `overlay` input a shot already uses. Returns
+    None when there is nothing to draw.
+    """
+    body = (text or "").rstrip("\n")
+    if not body.strip():
+        return None
+    style = spec or CodeSpec()
+
+    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+
+    margin = int(min(width, height) * 0.07)
+    pad = max(10, int(height * 0.03))
+    font = load_font(MONO_REGULAR, max(8, int(height * style.size_pct / 100)), fallbacks=_MONO_FALLBACKS)
+    line_h = int(font.size * 1.5)
+    budget = max(1, width - margin * 2 - pad * 2)
+
+    lines = body.splitlines() or [""]
+    max_lines = max(1, (height - margin * 2 - pad * 2) // line_h)
+    shown = lines[:max_lines]
+    if len(lines) > max_lines and shown:
+        shown[-1] = truncate_to_width(draw, shown[-1] + " …", font, budget) or "…"
+    shown = [truncate_to_width(draw, line, font, budget) for line in shown]
+
+    text_w = int(max((draw.textlength(line, font=font) for line in shown), default=0))
+    panel_w = min(width - margin * 2, pad * 2 + text_w)
+    panel_h = pad * 2 + line_h * len(shown)
+
+    if style.position == "top":
+        panel_y = margin
+    elif style.position == "bottom":
+        panel_y = max(0, height - panel_h - margin)
+    else:
+        panel_y = max(0, (height - panel_h) // 2)
+    panel_x = margin
+
+    scrim = max(0.0, min(1.0, style.scrim))
+    if scrim > 0.01:
+        draw.rounded_rectangle(
+            [panel_x, panel_y, panel_x + panel_w, panel_y + panel_h],
+            radius=max(4, int(height * 0.018)), fill=(15, 23, 42, int(255 * scrim)),
+        )
+
+    colour = parse_colour(style.color, (226, 232, 240))
+    x = panel_x + pad
+    y = panel_y + pad
+    for line in shown:
+        draw.text((x, y), line or " ", font=font, fill=(*colour, 255))
+        y += line_h
 
     return layer
 

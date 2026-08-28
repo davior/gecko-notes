@@ -14,14 +14,30 @@ itself is left untouched other than removing the markers.
 """
 
 import re
+from dataclasses import dataclass
 from typing import Dict, List
 
-from app.video.narration import Chunk
+
+@dataclass
+class Chunk:
+    """One TTS request, and the silence held after it."""
+
+    text: str
+    pause_after_ms: int = 0
+
 
 # Implicit pause after each trigger, in milliseconds. `\n\n` is the pause for
 # *one* blank line; each additional blank line multiplies it (see
 # `parse_pause_markup`), so paragraph breaks with more blank lines pause
 # longer. Single source of truth — no duration is hardcoded elsewhere.
+#
+# A trigger absent from the `pause_ms` a caller passes in is not merely a
+# zero-length pause — it isn't a boundary at all, so the text around it is
+# never split. That's what lets a caller opt a plain sentence-ending "."
+# out of becoming a TTS-request boundary (see `narration.build_narration_chunks`)
+# while still honouring "…"/"..." and "[pause:...]", rather than forcing
+# every sentence into its own request with a 0ms gap, which would cost
+# ordinary prose its natural one-breath prosody.
 DEFAULT_PAUSE_MS: Dict[str, int] = {".": 900, "…": 1300, "\n\n": 1600}
 
 # Named levels for the `[pause:short|medium|long|xlong]` marker.
@@ -65,6 +81,15 @@ def parse_pause_markup(
     `[pause:xlong]` produces one 2000ms gap, not 900 + 2000. A marker
     anywhere else just becomes its own chunk boundary.
 
+    A trigger missing from `pause_ms` entirely is not a boundary at all —
+    the text around it just runs on into whatever comes next, as if that
+    trigger didn't exist — rather than a boundary with a 0ms gap. That's the
+    difference between "pause here for no time" (still a new TTS request,
+    still a seam in the prosody) and "don't split here", and it's what lets
+    a caller opt the bare "." out without forcing every sentence into its
+    own request. An explicit `[pause:...]` marker immediately following a
+    disabled trigger still overrides it, same as with an enabled one.
+
     Two boundaries with no words between them (e.g. a sentence-ending period
     immediately followed by a blank line) don't produce an empty chunk — the
     longer of the two pauses is kept on the previous chunk instead.
@@ -101,14 +126,16 @@ def parse_pause_markup(
             continue
 
         current.append(gap)
-        if m.group("para"):
+        is_para = bool(m.group("para"))
+        if is_para:
             blank_lines = m.group("para").count("\n") - 1
-            ms = pause_ms["\n\n"] * max(1, blank_lines)
+            base = pause_ms.get("\n\n")
+            ms = None if base is None else base * max(1, blank_lines)
         else:
             trig_text = m.group("trig")
             key = "." if trig_text == "." else "…"
             current.append(trig_text)
-            ms = pause_ms[key]
+            ms = pause_ms.get(key)
         pos = m.end()
 
         override = _LOOKAHEAD_MARKER.match(body, pos)
@@ -116,7 +143,14 @@ def parse_pause_markup(
             ms = _resolve_marker(override.group("mval"), named_pause_ms)
             pos = override.end()
 
-        emit(ms)
+        if ms is not None:
+            emit(ms)
+        elif is_para:
+            # A blank line that isn't a pause boundary is still whitespace
+            # between two words — drop it entirely (as opposed to a period,
+            # which keeps its own character either way) and "text.\n\nHeading"
+            # glues into "text.Heading" with no space at all.
+            current.append(" ")
 
     current.append(body[pos:])
     tail = "".join(current).strip()
