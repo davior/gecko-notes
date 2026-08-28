@@ -502,6 +502,6 @@ def estimate(
     # dry run stays instant and never shells out.
     overlap = F.crossfade_overlap(
         options.transition.style, durations, options.transition.duration,
-        filters=frozenset({"xfade", "acrossfade"}),
+        filters=frozenset({"xfade", "concat"}),
     ) or 0.0
     return len(plan.shots), plan.narration_chars, F.crossfade_total(durations, overlap), plan.warnings

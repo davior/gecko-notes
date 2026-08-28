@@ -29,7 +29,7 @@ def _all_filters_present(monkeypatch):
     """Pretend the host ffmpeg has everything, so tests exercise the full graph."""
     monkeypatch.setattr(F, "_filter_cache", frozenset({
         "showwaves", "gblur", "subtitles", "drawbox", "overlay", "asplit", "apad",
-        "zoompan", "xfade", "acrossfade", "sidechaincompress", "fade", "afade",
+        "zoompan", "xfade", "concat", "sidechaincompress", "fade", "afade",
     }))
 
 
@@ -440,7 +440,7 @@ def test_no_transition_leaves_the_graph_as_it_was():
 
 # ── the crossfade stitch ─────────────────────────────────────────────────────
 
-ALL = frozenset({"xfade", "acrossfade"})
+ALL = frozenset({"xfade", "concat"})
 
 
 def test_crossfade_offsets_accumulate_across_the_whole_video():
@@ -453,9 +453,14 @@ def test_crossfade_offsets_accumulate_across_the_whole_video():
     graph = _graph(argv)
     assert "[0:v][1:v]xfade=transition=dissolve:duration=0.600:offset=4.400[vx1]" in graph
     assert "[vx1][2:v]xfade=transition=dissolve:duration=0.600:offset=7.800[vx2]" in graph
-    # Audio has to be crossfaded on the same boundaries or it slides out of sync.
-    assert "[0:a][1:a]acrossfade=d=0.600:c1=tri:c2=tri[ax1]" in graph
-    assert "[ax1][2:a]acrossfade=d=0.600:c1=tri:c2=tri[ax2]" in graph
+    # The audio cuts cleanly at the same offset the picture starts blending at,
+    # rather than crossfading — an acrossfade would mix the outgoing shot's
+    # trailing hold with the next shot's opening words fading in underneath it.
+    assert "acrossfade" not in graph
+    assert "[0:a]atrim=end=4.400,asetpts=PTS-STARTPTS[at1]" in graph
+    assert "[at1][1:a]concat=n=2:v=0:a=1[ax1]" in graph
+    assert "[ax1]atrim=end=7.800,asetpts=PTS-STARTPTS[at2]" in graph
+    assert "[at2][2:a]concat=n=2:v=0:a=1[ax2]" in graph
     assert argv[argv.index("-map") + 1] == "[v]"
     assert argv[argv.index("-movflags") + 1] == "+faststart" and argv[-1] == "out.mp4"
 
