@@ -26,6 +26,12 @@ from app.substack_publish import SubstackError, create_substack_draft, test_subs
 from app.video.ffmpeg import FFmpegError, ffmpeg_available
 from app.video.narration import stitch_chunks_to_mp3, strip_emoji
 from app.video.pause_markup import Chunk, parse_pause_markup
+from app.web_search import (
+    DEFAULT_PROVIDER as WEB_SEARCH_DEFAULT_PROVIDER,
+    PROVIDERS as WEB_SEARCH_PROVIDERS,
+    SearchError,
+    search_web,
+)
 from app.models import AIProvider, AppSetting, ModelCatalogEntry, User, UsageEvent, UserSetting, SystemPrompt, Theme
 from app.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderRead, AIProviderTest,
@@ -2670,6 +2676,195 @@ def deactivate_theme(request: Request, session: Session = Depends(get_session)):
     if existing:
         session.delete(existing)
         session.commit()
+
+
+# ─── Web search (per-user) ────────────────────────────────────────────────────
+#
+# Which backend the AI assistant searches the web with. Anthropic models search
+# through Anthropic's own server-side tool (see `proxy_anthropic`) and never come
+# here; no other provider the app talks to has such a tool, so for DeepSeek, OpenAI,
+# Ollama and custom endpoints the app runs the search itself — against the backend
+# configured here — and feeds the hits back to the model as conversation text.
+#
+# The key is encrypted at rest (same Fernet scheme as the AI/fal/Deepgram keys) and
+# never returned to the browser; the GET reports only whether one is set. The
+# default backend (DuckDuckGo) needs no key at all, so search works out of the box.
+
+_WEB_SEARCH_CONFIG = "web_search_config"   # JSON: {"provider": "...", "base_url": "..."} — non-secret
+_WEB_SEARCH_KEY = "web_search_api_key"     # encrypted; only the keyed backends use it
+
+
+def _load_web_search_prefs(session: Session, user_id: str) -> Dict[str, str]:
+    """The user's stored {provider, base_url}, defaulted for a user who never set them."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _WEB_SEARCH_CONFIG)
+    ).first()
+    cfg: Dict[str, Any] = {}
+    if row and row.value:
+        try:
+            cfg = json.loads(row.value) or {}
+        except (ValueError, TypeError):
+            cfg = {}
+    provider = str(cfg.get("provider") or WEB_SEARCH_DEFAULT_PROVIDER)
+    if provider not in WEB_SEARCH_PROVIDERS:
+        provider = WEB_SEARCH_DEFAULT_PROVIDER
+    return {"provider": provider, "base_url": (cfg.get("base_url") or "").strip()}
+
+
+def load_web_search_api_key(session: Session, user_id: str) -> Optional[str]:
+    """Decrypted web-search API key for a user, or None when unset. Mirrors load_fal_api_key."""
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == _WEB_SEARCH_KEY)
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        stored = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    if not stored:
+        return None
+    try:
+        return decrypt_api_key(stored)
+    except Exception:
+        return None
+
+
+def load_web_search_config(session: Session, user_id: str) -> Dict[str, Any]:
+    """Everything needed to run one search: provider, api_key, base_url. Reused by the
+    search router, which is where the assistant's `web_search` action lands."""
+    prefs = _load_web_search_prefs(session, user_id)
+    return {**prefs, "api_key": load_web_search_api_key(session, user_id) or ""}
+
+
+def web_search_configured(session: Session, user_id: str) -> bool:
+    """Whether the user's chosen backend has everything it needs to run."""
+    cfg = load_web_search_config(session, user_id)
+    spec = WEB_SEARCH_PROVIDERS[cfg["provider"]]
+    if spec.needs_api_key and not cfg["api_key"]:
+        return False
+    if spec.needs_base_url and not cfg["base_url"]:
+        return False
+    return True
+
+
+def _web_search_payload(session: Session, user_id: str) -> Dict[str, Any]:
+    prefs = _load_web_search_prefs(session, user_id)
+    return {
+        **prefs,
+        "has_api_key": bool(load_web_search_api_key(session, user_id)),
+        "configured": web_search_configured(session, user_id),
+        # The backend catalogue travels with the settings so the picker (and its
+        # "needs a key / needs a URL" hints) never drifts from app/web_search.py.
+        "providers": [
+            {
+                "id": key,
+                "label": spec.label,
+                "needs_api_key": spec.needs_api_key,
+                "needs_base_url": spec.needs_base_url,
+            }
+            for key, spec in WEB_SEARCH_PROVIDERS.items()
+        ],
+    }
+
+
+class WebSearchSettingsUpdate(BaseModel):
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    # `api_key` is tri-state, same convention as the fal/Deepgram keys and the Substack
+    # cookie: omitted / None leaves the stored key untouched; "" clears it; a non-empty
+    # value replaces it.
+    api_key: Optional[str] = None
+
+
+class WebSearchTestRequest(BaseModel):
+    # All optional: a value tests what the user just typed (before saving), an omitted
+    # one falls back to the stored setting (re-check a saved configuration).
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@router.get("/web-search", response_model=Dict[str, Any])
+def get_web_search_settings(request: Request, session: Session = Depends(get_session)):
+    user_id = _get_user_id(request)
+    return _web_search_payload(session, user_id)
+
+
+@router.put("/web-search", response_model=Dict[str, Any])
+def update_web_search_settings(
+    payload: WebSearchSettingsUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = _get_user_id(request)
+    prefs = _load_web_search_prefs(session, user_id)
+
+    if payload.provider is not None:
+        provider = payload.provider.strip()
+        if provider not in WEB_SEARCH_PROVIDERS:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_provider", "message": f"Unknown web search backend “{provider}”"},
+            )
+        prefs["provider"] = provider
+
+    if payload.base_url is not None:
+        base_url = payload.base_url.strip().rstrip("/")
+        if base_url:
+            # Same posture as a custom AI provider's base URL: https only, public host.
+            _require_safe_external_url(base_url)
+        prefs["base_url"] = base_url
+
+    if payload.provider is not None or payload.base_url is not None:
+        _upsert_user_setting(session, user_id, _WEB_SEARCH_CONFIG, json.dumps(prefs))
+
+    if payload.api_key is not None:
+        encrypted = encrypt_api_key(payload.api_key) if payload.api_key else ""
+        _upsert_user_setting(session, user_id, _WEB_SEARCH_KEY, json.dumps(encrypted))
+
+    session.commit()
+    return _web_search_payload(session, user_id)
+
+
+@router.post("/web-search/test", response_model=Dict[str, Any])
+async def test_web_search(
+    payload: WebSearchTestRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Run a throwaway query against the backend. Always HTTP 200 with
+    {success, message} (mirrors /ai-providers/test and /substack/test)."""
+    user_id = _get_user_id(request)
+    stored = load_web_search_config(session, user_id)
+    provider = (payload.provider or stored["provider"]).strip()
+    if provider not in WEB_SEARCH_PROVIDERS:
+        return {"success": False, "message": f"Unknown web search backend “{provider}”."}
+
+    api_key = payload.api_key or (stored["api_key"] if provider == stored["provider"] else "")
+    base_url = (payload.base_url or "").strip() or (stored["base_url"] if provider == stored["provider"] else "")
+
+    try:
+        results = await search_web(
+            provider=provider,
+            query="what is the current date",
+            api_key=api_key,
+            base_url=base_url,
+            count=3,
+        )
+    except SearchError as e:
+        return {"success": False, "message": e.message}
+    except Exception:
+        logger.exception("web search test failed")
+        return {"success": False, "message": "The search failed unexpectedly. Check the server logs."}
+
+    label = WEB_SEARCH_PROVIDERS[provider].label
+    if not results:
+        return {"success": False, "message": f"{label} answered, but returned no results."}
+    return {
+        "success": True,
+        "message": f"Connected — {label} returned {len(results)} result(s), e.g. “{results[0].title}”.",
+    }
 
 
 # ─── Substack publishing (per-user) ───────────────────────────────────────────

@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState, useCallback } from 'react'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, LabelList,
 } from 'recharts'
-import { Loader2, Mic, Volume2, Cpu, Image as ImageIcon } from 'lucide-react'
+import { Loader2, Mic, Volume2, Cpu, Globe, Image as ImageIcon } from 'lucide-react'
 import { settingsApi, type UsageSummary } from '@/api/settings'
 import { useSettingsStore } from '@/stores/settings'
 import { formatCost } from '@/api/imageGen'
 
-const KIND_ORDER = ['tts', 'stt', 'ai', 'image'] as const
+const KIND_ORDER = ['tts', 'stt', 'ai', 'image', 'search'] as const
 type Kind = (typeof KIND_ORDER)[number]
 
 const KIND_META: Record<Kind, { label: string; icon: typeof Mic; color: string }> = {
@@ -15,12 +15,13 @@ const KIND_META: Record<Kind, { label: string; icon: typeof Mic; color: string }
   stt: { label: 'Speech-to-Text', icon: Mic, color: 'text-emerald-600 dark:text-emerald-400' },
   ai: { label: 'AI Providers', icon: Cpu, color: 'text-amber-600 dark:text-amber-400' },
   image: { label: 'Image Generation', icon: ImageIcon, color: 'text-green-700 dark:text-green-500' },
+  search: { label: 'Web Search', icon: Globe, color: 'text-indigo-600 dark:text-indigo-400' },
 }
 
-// Validated categorical slots 1–4 (see dataviz skill references/palette.md), light + dark.
+// Validated categorical slots 1–5 (see dataviz skill references/palette.md), light + dark.
 const KIND_HUE: Record<'light' | 'dark', Record<Kind, string>> = {
-  light: { tts: '#2a78d6', stt: '#1baf7a', ai: '#eda100', image: '#008300' },
-  dark: { tts: '#3987e5', stt: '#199e70', ai: '#c98500', image: '#008300' },
+  light: { tts: '#2a78d6', stt: '#1baf7a', ai: '#eda100', image: '#008300', search: '#4a3aa7' },
+  dark: { tts: '#3987e5', stt: '#199e70', ai: '#c98500', image: '#008300', search: '#9085e9' },
 }
 
 // Full 8-slot categorical ramp for the by-provider bars (also reused by
@@ -32,12 +33,13 @@ export const CATEGORICAL: Record<'light' | 'dark', string[]> = {
 }
 
 const UNIT_LABEL: Record<string, string> = {
-  chars: 'characters', seconds: 'seconds', tokens: 'tokens', images: 'images',
+  chars: 'characters', seconds: 'seconds', tokens: 'tokens', images: 'images', searches: 'searches',
 }
 
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic', openai: 'OpenAI', ollama: 'Ollama (local)', 'fal.ai': 'fal.ai',
   ai: 'AI (legacy)', tts: 'Speech (legacy)', stt: 'Speech (legacy)', image: 'Images (legacy)',
+  duckduckgo: 'DuckDuckGo', brave: 'Brave Search', tavily: 'Tavily', searxng: 'SearXNG',
 }
 
 const RANGES = [
@@ -127,14 +129,14 @@ export default function UsageDashboard() {
       ) : (
         <>
           {/* Summary cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             {KIND_ORDER.map((kind) => {
               const meta = KIND_META[kind]
               const Icon = meta.icon
               const total = totalsByKind.find((t) => t.kind === kind)
               const units = total?.units ?? 0
               const count = total?.count ?? 0
-              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : kind === 'image' ? 'images' : 'chars')
+              const unitType = total?.unit_type || (kind === 'stt' ? 'seconds' : kind === 'ai' ? 'tokens' : kind === 'image' ? 'images' : kind === 'search' ? 'searches' : 'chars')
               return (
                 <div key={kind} className="card p-4">
                   <div className={`flex items-center gap-2 mb-2 ${meta.color}`}>

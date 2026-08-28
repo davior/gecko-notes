@@ -333,6 +333,33 @@ export interface SubstackPublishResult {
   draft_url: string
 }
 
+// Which backend the assistant searches the web with (see api/search.ts). The
+// available backends travel with the settings so the picker can't drift from the
+// server's list.
+export interface WebSearchProviderInfo {
+  id: string
+  label: string
+  needs_api_key: boolean
+  needs_base_url: boolean
+}
+
+export interface WebSearchSettings {
+  provider: string
+  base_url: string
+  has_api_key: boolean
+  // Whether the chosen backend has everything it needs to run a search.
+  configured: boolean
+  providers: WebSearchProviderInfo[]
+}
+
+export interface WebSearchSettingsUpdate {
+  provider?: string
+  base_url?: string
+  // Tri-state, same convention as the fal/Deepgram keys: omitted leaves the stored
+  // key untouched, "" clears it, a non-empty value replaces it.
+  api_key?: string
+}
+
 export const settingsApi = {
   getAll(): Promise<Record<string, unknown>> {
     return client.get('/settings').then((r) => r.data)
@@ -498,5 +525,17 @@ export const settingsApi = {
 
   testSubstackConnection(payload: { publication_url?: string; cookie?: string }): Promise<{ success: boolean; message: string }> {
     return client.post('/settings/substack/test', payload).then((r) => r.data)
+  },
+
+  getWebSearchSettings(): Promise<WebSearchSettings> {
+    return client.get('/settings/web-search').then((r) => r.data)
+  },
+
+  updateWebSearchSettings(payload: WebSearchSettingsUpdate): Promise<WebSearchSettings> {
+    return client.put('/settings/web-search', payload).then((r) => r.data)
+  },
+
+  testWebSearch(payload: { provider?: string; api_key?: string; base_url?: string }): Promise<{ success: boolean; message: string }> {
+    return client.post('/settings/web-search/test', payload).then((r) => r.data)
   },
 }

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSettingsStore } from '@/stores/settings'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
+import WebSearchSettings from '@/components/settings/WebSearchSettings'
 
 export default function AssistantSettings() {
   const { updateAppSettings, aiPrefill, summaryPrompt } = useSettingsStore()
@@ -11,6 +12,8 @@ export default function AssistantSettings() {
   return (
     <div className="space-y-8">
       <SystemPromptManager />
+
+      <WebSearchSettings />
 
       <div>
         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Prefilled Assistant Response</h3>
