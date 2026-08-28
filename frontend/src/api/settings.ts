@@ -166,6 +166,11 @@ export interface AIProvider {
   model: string
   max_tokens: number
   supports_images: boolean
+  // Talk to this provider over the Anthropic Messages protocol rather than its default
+  // one. Set on a DeepSeek provider it points at api.deepseek.com/anthropic, whose
+  // server-side web_search tool DeepSeek runs itself — so the assistant searches the
+  // web natively, with no third-party search backend.
+  use_anthropic_api: boolean
   extra_params: Record<string, unknown> | null
   enabled: boolean
   is_active: boolean
@@ -179,6 +184,7 @@ export interface AIProviderCreate {
   model: string
   max_tokens?: number
   supports_images?: boolean
+  use_anthropic_api?: boolean
   extra_params?: Record<string, unknown> | null
   enabled?: boolean
   is_active?: boolean
@@ -192,6 +198,7 @@ export interface AIProviderUpdate {
   model?: string
   max_tokens?: number
   supports_images?: boolean
+  use_anthropic_api?: boolean
   extra_params?: Record<string, unknown> | null
   enabled?: boolean
   is_active?: boolean
@@ -203,6 +210,8 @@ export interface AIProviderTest {
   api_key?: string
   base_url?: string | null
   model: string
+  // Tests the Anthropic-compatible endpoint instead of the provider type's default one.
+  use_anthropic_api?: boolean
 }
 
 export interface FalModel {

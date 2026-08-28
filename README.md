@@ -20,7 +20,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 ### AI assistant
 - Conversational AI assistant (Anthropic, OpenAI, DeepSeek, Ollama, or any OpenAI-compatible endpoint)
 - **Agentic note plans** — the assistant turns requests into executable, multi-step plans that edit the note (insert/edit sections, add references, move notes) with per-step checkboxes
-- **Web search for every model** — Claude models use Anthropic's built-in tool; DeepSeek, OpenAI, Ollama and custom endpoints search through the app itself (DuckDuckGo, Brave, Tavily or your own SearXNG) and cite what they find
+- **Web search for every model** — Claude and DeepSeek search natively (the provider runs the search itself, no extra key); Ollama and OpenAI-compatible endpoints fall back to a search backend the app runs (DuckDuckGo, Brave, Tavily or your own SearXNG). Either way the assistant cites what it found
 - Context scope controls (current note, selection, attachments) with prompt-cache freezing to reduce token cost
 - File and PDF attachments as context
 - Per-note AI session history
@@ -82,7 +82,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 | Frontend | React 18 + Vite + TypeScript + Zustand + Tailwind CSS v3 |
 | Editor | BlockNote (`@blocknote/react`) |
 | Backend | FastAPI + SQLModel (SQLite) |
-| AI | Anthropic / OpenAI / DeepSeek / Ollama / OpenAI-compatible; web search via Anthropic, DuckDuckGo, Brave, Tavily or SearXNG |
+| AI | Anthropic / OpenAI / DeepSeek / Ollama / OpenAI-compatible; web search native (Anthropic, DeepSeek) or app-run (DuckDuckGo, Brave, Tavily, SearXNG) |
 | Voice & Images | fal.ai (TTS + STT + image generation) |
 | Container | Docker Compose + Nginx |
 
@@ -211,7 +211,7 @@ Go to **Settings → AI Providers** to configure an AI provider:
 |----------|-------|
 | Anthropic | Requires an API key from console.anthropic.com. Searches the web using Anthropic's own built-in tool. |
 | OpenAI | Requires an API key from platform.openai.com |
-| DeepSeek | Requires an API key from platform.deepseek.com. Models: `deepseek-chat` or `deepseek-reasoner` |
+| DeepSeek | Requires an API key from platform.deepseek.com. Models: `deepseek-v4-flash` or `deepseek-v4-pro` (the older `deepseek-chat` / `deepseek-reasoner` ids were retired on 24 July 2026). Tick **Use the Anthropic-compatible API** to get DeepSeek's built-in web search — see below. |
 | Ollama | Point to your local Ollama instance (e.g. `http://localhost:11434`) |
 | Custom | Any OpenAI-compatible endpoint |
 
@@ -222,10 +222,21 @@ API keys are stored encrypted in the local SQLite database — never transmitted
 ## Web Search
 
 The assistant can look things up online — current events, recent facts, research — and
-cite its sources. How it searches depends on the model:
+cite its sources. There are two routes, and the first is always the better one.
 
-- **Claude models** search inside the model call, using Anthropic's own built-in search tool. Nothing to configure.
-- **Every other model** (DeepSeek, OpenAI, Ollama, custom endpoints) has no search tool of its own, so the *app* runs the search and hands the results back to the model. Pick the backend under **Settings → AI Services → Assistant → Web Search**:
+### 1. The model searches itself (preferred — no key, no per-search fee)
+
+Some providers run the search server-side, inside the model call. Nothing to configure
+beyond the provider itself, and the only cost is that provider's own tokens.
+
+- **Claude models** — Anthropic's built-in search tool. Works out of the box.
+- **DeepSeek** — tick **Use the Anthropic-compatible API** on the provider (**Settings → AI Services → Providers**). That points it at `api.deepseek.com/anthropic`, which runs DeepSeek's own server-side search. Same API key, same model ids (`deepseek-v4-flash`, `deepseek-v4-pro`); image attachments and prompt caching are ignored on that endpoint, and **Test** verifies it before you save.
+
+### 2. The app searches on the model's behalf (fallback)
+
+Ollama and OpenAI-compatible endpoints have no search tool at all — without this they
+just tell you they have no web access. For those, the app runs the search itself and
+hands the results back. Pick the backend under **Settings → AI Services → Assistant → Web Search**:
 
 | Backend | Notes |
 |---------|-------|

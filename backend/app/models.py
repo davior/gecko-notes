@@ -123,6 +123,14 @@ class AIProvider(SQLModel, table=True):
     # UI checks this flag before letting the user attach images. Capability-driven so
     # a new provider only needs the flag set — no per-type special-casing in the app.
     supports_images: bool = Field(default=False)
+    # Speak the Anthropic Messages protocol to this provider instead of its default
+    # (OpenAI-compatible) one. DeepSeek publishes an Anthropic-compatible endpoint at
+    # api.deepseek.com/anthropic which runs the same server-side web_search tool Claude
+    # does — so a DeepSeek provider with this set searches the web itself, natively,
+    # with no third-party search key. Also usable for a `custom` Anthropic-compatible
+    # gateway (with its own base_url). Ignored for `anthropic` (already native) and
+    # `ollama` (its own protocol).
+    use_anthropic_api: bool = Field(default=False)
     # Arbitrary extra request parameters (JSON-as-text) merged into the outgoing LLM
     # request when a chat is sent — e.g. {"temperature": 0}, top_p, or provider-specific
     # knobs. None/empty sends nothing optional. Structural keys (model, messages,

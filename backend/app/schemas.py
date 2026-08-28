@@ -325,6 +325,7 @@ class AIProviderCreate(BaseModel):
     model: str
     max_tokens: int = Field(default=16384, ge=1, le=200000)
     supports_images: bool = False
+    use_anthropic_api: bool = False
     extra_params: Optional[dict[str, Any]] = None
     enabled: bool = True
     is_active: bool = False
@@ -338,6 +339,7 @@ class AIProviderUpdate(BaseModel):
     model: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, ge=1, le=200000)
     supports_images: Optional[bool] = None
+    use_anthropic_api: Optional[bool] = None
     extra_params: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = None
     is_active: Optional[bool] = None
@@ -352,6 +354,7 @@ class AIProviderRead(BaseModel):
     model: str
     max_tokens: int = 16384
     supports_images: bool = False
+    use_anthropic_api: bool = False
     extra_params: Optional[dict[str, Any]] = None
     enabled: bool
     is_active: bool
@@ -381,6 +384,7 @@ class AIProviderTest(BaseModel):
     api_key: str = ''
     base_url: Optional[str] = None
     model: str
+    use_anthropic_api: bool = False
 
 
 # System Prompt schemas

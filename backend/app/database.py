@@ -536,6 +536,15 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Opt-in: talk to a provider over the Anthropic Messages protocol rather than its
+        # default one. Off for every existing row — a provider only moves onto that
+        # protocol when the user points it at an Anthropic-compatible endpoint (e.g.
+        # DeepSeek's, which brings its own server-side web search with it).
+        try:
+            conn.execute(text("ALTER TABLE aiprovider ADD COLUMN use_anthropic_api BOOLEAN NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

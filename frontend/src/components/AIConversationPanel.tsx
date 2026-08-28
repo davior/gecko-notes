@@ -403,20 +403,25 @@ export default function AIConversationPanel({
   // DeepSeek set this false and the attach flow drops images before they're sent.
   const supportsImages = activeProvider?.supports_images ?? true
   // How this provider searches the web — the two mechanisms are mutually exclusive:
-  //   'native' — Anthropic only: ai.ts attaches the web_search_20250305 server tool and
-  //              the search happens inside the model call.
-  //   'action' — everyone else (DeepSeek, OpenAI-compatible, Ollama): their APIs expose no
-  //              search tool, so the model asks for a search with a `web_search` plan
-  //              action and the app runs it (see the retrieval loop in handleSend).
-  //              Requires a configured search backend — Settings → AI → Assistant.
-  //   'none'   — no native tool and no backend configured.
+  //   'native' — any provider on the Anthropic Messages protocol: Claude, and equally a
+  //              DeepSeek provider pointed at api.deepseek.com/anthropic. ai.ts attaches
+  //              the web_search_20250305 server tool and the PROVIDER runs the search
+  //              inside the model call. Always preferred: nothing to configure, no
+  //              second key, no per-search fee beyond the provider's own tokens.
+  //   'action' — providers whose API has no search tool at all (Ollama, OpenAI-compatible
+  //              endpoints, and a DeepSeek provider still on the OpenAI-compatible one):
+  //              the model asks with a `web_search` plan action and the APP runs it (see
+  //              the retrieval loop in handleSend). Needs a search backend configured
+  //              under Settings → AI → Assistant.
+  //   'none'   — neither: no native tool, no backend configured.
   // The prompt's promise of search and the mechanism behind it are gated together on this:
   // a model told it can search but given nothing to search with either emits tool-call
   // markup as raw text (<tool_calls><invoke name="web_search">…) or tells the user it has
   // no web access — the two bugs this guards against.
   const webSearchConfigured = useSettingsStore((s) => s.webSearchConfigured)
+  const hasNativeSearch = activeProvider?.provider_type === 'anthropic' || !!activeProvider?.use_anthropic_api
   const webSearchMode: 'native' | 'action' | 'none' =
-    activeProvider?.provider_type === 'anthropic' ? 'native' : webSearchConfigured ? 'action' : 'none'
+    hasNativeSearch ? 'native' : webSearchConfigured ? 'action' : 'none'
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const deepgramKeyConfigured = useSettingsStore((s) => s.deepgramKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)

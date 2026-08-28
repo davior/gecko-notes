@@ -5,7 +5,7 @@ import { settingsApi, type AIProvider } from '@/api/settings'
 import MediaProviderSettings from '@/components/settings/MediaProviderSettings'
 
 type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom'
-interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; supports_images: boolean; extra_params: string; enabled: boolean }
+interface ProviderForm { name: string; provider_type: ProviderType; api_key: string; base_url: string; model: string; max_tokens: number; supports_images: boolean; use_anthropic_api: boolean; extra_params: string; enabled: boolean }
 
 // Sensible per-type output-token defaults. Anthropic 4.x models support 64000
 // (Opus up to 128000); most OpenAI-compatible models cap output near 16384.
@@ -18,10 +18,16 @@ const defaultMaxTokens: Record<ProviderType, number> = { anthropic: 64000, opena
 // ticks it on for a vision model (llava, a custom multimodal endpoint, …).
 const defaultSupportsImages: Record<ProviderType, boolean> = { anthropic: true, openai: true, deepseek: false, ollama: false, custom: false }
 
-const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, supports_images: defaultSupportsImages.anthropic, extra_params: '', enabled: true })
+const emptyForm = (): ProviderForm => ({ name: '', provider_type: 'anthropic', api_key: '', base_url: '', model: '', max_tokens: defaultMaxTokens.anthropic, supports_images: defaultSupportsImages.anthropic, use_anthropic_api: false, extra_params: '', enabled: true })
+
+// Which types can be pointed at an Anthropic-compatible endpoint instead of their own.
+// DeepSeek publishes one (api.deepseek.com/anthropic) that runs its own server-side web
+// search; a `custom` gateway may speak Messages too. `anthropic` is already there, and
+// Ollama speaks only its own protocol.
+const canUseAnthropicApi = (t: ProviderType) => t === 'deepseek' || t === 'custom'
 
 const modelPlaceholders: Record<string, string> = {
-  anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', deepseek: 'deepseek-chat', ollama: 'llama3.2', custom: 'model-name',
+  anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', deepseek: 'deepseek-v4-flash', ollama: 'llama3.2', custom: 'model-name',
 }
 
 const typeBadge: Record<string, string> = {
@@ -55,7 +61,7 @@ export default function AIProviderManager() {
 
   function startEdit(p: AIProvider) {
     setEditingId(p.id)
-    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], supports_images: p.supports_images ?? defaultSupportsImages[p.provider_type], extra_params: p.extra_params ? JSON.stringify(p.extra_params, null, 2) : '', enabled: p.enabled })
+    setForm({ name: p.name, provider_type: p.provider_type, api_key: '', base_url: p.base_url ?? '', model: p.model, max_tokens: p.max_tokens ?? defaultMaxTokens[p.provider_type], supports_images: p.supports_images ?? defaultSupportsImages[p.provider_type], use_anthropic_api: p.use_anthropic_api ?? false, extra_params: p.extra_params ? JSON.stringify(p.extra_params, null, 2) : '', enabled: p.enabled })
     setTestResult(null); setShowForm(true)
   }
 
@@ -79,7 +85,7 @@ export default function AIProviderManager() {
     setSaving(true)
     try {
       const max_tokens = Math.min(200000, Math.max(1, Math.round(form.max_tokens) || defaultMaxTokens[form.provider_type]))
-      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, supports_images: form.supports_images, extra_params, enabled: form.enabled }
+      const payload = { name: form.name, provider_type: form.provider_type, api_key: form.api_key, base_url: form.base_url || null, model: form.model, max_tokens, supports_images: form.supports_images, use_anthropic_api: canUseAnthropicApi(form.provider_type) && form.use_anthropic_api, extra_params, enabled: form.enabled }
       if (editingId) { await updateAIProvider(editingId, payload) } else { await createAIProvider(payload) }
       setShowForm(false); setEditingId(null); showToast('Provider saved', false)
     } catch { showToast('Failed to save provider', true) }
@@ -94,6 +100,7 @@ export default function AIProviderManager() {
         api_key: form.api_key,
         base_url: form.base_url || null,
         model: form.model,
+        use_anthropic_api: canUseAnthropicApi(form.provider_type) && form.use_anthropic_api,
       }
       if (editingId) payload.provider_id = editingId
       const result = await settingsApi.testAIProvider(payload)
@@ -141,7 +148,7 @@ export default function AIProviderManager() {
             </div>
             <div>
               <label className="label">Provider Type</label>
-              <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t], supports_images: defaultSupportsImages[t] }) }} className="input">
+              <select value={f.provider_type} onChange={(e) => { const t = e.target.value as ProviderType; setF({ provider_type: t, max_tokens: defaultMaxTokens[t], supports_images: defaultSupportsImages[t], use_anthropic_api: false }) }} className="input">
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
                 <option value="deepseek">DeepSeek</option>
@@ -165,6 +172,19 @@ export default function AIProviderManager() {
               <div>
                 <label className="label">Base URL</label>
                 <input value={f.base_url} onChange={(e) => setF({ base_url: e.target.value })} type="text" className="input" placeholder={f.provider_type === 'ollama' ? 'http://localhost:11434' : 'https://api.example.com'} />
+              </div>
+            )}
+            {canUseAnthropicApi(f.provider_type) && (
+              <div>
+                <div className="flex items-center gap-2">
+                  <input id="anthropic-api-check" type="checkbox" checked={f.use_anthropic_api} onChange={(e) => setF({ use_anthropic_api: e.target.checked })} className="rounded" />
+                  <label htmlFor="anthropic-api-check" className="text-sm text-gray-700 dark:text-gray-300">Use the Anthropic-compatible API (enables built-in web search)</label>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  {f.provider_type === 'deepseek'
+                    ? 'Talks to api.deepseek.com/anthropic instead of the OpenAI-compatible endpoint. DeepSeek runs the web search itself there, the same way Claude does — no search backend or extra key needed. Model ids are unchanged (deepseek-v4-flash, deepseek-v4-pro). Image attachments and prompt caching are ignored on that endpoint.'
+                    : 'Tick if the Base URL above is an Anthropic-compatible (Messages API) gateway rather than an OpenAI-compatible one. If it runs a server-side web_search tool, the assistant will use it.'}
+                </p>
               </div>
             )}
             <div>

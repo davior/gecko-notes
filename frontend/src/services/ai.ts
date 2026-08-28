@@ -571,6 +571,17 @@ class OllamaProvider implements AIService {
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createAIService(provider: AIProvider): AIService {
+  // The Anthropic path is chosen by PROTOCOL, not by vendor: a DeepSeek (or custom
+  // gateway) provider pointed at an Anthropic-compatible endpoint speaks Messages,
+  // and gets the same native web_search tool a Claude provider does — the backend
+  // proxy routes it to that provider's own endpoint (see _anthropic_base).
+  if (provider.use_anthropic_api && provider.provider_type !== 'anthropic') {
+    return new AnthropicProvider({
+      id: provider.id,
+      model: provider.model,
+      maxTokens: provider.max_tokens ?? 16384,
+    })
+  }
   switch (provider.provider_type) {
     case 'anthropic':
       return new AnthropicProvider({
