@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from app.routers.media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from app.video.options import RenderOptions
+from app.video.pause_markup import strip_pause_markup
 
 ShotKind = Literal["still", "video_muted", "video_sound", "card"]
 
@@ -60,6 +61,20 @@ class Shot:
     # Set on the second half of a sounded-clip pair, purely for readable logs.
     label: str = ""
 
+    def __post_init__(self) -> None:
+        # A pause marker is an instruction to the voice, not something to look
+        # at. `narration` keeps its markers — `parse_pause_markup` needs them
+        # to place the silence and strips them itself on the way to the TTS
+        # request — but every field below is *drawn* by `compose`, and nothing
+        # downstream of here would have taken them out, so `[pause:2s]` typed
+        # into a heading was rendered onto the video. `code_text` is left
+        # alone: bracketed text inside a code block is code.
+        for drawn in ("card_title", "card_subtitle", "chapter",
+                      "quote_text", "quote_attribution"):
+            value = getattr(self, drawn)
+            if value:
+                setattr(self, drawn, strip_pause_markup(value) or None)
+
 
 @dataclass
 class Segmentation:
@@ -70,7 +85,10 @@ class Segmentation:
 
     @property
     def narration_chars(self) -> int:
-        return sum(len(s.narration) for s in self.shots)
+        # Pause markers never reach a TTS request, so they are not narration:
+        # counting them would inflate the figure the options dialog shows and
+        # push a note over `max_narration_chars` on text nobody will hear.
+        return sum(len(strip_pause_markup(s.narration)) for s in self.shots)
 
 
 def _inline_text(content: Any) -> str:

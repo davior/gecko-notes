@@ -1124,3 +1124,75 @@ def test_a_shot_with_no_narration_gets_no_end_pause():
         options=RenderOptions(title_card=False, shot_end_pause_ms=2000),
     )
     assert silent_image[2] == RenderOptions().min_shot_seconds
+
+
+# ── the estimate sees the same pauses the render will make ────────────────────
+# estimate() used to call chunk_narration, which has no notion of pause markup,
+# so the options dialog silently ignored every [pause:...] and ellipsis and
+# under-reported the length of exactly the scripts that lean on them.
+
+def test_an_explicit_marker_lengthens_the_estimate():
+    plain = _estimate(LONG_PARAGRAPH + "Then this. And this.")
+    marked = _estimate(LONG_PARAGRAPH + "Then this. [pause:4s] And this.")
+    assert marked[2] > plain[2] + 3.5
+
+
+def test_an_ellipsis_lengthens_the_estimate():
+    plain = _estimate(LONG_PARAGRAPH + "Wait for it. Here it comes.")
+    dotted = _estimate(LONG_PARAGRAPH + "Wait for it... Here it comes.")
+    assert dotted[2] > plain[2]
+
+
+def test_the_estimate_does_not_bill_marker_text_as_speech():
+    """The character count is what will be spoken — and what the render is
+    checked against — so a stripped marker must not inflate it."""
+    plain = _estimate("Hello world.")
+    marked = _estimate("Hello [pause:2s] world.")
+    assert marked[1] == plain[1]
+
+
+def test_the_estimate_agrees_with_the_split_the_render_will_use():
+    """Held time in the estimate is the sum of the chunk pauses synthesize_shot
+    will actually lay down, not a second, drifting calculation."""
+    text = "Ends here.\n\nA New Chapter.\n\nBegins now... [pause:2s] and on."
+    opts = RenderOptions(title_card=False, heading_pause_ms=1500)
+    chunks = build_narration_chunks(text, options=opts)
+    assert sum(c.pause_after_ms for c in chunks) == 1500 + 1500 + 2000
+    assert chunks[-1].pause_after_ms == 0
+
+
+# ── the video path never asks the TTS engine to say nothing ───────────────────
+# Each of these patterns used to become its own TTS request. The provider
+# answered with an empty or error body, which synthesize_shot wrote to a .raw
+# file and handed to ffmpeg — which, unable to identify it, fell back to the
+# rawvideo demuxer and failed the render with "Invalid pixel format".
+
+@pytest.mark.parametrize("body,label", [
+    ("...", "ellipsis beat"),
+    ("..", "two dots"),
+    (". . .", "spaced dots"),
+    ("“...”", "quoted ellipsis"),
+    ("---", "rule of dashes"),
+    ("\U0001F697", "lone emoji"),
+])
+def test_a_wordless_paragraph_never_becomes_a_tts_request(body, label):
+    chunks = _chunks(f"Before this.\n\n{body}\n\nAfter this.", heading_pause_ms=1600)
+    assert [c.text for c in chunks] == ["Before this.", "After this."], label
+    # The beat is still a beat — it just lives as silence on the chunk before it.
+    assert chunks[0].pause_after_ms > 0
+
+
+def test_a_shot_of_pure_punctuation_produces_no_chunks_at_all():
+    """synthesize_shot already turns an empty chunk list into silence at the
+    shot's minimum length, which is the right outcome for a divider slide."""
+    assert _chunks("...\n\n---") == []
+
+
+def test_emoji_are_stripped_from_short_chunks_too():
+    """chunk_text strips emoji, but only runs for a chunk too long for one TTS
+    request — so relying on it left ordinary chunks with their emoji intact and
+    the voice reading them out by description."""
+    chunks = _chunks("Drive the car \U0001F697 home.")
+    joined = "".join(c.text for c in chunks)
+    assert "\U0001F697" not in joined
+    assert joined == "Drive the car home."

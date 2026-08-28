@@ -22,7 +22,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from app.video import compose, ffmpeg as F
 from app.video.narration import (
-    Cue, NarrationResult, chunk_narration, shift_cues, synthesize_shot, write_srt,
+    Cue, NarrationResult, build_narration_chunks, shift_cues, synthesize_shot, write_srt,
 )
 from app.video.options import RenderOptions, frame_size, is_crossfade, kenburns_geometry
 from app.video.segmenter import Segmentation, Shot, resolve_media_path, segment
@@ -490,17 +490,21 @@ def estimate(
             durations.append(F.probe_duration(shot.background or "") or options.min_shot_seconds)
         else:
             speed = max(0.25, options.speed)
-            # ~15 characters per second is a normal TTS speaking rate.
-            spoken = len(shot.narration) / 15.0 / speed
+            # The same split the render itself will make, so the estimate sees
+            # every pause the writer actually wrote. Using `chunk_narration`
+            # here instead — as this did — meant the dialog silently ignored
+            # `[pause:...]` markers and ellipses, and under-reported the length
+            # of exactly the scripts that lean on them.
+            chunks = build_narration_chunks(shot.narration, options=options)
+            # ~15 characters per second is a normal TTS speaking rate. Measured
+            # on the chunk text rather than the raw narration so a stripped
+            # marker doesn't bill screen time as if it were spoken.
+            spoken = sum(len(c.text) for c in chunks) / 15.0 / speed
             # The pauses held at headings, and the one held after every shot's
             # last word, are real silence in the finished video, so an estimate
             # that ignored them would run short. They are sped up with
             # everything else, hence the same divisor.
-            held = sum(c.pause_after_ms for c in chunk_narration(
-                shot.narration,
-                paragraph_pause_ms=options.paragraph_pause_ms,
-                heading_pause_ms=options.heading_pause_ms,
-            )) / 1000.0 / speed
+            held = sum(c.pause_after_ms for c in chunks) / 1000.0 / speed
             held += options.shot_end_pause_ms / 1000.0 / speed if shot.narration.strip() else 0.0
             floor = options.card_seconds if shot.kind == "card" else options.min_shot_seconds
             durations.append(max(spoken + held, floor))

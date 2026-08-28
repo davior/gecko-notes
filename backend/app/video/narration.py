@@ -14,6 +14,8 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -187,7 +189,16 @@ def build_narration_chunks(text: str, *, options: RenderOptions) -> List[Chunk]:
     if options.heading_pause_ms > 0:
         pause_ms["\n\n"] = options.heading_pause_ms
 
-    marked = pause_markup.parse_pause_markup(text, pause_ms=pause_ms)
+    # Emoji come out before the split, not during it. `chunk_text` below strips
+    # them too, but it only runs for a chunk too long for one request — which
+    # nearly none are — so relying on it left every ordinary chunk with its
+    # emoji intact and the voice reading "🚗" aloud as "car". Stripping first
+    # also matches the order `packSpeechChunks` uses client-side.
+    # Runs of spaces and tabs collapse with them, closing the gap a removed
+    # emoji leaves behind. Newlines are deliberately untouched: a blank line is
+    # what the paragraph trigger is made of.
+    cleaned = _WHITESPACE.sub(" ", strip_emoji(text or ""))
+    marked = pause_markup.parse_pause_markup(cleaned, pause_ms=pause_ms)
 
     chunks: List[Chunk] = []
     for chunk in marked:
@@ -199,6 +210,46 @@ def build_narration_chunks(text: str, *, options: RenderOptions) -> List[Chunk]:
             last = position == len(pieces) - 1
             chunks.append(Chunk(piece, chunk.pause_after_ms if last else options.paragraph_pause_ms))
     return chunks
+
+
+def stitch_chunks_to_mp3(pieces: Sequence[Tuple[bytes, int]]) -> bytes:
+    """Join already-synthesised chunks into one MP3, holding each one's pause.
+
+    The whole-file counterpart to `synthesize_shot`'s concat step, for the
+    read-aloud export/insert path. It takes the same route for the same reason:
+    decode every piece to a common PCM layout first, because joined MP3 frames
+    click at the seams and the concat demuxer silently drops inputs that don't
+    match the first one — which is exactly how pauses get quietly eaten.
+
+    `pieces` is `(audio_bytes, pause_after_ms)` in playback order. The last
+    piece's pause is ignored: there is nothing after it to separate it from.
+    """
+    if not pieces:
+        return b""
+
+    work_dir = tempfile.mkdtemp(prefix="tts_join_")
+    try:
+        entries: List[str] = []
+        for index, (audio, pause_after_ms) in enumerate(pieces):
+            raw_name = f"part_{index:04d}.raw"
+            with open(os.path.join(work_dir, raw_name), "wb") as f:
+                f.write(audio)
+            part_name = f"part_{index:04d}.wav"
+            F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+            entries.append(part_name)
+            if index < len(pieces) - 1:
+                pad = build_silence(work_dir, pause_after_ms)
+                if pad:
+                    entries.append(pad)
+
+        list_name = "join.txt"
+        F.write_concat_list(os.path.join(work_dir, list_name), entries)
+        out_name = "joined.mp3"
+        F.run(F.build_join_mp3_command(list_name, out_name), cwd=work_dir, timeout=600)
+        with open(os.path.join(work_dir, out_name), "rb") as f:
+            return f.read()
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # Two lines of roughly 42 characters is the long-standing broadcast convention
@@ -335,7 +386,20 @@ def synthesize_shot(
         # whatever rate they like, and the concat demuxer silently drops inputs
         # that don't match the first one — which quietly ate the pauses.
         part_name = f"chunk_{index:04d}_{position:03d}.wav"
-        F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+        try:
+            F.run(F.build_decode_command(raw_name, part_name), cwd=work_dir, timeout=120)
+        except F.FFmpegError as exc:
+            # ffmpeg cannot say what it choked on: given bytes it can't identify
+            # it falls back to the demuxer matching the ".raw" name and reports
+            # "Invalid pixel format", which sends anyone reading the job error
+            # looking for a video problem in an audio path. Name the real cause
+            # — the provider handed back something that isn't audio — and the
+            # text it did it for. `has_speech` should mean this never fires.
+            raise F.FFmpegError(
+                f"Narration chunk {position} of shot {index} came back as "
+                f"{len(audio)} bytes that ffmpeg could not decode as audio. "
+                f"Chunk text: {chunk.text[:120]!r}"
+            ) from exc
         parts.append(part_name)
         scratch.append(part_name)
 

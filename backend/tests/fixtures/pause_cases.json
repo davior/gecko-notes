@@ -1,0 +1,745 @@
+{
+  "_comment": [
+    "Shared behaviour table for the two mirrored pause-markup implementations:",
+    "backend/app/video/pause_markup.py and frontend/src/utils/pauseMarkup.ts.",
+    "Both test suites read this file, so a change made to one implementation and",
+    "not the other fails on whichever side was left behind. Three divergences had",
+    "already accumulated before this existed (an unknown level raised on the",
+    "backend but returned 0 on the frontend; a partial pause_ms dict produced NaN",
+    "in TypeScript; the frontend had no test infrastructure at all).",
+    "",
+    "pauseMs: null means 'use the implementation's DEFAULT_PAUSE_MS'. The named",
+    "subsets below mirror what real callers pass: 'video' is the dict",
+    "narration.build_narration_chunks builds, where a bare '.' is deliberately",
+    "not a boundary.",
+    "",
+    "chunk: whole-text splitting, after emoji removal and whitespace collapse. The frontend's chunkText and the backend's _pack_export_chunks must agree exactly or the export re-synthesises audio the cache already holds.",
+    "",
+    "A segment with nothing a voice could pronounce is never emitted as a chunk: its pause is kept on the chunk before it. A wordless TTS request comes back as a non-audio body, which fails the video render at the ffmpeg decode."
+  ],
+  "pauseMsSets": {
+    "video": {
+      "…": 1300,
+      "\n\n": 1600
+    },
+    "ellipsisOnly": {
+      "…": 1300
+    }
+  },
+  "parse": [
+    {
+      "name": "sentences split on a real full stop",
+      "pauseMs": null,
+      "text": "One sentence. Two sentence.",
+      "expect": [
+        [
+          "One sentence.",
+          900
+        ],
+        [
+          "Two sentence.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no pause inside a decimal",
+      "pauseMs": null,
+      "text": "The rate is 3.5 percent today.",
+      "expect": [
+        [
+          "The rate is 3.5 percent today.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no pause after an abbreviation or an initial",
+      "pauseMs": null,
+      "text": "Dr. Smith arrived. e.g. this one.",
+      "expect": [
+        [
+          "Dr. Smith arrived.",
+          900
+        ],
+        [
+          "e.g. this one.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a URL is not three sentences",
+      "pauseMs": null,
+      "text": "See www.example.com now.",
+      "expect": [
+        [
+          "See www.example.com now.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no pause inside a currency amount",
+      "pauseMs": null,
+      "text": "It cost $1,200.50 in total.",
+      "expect": [
+        [
+          "It cost $1,200.50 in total.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no pause inside a version number",
+      "pauseMs": null,
+      "text": "Version 2.0.1 shipped.",
+      "expect": [
+        [
+          "Version 2.0.1 shipped.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no pause inside an acronym",
+      "pauseMs": null,
+      "text": "U.S. policy changed.",
+      "expect": [
+        [
+          "U.S. policy changed.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a closing quote stays with its own sentence",
+      "pauseMs": null,
+      "text": "He said \"go.\" Then left.",
+      "expect": [
+        [
+          "He said \"go.\"",
+          900
+        ],
+        [
+          "Then left.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a closing bracket stays with its own sentence",
+      "pauseMs": null,
+      "text": "(He left.) Next.",
+      "expect": [
+        [
+          "(He left.)",
+          900
+        ],
+        [
+          "Next.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a blank line outranks the period before it",
+      "pauseMs": null,
+      "text": "Para one.\n\nPara two.",
+      "expect": [
+        [
+          "Para one.",
+          1600
+        ],
+        [
+          "Para two.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "each extra blank line multiplies the pause",
+      "pauseMs": null,
+      "text": "A.\n\n\nB.",
+      "expect": [
+        [
+          "A.",
+          3200
+        ],
+        [
+          "B.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: bare integer is milliseconds",
+      "pauseMs": "video",
+      "text": "Hello [pause:15] world",
+      "expect": [
+        [
+          "Hello",
+          15
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: space after the colon",
+      "pauseMs": "video",
+      "text": "Hello [pause: 15] world",
+      "expect": [
+        [
+          "Hello",
+          15
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: space instead of a colon",
+      "pauseMs": "video",
+      "text": "Hello [pause 15] world",
+      "expect": [
+        [
+          "Hello",
+          15
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: no value at all",
+      "pauseMs": "video",
+      "text": "Hello [pause] world",
+      "expect": [
+        [
+          "Hello",
+          750
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: capitalised",
+      "pauseMs": "video",
+      "text": "Hello [Pause:15] world",
+      "expect": [
+        [
+          "Hello",
+          15
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: shouty, spaced, uppercase unit",
+      "pauseMs": "video",
+      "text": "Hello [PAUSE : 2S] world",
+      "expect": [
+        [
+          "Hello",
+          2000
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: equals separator and ms unit",
+      "pauseMs": "video",
+      "text": "Hello [pause=400ms] world",
+      "expect": [
+        [
+          "Hello",
+          400
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: bare decimal is seconds",
+      "pauseMs": "video",
+      "text": "Hello [pause:1.5] world",
+      "expect": [
+        [
+          "Hello",
+          1500
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: decimal seconds",
+      "pauseMs": "video",
+      "text": "Hello [pause:1.5s] world",
+      "expect": [
+        [
+          "Hello",
+          1500
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: whole seconds",
+      "pauseMs": "video",
+      "text": "Hello [pause:2s] world",
+      "expect": [
+        [
+          "Hello",
+          2000
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: spelled-out unit",
+      "pauseMs": "video",
+      "text": "Hello [pause:2 seconds] world",
+      "expect": [
+        [
+          "Hello",
+          2000
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: named level",
+      "pauseMs": "video",
+      "text": "Hello [pause:xlong] world",
+      "expect": [
+        [
+          "Hello",
+          2000
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: unknown level falls back, never raises",
+      "pauseMs": "video",
+      "text": "Hello [pause:xxlong] world",
+      "expect": [
+        [
+          "Hello",
+          750
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "marker: absurd value is clamped",
+      "pauseMs": "video",
+      "text": "Hello [pause:120000] world",
+      "expect": [
+        [
+          "Hello",
+          10000
+        ],
+        [
+          "world",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: three dots",
+      "pauseMs": "video",
+      "text": "Wait... go",
+      "expect": [
+        [
+          "Wait...",
+          1300
+        ],
+        [
+          "go",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: four dots leave no orphan period",
+      "pauseMs": "video",
+      "text": "Wait.... go",
+      "expect": [
+        [
+          "Wait....",
+          1300
+        ],
+        [
+          "go",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: spaced dots",
+      "pauseMs": "video",
+      "text": "Wait . . . go",
+      "expect": [
+        [
+          "Wait . . .",
+          1300
+        ],
+        [
+          "go",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: two dots",
+      "pauseMs": "video",
+      "text": "Wait .. go",
+      "expect": [
+        [
+          "Wait ..",
+          1300
+        ],
+        [
+          "go",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: the single character",
+      "pauseMs": "video",
+      "text": "Wait … go",
+      "expect": [
+        [
+          "Wait …",
+          1300
+        ],
+        [
+          "go",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "ellipsis: closing quote stays put",
+      "pauseMs": "video",
+      "text": "She replied \"wait...\" and paused.",
+      "expect": [
+        [
+          "She replied \"wait...\"",
+          1300
+        ],
+        [
+          "and paused.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "an adjacent marker overrides rather than stacks",
+      "pauseMs": null,
+      "text": "Done. [pause:xlong] Next.",
+      "expect": [
+        [
+          "Done.",
+          2000
+        ],
+        [
+          "Next.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "an adjacent marker overrides an ellipsis too",
+      "pauseMs": null,
+      "text": "Done… [pause:400ms] Next.",
+      "expect": [
+        [
+          "Done…",
+          400
+        ],
+        [
+          "Next.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a trigger absent from the dict is not a boundary",
+      "pauseMs": "ellipsisOnly",
+      "text": "a.\n\nb... c.",
+      "expect": [
+        [
+          "a. b...",
+          1300
+        ],
+        [
+          "c.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a bare period never splits in the video dict",
+      "pauseMs": "video",
+      "text": "Wait for it. Here.",
+      "expect": [
+        [
+          "Wait for it. Here.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "empty text yields no chunks",
+      "pauseMs": null,
+      "text": "",
+      "expect": []
+    },
+    {
+      "name": "an ellipsis beat on its own line is silence, not a chunk",
+      "text": "Before this.\n\n...\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a two-dot beat likewise",
+      "text": "Before this.\n\n..\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "spaced dots likewise",
+      "text": "Before this.\n\n. . .\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a quoted ellipsis likewise",
+      "text": "Before this.\n\n“...”\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a rule of dashes is not speech",
+      "text": "Before this.\n\n---\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a lone emoji is not speech",
+      "text": "Before this.\n\n🚗\n\nAfter this.",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "Before this.",
+          1600
+        ],
+        [
+          "After this.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a note with nothing sayable yields no chunks",
+      "text": "...\n\n---",
+      "pauseMs": "video",
+      "expect": []
+    },
+    {
+      "name": "a trailing beat keeps the last chunk at zero",
+      "text": "All done.\n\n...",
+      "pauseMs": "video",
+      "expect": [
+        [
+          "All done.",
+          0
+        ]
+      ]
+    }
+  ],
+  "strip": [
+    {
+      "text": "Chapter One [pause:2s]",
+      "expect": "Chapter One"
+    },
+    {
+      "text": "Intro [PAUSE] Part",
+      "expect": "Intro Part"
+    },
+    {
+      "text": "[pause:long]Heading",
+      "expect": "Heading"
+    },
+    {
+      "text": "No markers here",
+      "expect": "No markers here"
+    },
+    {
+      "text": "Keep the ellipsis…",
+      "expect": "Keep the ellipsis…"
+    }
+  ],
+  "chunk": [
+    {
+      "name": "markers stripped, pauses carried",
+      "text": "One. Two [pause:2s] three... four.",
+      "expect": [
+        [
+          "One.",
+          900
+        ],
+        [
+          "Two",
+          2000
+        ],
+        [
+          "three...",
+          1300
+        ],
+        [
+          "four.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a blank line is a paragraph pause",
+      "text": "One.\n\nTwo.",
+      "expect": [
+        [
+          "One.",
+          1600
+        ],
+        [
+          "Two.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "emoji are dropped before synthesis",
+      "text": "Drive the car 🚗 home.",
+      "expect": [
+        [
+          "Drive the car home.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "runs of spaces collapse",
+      "text": "Spaced   out    words.",
+      "expect": [
+        [
+          "Spaced out words.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "no split inside an abbreviation or decimal",
+      "text": "Dr. Smith said 3.5 percent.",
+      "expect": [
+        [
+          "Dr. Smith said 3.5 percent.",
+          0
+        ]
+      ]
+    },
+    {
+      "name": "a lone marker attaches to the words before it",
+      "text": "Hold on [pause:long]",
+      "expect": [
+        [
+          "Hold on",
+          0
+        ]
+      ]
+    }
+  ]
+}

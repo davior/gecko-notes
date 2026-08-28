@@ -832,7 +832,22 @@ export default function EditorView() {
         }
 
         const text = inlineText(content).trim()
-        if (text) lines.push(terminate(text, type === 'heading' ? ':' : '.'))
+        if (text) {
+          // A heading is a section boundary, not another sentence of the
+          // paragraph above it, so it is set apart by a blank line either side
+          // — the same marking the backend segmenter's `_set_apart` uses, and
+          // what `parsePauseMarkup` reads as a paragraph break. Without it
+          // `lines.join('\n')` never produced two consecutive newlines, so the
+          // 1600ms `DEFAULT_PAUSE_MS['\n\n']` could never fire from the editor
+          // and paragraph pauses were unreachable in read-aloud.
+          if (type === 'heading') lines.push('')
+          lines.push(terminate(text, type === 'heading' ? ':' : '.'))
+          if (type === 'heading') lines.push('')
+        } else if (type === 'paragraph') {
+          // An empty paragraph is a deliberate beat in the prose. Keep it as
+          // the blank line it is instead of dropping it silently.
+          lines.push('')
+        }
 
         if (Array.isArray(block.children)) {
           for (const child of block.children) processBlock(child as Record<string, unknown>)

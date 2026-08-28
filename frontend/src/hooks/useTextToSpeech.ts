@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { settingsApi, DEEPGRAM_TTS_SPEED_MIN, DEEPGRAM_TTS_SPEED_MAX } from '@/api/settings'
 import { useSettingsStore } from '@/stores/settings'
 import { apiErrorMessage } from '@/utils/format'
-import { parsePauseMarkup, type SpeechChunk } from '@/utils/pauseMarkup'
+import { chunkText, chunkTextForPlayback, type SpeechChunk } from '@/utils/speechChunks'
 
 export type TTSStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
@@ -25,71 +25,9 @@ export interface UseTextToSpeechReturn {
   exportToFile: (text: string, filename?: string) => Promise<void>
 }
 
-// The TTS endpoint caps text per request (~2000 chars). Stay comfortably below
-// and split on sentence/line boundaries so each chunk sounds natural.
-const MAX_CHUNK_CHARS = 1500
-
-// Progressive per-chunk size targets for playback. The first chunk is kept
-// small (~1-2 sentences) so fal renders it in ~1s and audio starts almost
-// immediately; later chunks ramp up to full size to keep request overhead low
-// and prosody natural. Sizes hold at MAX_CHUNK_CHARS after the ramp.
-const PLAYBACK_CHUNK_TARGETS = [220, 500, 1000, MAX_CHUNK_CHARS]
-
 // How many chunks to keep synthesizing ahead of the one currently playing, so
 // playback stays gapless across the smaller fast-start chunks.
 const PREFETCH_DEPTH = 2
-
-// Matches emoji (pictographs, flag sequences, skin-tone modifiers) plus the
-// zero-width joiner / variation-selector / keycap marks used to build them,
-// so they can be dropped before synthesis — otherwise the TTS engine reads
-// them out by description (e.g. "🚗" becomes the spoken word "car").
-const EMOJI_REGEX = new RegExp(
-  '[\\u{1F1E6}-\\u{1F1FF}]{2}' + // flag sequences (pairs of regional indicators)
-  '|[\\p{Extended_Pictographic}\\u{1F3FB}-\\u{1F3FF}]' + // pictographs + skin-tone modifiers
-  '|[\\u200D\\uFE0F\\u20E3]', // ZWJ, variation selector, keycap combiner
-  'gu',
-)
-
-function stripEmoji(text: string): string {
-  return text.replace(EMOJI_REGEX, '')
-}
-
-// Split at sentence/paragraph/[pause:...] boundaries (see parsePauseMarkup)
-// and re-split any resulting segment that's still over the Nth chunk's size
-// budget `limitFor(N)`, same word-boundary hard-split the provider's
-// character cap has always needed. Only the final piece of a re-split
-// segment keeps that segment's own pause — the pieces before it are joins
-// forced by length, not a place the narration should actually pause.
-function packSpeechChunks(text: string, limitFor: (index: number) => number): SpeechChunk[] {
-  const segments = parsePauseMarkup(stripEmoji(text).replace(/[ \t]+/g, ' '))
-  const packed: SpeechChunk[] = []
-  for (const segment of segments) {
-    if (segment.text.length <= limitFor(packed.length)) {
-      packed.push(segment)
-      continue
-    }
-    let rest = segment.text
-    while (rest.length > MAX_CHUNK_CHARS) {
-      let cut = rest.lastIndexOf(' ', MAX_CHUNK_CHARS)
-      if (cut <= 0) cut = MAX_CHUNK_CHARS
-      packed.push({ text: rest.slice(0, cut).trim(), pauseAfterMs: 0 })
-      rest = rest.slice(cut).trim()
-    }
-    packed.push({ text: rest, pauseAfterMs: segment.pauseAfterMs })
-  }
-  return packed
-}
-
-// Uniform chunks — used for whole-file synthesis (audio export), where there's
-// no first-audio latency to optimise.
-export function chunkText(text: string): SpeechChunk[] {
-  return packSpeechChunks(text, () => MAX_CHUNK_CHARS)
-}
-
-// Fast-start chunks for playback: a small first chunk, ramping up to full size.
-export function chunkTextForPlayback(text: string): SpeechChunk[] {
-  return packSpeechChunks(text, (i) => PLAYBACK_CHUNK_TARGETS[Math.min(i, PLAYBACK_CHUNK_TARGETS.length - 1)])
-}
 
 // Read-aloud volume is a global, device-level preference shared across notes.
 // Speed is a global *account* preference instead (Settings → Speech), shared
@@ -369,20 +307,17 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
   // it leaves the status as 'loading' so the caller decides the next transition
   // (download → idle). On failure it sets 'error' and rethrows.
   const synthesizeBlob = useCallback(async (text: string): Promise<Blob> => {
-    const chunks = chunkText(text)
-    if (chunks.length === 0) return new Blob([], { type: 'audio/mpeg' })
+    if (chunkText(text).length === 0) return new Blob([], { type: 'audio/mpeg' })
     setErrorMessage('')
     setStatus('loading')
     try {
-      // Markers/pause-worthy boundaries are already stripped to plain text by
-      // chunkText, but — unlike live playback — this concatenates raw MP3
-      // bytes with no gap between chunks, so exported/inserted audio doesn't
-      // yet carry the held silences (see chunkTextForPlayback for that).
-      const blobs: Blob[] = []
-      for (const chunk of chunks) {
-        blobs.push(await settingsApi.synthesizeSpeech(chunk.text, modelRef.current))
-      }
-      return new Blob(blobs, { type: 'audio/mpeg' })
+      // One backend call rather than a chunk loop here. Concatenating the MP3
+      // bytes client-side, as this did, gave exported audio no gaps at all —
+      // the pauses live playback holds with a timer simply vanished from the
+      // file. The server splits the text the same way and stitches real
+      // silence between the pieces with ffmpeg, which nothing in the browser
+      // can do without decoding and re-encoding the whole clip.
+      return await settingsApi.narrateSpeech(text, modelRef.current)
     } catch (e) {
       setErrorMessage(apiErrorMessage(e, 'Failed to synthesize speech — set a fal.ai key in Settings → AI Services → Providers'))
       setStatus('error')
@@ -398,15 +333,19 @@ export function useTextToSpeech(options?: { model?: string }): UseTextToSpeechRe
     const chunks = chunkTextForPlayback(text)
     if (chunks.length === 0) return new Blob([], { type: 'audio/mpeg' })
     startPlayback(chunks)
-    const blobs: Blob[] = []
     for (let i = 0; i < chunks.length; i++) {
       if (cancelledRef.current) throw new Error('cancelled')
       const p = fetchChunk(i)
       if (!p) break
-      blobs.push(await p)
+      await p
     }
     if (cancelledRef.current) throw new Error('cancelled')
-    return new Blob(blobs, { type: 'audio/mpeg' })
+    // Every chunk above is in the server's TTS cache by now, so asking it to
+    // narrate the same text with the same ramped split re-uses that audio
+    // instead of paying for it again. What the round trip buys is the silence
+    // between the chunks: the loop above only ever produced the spoken pieces,
+    // so the saved clip lost every pause the listener had just heard.
+    return settingsApi.narrateSpeech(text, modelRef.current)
   }, [startPlayback, fetchChunk])
 
   // Synthesize the whole text and download it as a single MP3 file.
