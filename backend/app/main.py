@@ -4,7 +4,6 @@ import threading
 from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from jose import JWTError
@@ -30,6 +29,7 @@ from app.routers import recipes as recipes_router
 from app.routers import assets as assets_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.mail import email_enabled
+from app.media_files import RangedStaticFiles
 from app.app_settings import get_bool, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED, VOICE_MODE_ENABLED
 from app.models import AIProvider
 from sqlmodel import Session, select
@@ -166,7 +166,9 @@ app.include_router(data_router.router, prefix="/api/data", tags=["data"])
 app.include_router(shared_router.router, prefix="/api/shared", tags=["shared"])
 
 os.makedirs(MEDIA_DIR, exist_ok=True)
-app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+# Ranged, so a <video> can seek in a large export instead of re-downloading it whole
+# on every scrub (see app/media_files.py).
+app.mount("/media", RangedStaticFiles(directory=MEDIA_DIR), name="media")
 
 
 @app.get("/api/health")

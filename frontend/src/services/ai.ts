@@ -1,6 +1,7 @@
 import type { AIProvider } from '@/api/settings'
 import client from '@/api/client'
 import { streamChat } from '@/api/stream'
+import { NATIVE_WEB_SEARCH_MAX_USES } from '@/services/aiPlan'
 
 export interface FileAttachment {
   type: 'image' | 'document'
@@ -79,11 +80,142 @@ type AnthropicContentBlock =
   | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string }
 
 // The reassembled Anthropic Messages response (the fields we read), shared by the
-// blocking and streaming code paths.
-type AnthropicMessageData = {
-  content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>
-  stop_reason?: string
-} | undefined
+// blocking and streaming code paths. Native web search adds two block types to the
+// text ones: `server_tool_use` (the query the model ran) and `web_search_tool_result`
+// (the hits, or an error such as `max_uses_exceeded`).
+type AnthropicBlock = { type: string; text?: string; name?: string; input?: unknown; content?: unknown }
+export type AnthropicMessageData = { content?: AnthropicBlock[]; stop_reason?: string } | undefined
+
+// ─── Finishing a turn the provider left open ──────────────────────────────────
+//
+// Anthropic's own web search completes inside a single Messages call: the model
+// searches, reads the hits, and the turn ends with `end_turn`. DeepSeek's
+// Anthropic-compatible endpoint does not. Once the model has spent the tool's
+// `max_uses` budget its reply comes back with `stop_reason: "tool_use"`, and every
+// outstanding call is a `server_tool_use` the PROVIDER already answered — the last
+// couple with a `max_uses_exceeded` error. Nothing is left for the client to run, so
+// the turn is simply unfinished: the plan JSON the assistant panel parses was never
+// written. What the user sees is the model's between-search commentary ("I'll create
+// the note now…") with no plan behind it, or — when the model searched without
+// writing any text — an empty reply.
+//
+// So we finish the turn ourselves: replay what the model has so far, ask for the
+// reply it never got to, and withhold the search tool so the round that stalled
+// cannot start again.
+
+// A provider that stalls twice in a row will stall forever, and every attempt costs a
+// full round trip on an already-slow turn.
+const MAX_TURN_CONTINUATIONS = 2
+
+// The user turn that asks for the answer the stalled turn never produced. It states
+// that the budget is spent, because a model whose last searches failed with
+// `max_uses_exceeded` otherwise just tries to search again.
+const FINISH_TURN_REQUEST =
+  'Your web searching for this turn is over — the search budget is spent and no further ' +
+  'searches are available. Do not describe what you are about to do and do not apologise. ' +
+  'Answer the request above now, in exactly the response format your instructions require.'
+
+// How many hits from one search to replay into the continuation: enough to cite from,
+// few enough that several searches don't crowd out the note being worked on.
+const REPLAYED_HITS_PER_SEARCH = 5
+
+// True when a reply stopped on tool use that leaves us nothing to do — every pending
+// call is a `server_tool_use` the provider ran itself. A client-side `tool_use` block
+// is the opposite case and is handled in extractPlanText, which reads a plan out of it.
+export function isStalledTurn(data: AnthropicMessageData): boolean {
+  const blocks = data?.content ?? []
+  if (data?.stop_reason !== 'tool_use') return false
+  return blocks.some((b) => b.type === 'server_tool_use') && !blocks.some((b) => b.type === 'tool_use')
+}
+
+// Fold a stalled turn back into the conversation as ordinary text: what the model
+// managed to say, plus the hits it already has so it needn't (and can't) search again.
+// Deliberately NOT a replay of the raw blocks — `thinking` signatures and
+// server_tool_use/result pairing are exactly what a compatible-but-not-identical
+// gateway validates differently, and a rejected continuation would turn a recoverable
+// stall into a hard error. Handing search results back as conversation text is what
+// the app already does for providers with no native tool (see web_search.py).
+export function stalledTurnAsText(data: AnthropicMessageData): string {
+  const blocks = data?.content ?? []
+  const parts = blocks.filter((b) => b.type === 'text').map((b) => (b.text ?? '').trim()).filter(Boolean)
+
+  // Pair each search with what it returned: the query is on the `server_tool_use`
+  // block, the hits on the `web_search_tool_result` that follows it.
+  const searches: string[] = []
+  let query = ''
+  for (const b of blocks) {
+    if (b.type === 'server_tool_use') {
+      query = typeof (b.input as { query?: unknown } | undefined)?.query === 'string'
+        ? ((b.input as { query: string }).query)
+        : ''
+    } else if (b.type === 'web_search_tool_result') {
+      const hits = (Array.isArray(b.content) ? b.content : []) as Array<{ title?: unknown; url?: unknown }>
+      const lines = hits
+        .filter((h) => h && typeof h === 'object' && typeof h.url === 'string' && h.url)
+        .slice(0, REPLAYED_HITS_PER_SEARCH)
+        .map((h) => `- ${typeof h.title === 'string' && h.title ? h.title : h.url} — ${h.url}`)
+      if (lines.length) searches.push([`Search “${query}”:`, ...lines].join('\n'))
+    }
+  }
+  if (searches.length) parts.push(['Web search results already gathered this turn:', ...searches].join('\n\n'))
+
+  // An assistant turn may not be empty, and a model that searched without writing a
+  // word leaves nothing else to send back.
+  return parts.join('\n\n') || '(searching)'
+}
+
+// The follow-up request that finishes a stalled turn. `tools` is dropped so the search
+// loop that stalled cannot restart; everything before the two appended messages is the
+// original body untouched, so its prompt-cache breakpoints still hit.
+export function continuationBody(body: Record<string, unknown>, data: AnthropicMessageData): Record<string, unknown> {
+  const next: Record<string, unknown> = {
+    ...body,
+    messages: [
+      ...(body.messages as Array<{ role: string; content: unknown }>),
+      { role: 'assistant', content: stalledTurnAsText(data) },
+      { role: 'user', content: FINISH_TURN_REQUEST },
+    ],
+  }
+  delete next.tools
+  return next
+}
+
+// Join all text blocks. When web search runs, the content may interleave
+// server_tool_use / web_search_tool_result blocks with text — we keep only text.
+// Adjacent text blocks are one continuous passage (Anthropic splits a paragraph at
+// each citation) so they concatenate, but a gap where a tool call ran is a real break
+// and gets a blank line: without that, a model's commentary from either side of a
+// search runs together mid-word ("…as a new note.I have everything I need").
+// If Claude misfired a *described* plan action (edit_note, …) as a native tool_use
+// block instead of emitting the JSON envelope, recover the plan from it. This is NOT
+// gated on empty text: with web search, Claude emits running commentary as text even
+// when the real action lives in a tool_use block, so gating on `!text` would drop it.
+export function extractPlanText(data: AnthropicMessageData): string {
+  const contentBlocks = data?.content ?? []
+  let text = ''
+  let gap = false
+  for (const b of contentBlocks) {
+    if (b.type !== 'text') {
+      if (text) gap = true
+      continue
+    }
+    if (!b.text) continue
+    if (text && gap) text += '\n\n'
+    text += b.text
+    gap = false
+  }
+  if (data?.stop_reason === 'tool_use') {
+    const actions = contentBlocks
+      .filter((b) => b.type === 'tool_use' && b.input && typeof b.input === 'object')
+      .map((b) => {
+        const input = { ...(b.input as Record<string, unknown>) }
+        if (!input.type && b.name) input.type = b.name
+        return input
+      })
+    if (actions.length) text = JSON.stringify({ actions })
+  }
+  return text
+}
 
 function attachmentToBlock(a: FileAttachment): AnthropicContentBlock {
   return a.type === 'image'
@@ -213,11 +345,11 @@ class AnthropicProvider implements AIService {
     if (systemPrompt) body.system = systemPrompt
     if (temperature !== undefined) body.temperature = temperature
     if (enableWebSearch) {
-      body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+      body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: NATIVE_WEB_SEARCH_MAX_USES }]
     }
 
     const response = await client.post('/settings/ai-providers/proxy/anthropic', body)
-    const text = this.extractPlanText(response.data)
+    const text = extractPlanText(response.data)
     const full = prefill ? prefill + text : text
     return response.data?.stop_reason === 'max_tokens' ? full + TRUNCATION_NOTICE : full
   }
@@ -275,14 +407,14 @@ class AnthropicProvider implements AIService {
       system,
     }
     if (temperature !== undefined) body.temperature = temperature
-    if (enableWebSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+    if (enableWebSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: NATIVE_WEB_SEARCH_MAX_USES }]
     return body
   }
 
   // Turn a reassembled Anthropic message dict into the plan text, appending the
   // truncation notice when the model hit its output cap.
   private finalizeConversation(data: AnthropicMessageData): string {
-    const text = this.extractPlanText(data)
+    const text = extractPlanText(data)
     return data?.stop_reason === 'max_tokens' ? text + TRUNCATION_NOTICE : text
   }
 
@@ -293,35 +425,28 @@ class AnthropicProvider implements AIService {
   // The volatile final message has no breakpoint, so editing the open note or asking a
   // new question never invalidates the cached instructions/reference/history prefix.
   async completeConversation(req: ConversationRequest): Promise<string> {
-    const response = await client.post('/settings/ai-providers/proxy/anthropic', this.buildConversationBody(req))
-    return this.finalizeConversation(response.data)
-  }
-
-  async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
-    const data = await streamChat('/settings/ai-providers/proxy/anthropic/stream', this.buildConversationBody(req), onDelta, signal)
-    return this.finalizeConversation(data as AnthropicMessageData)
-  }
-
-  // Join all text blocks. When web search runs, the content may interleave
-  // server_tool_use / web_search_tool_result blocks with text — we keep only text.
-  // If Claude misfired a *described* plan action (edit_note, …) as a native tool_use
-  // block instead of emitting the JSON envelope, recover the plan from it. This is NOT
-  // gated on empty text: with web search, Claude emits running commentary as text even
-  // when the real action lives in a tool_use block, so gating on `!text` would drop it.
-  private extractPlanText(data: AnthropicMessageData): string {
-    const contentBlocks = data?.content ?? []
-    let text = contentBlocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
-    if (data?.stop_reason === 'tool_use') {
-      const actions = contentBlocks
-        .filter((b) => b.type === 'tool_use' && b.input && typeof b.input === 'object')
-        .map((b) => {
-          const input = { ...(b.input as Record<string, unknown>) }
-          if (!input.type && b.name) input.type = b.name
-          return input
-        })
-      if (actions.length) text = JSON.stringify({ actions })
+    const body = this.buildConversationBody(req)
+    let data = (await client.post('/settings/ai-providers/proxy/anthropic', body)).data as AnthropicMessageData
+    for (let round = 0; round < MAX_TURN_CONTINUATIONS && isStalledTurn(data); round++) {
+      const res = await client.post('/settings/ai-providers/proxy/anthropic', continuationBody(body, data))
+      data = res.data as AnthropicMessageData
     }
-    return text
+    return this.finalizeConversation(data)
+  }
+
+  // Streaming twin of completeConversation, continuations included. A continuation's
+  // deltas go to the same `onDelta` as the first round's, so the live bubble shows the
+  // stalled commentary followed by the real reply; only the returned string — rebuilt
+  // from the FINAL round's blocks — reaches parsePlan, and the panel replaces the
+  // bubble with it.
+  async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
+    const url = '/settings/ai-providers/proxy/anthropic/stream'
+    const body = this.buildConversationBody(req)
+    let data = await streamChat(url, body, onDelta, signal) as AnthropicMessageData
+    for (let round = 0; round < MAX_TURN_CONTINUATIONS && isStalledTurn(data); round++) {
+      data = await streamChat(url, continuationBody(body, data), onDelta, signal) as AnthropicMessageData
+    }
+    return this.finalizeConversation(data)
   }
 
   async generateTags(noteContent: string): Promise<string[]> {
