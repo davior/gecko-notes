@@ -166,7 +166,17 @@ Rules:
 // markup (<tool_calls><invoke name="web_search"><parameter …>…) as ordinary output, which
 // then shows up verbatim in the chat instead of running a search. So the promise of the
 // tool and the tool itself are gated together (see webSearchMode in AIConversationPanel).
-export const NATIVE_WEB_SEARCH_INSTRUCTIONS = `You have access to a web_search tool — use it whenever you need current information, facts, or research to fulfil the request. After completing any searches, you MUST output a single JSON object as your final response and NOTHING else, exactly as specified above.`
+// The tool's per-turn search budget, shared with the tool definition itself in ai.ts so
+// the two can't drift: a model that is not told the limit spends it on near-duplicate
+// queries and then keeps calling, and every call past the budget fails outright.
+export const NATIVE_WEB_SEARCH_MAX_USES = 5
+
+export const NATIVE_WEB_SEARCH_INSTRUCTIONS = `WEB SEARCH — you have a native web_search tool.
+- Search when the request needs information you do not already have: current events, recent facts, prices, product or API documentation, anything past your training cutoff, or research the user explicitly asks for.
+- Do NOT search to produce writing you can already produce. Drafting, rewriting, restructuring, summarising or adapting the user's own notes needs no search, and neither does advice on how to write or format a piece — you already know that. Questions about the user's own notes are find_notes, not web search.
+- You get at most ${NATIVE_WEB_SEARCH_MAX_USES} searches per turn and calls beyond that FAIL, so make each one a different question rather than a rewording of the last. If a search comes back unhelpful, work with what you have instead of trying again.
+- CITE what you use: link sources inline as Markdown, e.g. [Title](https://example.com/page). Never invent a URL — only ever link one that appeared in the results.
+- When the searching is done — or when you never needed to search — you MUST output a single JSON object as your final response and NOTHING else, exactly as specified above. Announcing what you are about to do is not a response: never end a turn without that JSON object.`
 
 // The other half of that gate: guidance for every provider WITHOUT a native search tool
 // (DeepSeek, OpenAI-compatible endpoints, Ollama). They get web search as an extra PLAN
