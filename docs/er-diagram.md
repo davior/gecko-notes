@@ -79,6 +79,23 @@ erDiagram
         datetime created_at
     }
 
+    NoteAsset {
+        string   id                PK
+        string   user_id           "app-level ref to User.id"
+        string   note_id           "app-level ref to Note.id"
+        string   url                "/media/{owner}/{uuid}.ext"
+        string   filename           "{uuid}.ext — locates the file on disk"
+        string   original_name      "as uploaded, or the block's name/caption"
+        string   mime_type
+        int      size_bytes
+        string   kind               "images|video|audio|documents|archives|data|other"
+        string   origin             "embedded | reference | export"
+        bool     ai_context         "send to the assistant as context"
+        string   title              "user-editable"
+        string   description        "user-editable"
+        datetime created_at
+    }
+
     Annotation {
         string   id                PK
         string   note_id           FK
@@ -234,6 +251,9 @@ erDiagram
     Note     ||--o{ NoteVersion : "snapshots"
     Note     ||--o{ Annotation  : "anchors"
 
+    %% -- Files belonging to a note (app-level note_id, not a DB FK) --
+    Note ||--o{ NoteAsset       : "owns files"
+
     %% -- Note-scoped AI sessions (note_id nullable -> global sessions) --
     Note |o--o{ AISession       : "scopes"
 
@@ -247,6 +267,7 @@ erDiagram
     User ||--o{ AISession        : "runs"
     User ||--o{ TranscriptionJob : "requests"
     User ||--o{ VideoRenderJob   : "requests"
+    User ||--o{ NoteAsset        : "owns"
     User |o--o{ Note             : "owns"
     User |o--o{ Folder           : "owns"
     User |o--o{ Annotation       : "writes"
@@ -284,4 +305,4 @@ So `Category ||--o{ Note` reads "one Category classifies zero-or-many Notes; eve
 - **Per-user vs. global rows.** `Category`, `AppSetting`, and `ModelCatalogEntry` are global (no `user_id`). `Theme` is global when `user_id` is null (`is_global = true`), otherwise per-user. Everything else is scoped to a `user_id`.
 - **Denormalized snapshots.** `NoteVersion` stores `category_id` and `tags` as copied values at snapshot time — they are not live foreign keys, so they are intentionally left unlinked.
 - **JSON stored as text.** Following the codebase convention, several columns hold JSON serialized into a text column rather than a related table: `Note.content` / `tags` / `conversation`, `AISession.messages`, `NoteVersion.content` / `tags`, `AppSetting.value`, `UserSetting.value`, and the TTS override fields on `ModelCatalogEntry`.
-- **Media lives on disk, not in the database.** Uploaded images, generated audio/images, recorded video, and rendered article videos referenced by `Theme.bg_image_url`, `TranscriptionJob.source_filename` / `result_filename`, `VideoRenderJob.result_filename` / `subtitle_filename` / `thumbnail_filename`, and note attachments are stored in the bind-mounted `data/media/` volume — there is no media table. Render artefacts are the one kind swept on startup (see `VIDEO_JOB_RETENTION_DAYS`), and only when the video was never added to a note.
+- **Media bytes live on disk; which note owns them lives in `NoteAsset`.** Uploaded images, generated audio/images, recorded video, and rendered article videos are stored in the bind-mounted `data/media/` volume, in a flat per-user tree (`data/media/{user_id}/{uuid}.ext`) — no file's path says which note it belongs to. `NoteAsset` is what does, and it is the registry behind the Assets tab. Rows are created when a file is uploaded against a note and by additive reconciliation on every note-content write (`app/asset_utils.py`); nothing but an explicit delete removes one, so a file stays listed after its block is taken out of the note body. Other referrers stay URL-only and are checked before a file is unlinked: `User.avatar_url`, `Theme.bg_image_url`, `TranscriptionJob.source_filename` / `result_filename`, and `VideoRenderJob.result_filename` / `subtitle_filename` / `thumbnail_filename`. **`NoteVersion.content` is deliberately not checked** — snapshots embed the URLs they were taken with, so nearly every file ever used appears in one, and guarding against them would make deletion impossible; deleting an asset can therefore leave a missing item in an older version of a note. Render artefacts are still swept on startup (see `VIDEO_JOB_RETENTION_DAYS`), now skipping anything a `NoteAsset` row still claims as well as anything embedded in a note.

@@ -24,7 +24,7 @@ from typing import Optional, Set
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import Note, User, VideoRenderJob
+from app.models import Note, NoteAsset, User, VideoRenderJob
 from app.video import ffmpeg as F
 from app.video.options import RenderOptions
 from app.video.renderer import RenderCancelled, WORK_ROOT_NAME, render
@@ -156,6 +156,38 @@ def _attach_to_note(session: Session, job: VideoRenderJob, url: str) -> bool:
     return True
 
 
+def _register_exports(session: Session, job: VideoRenderJob, result, note_title: str) -> None:
+    """File a finished render, its subtitles and its poster in the note's Assets.
+
+    Registered whether or not the video was inserted into the note, which is the point:
+    a render the user chose not to embed would otherwise be invisible and, worse, would
+    be deleted by _sweep_old_artifacts once it aged past the retention window.
+    """
+    from app.asset_utils import ORIGIN_EXPORT, register_asset
+
+    label = note_title or "note"
+    artifacts = (
+        (result.video_filename, f"Video — {label}"),
+        (result.subtitle_filename, f"Subtitles — {label}"),
+        (result.thumbnail_filename, f"Thumbnail — {label}"),
+    )
+    for filename, display_name in artifacts:
+        if not filename:
+            continue
+        try:
+            register_asset(
+                session,
+                user_id=job.user_id,
+                note_id=job.note_id,
+                url=f"/media/{job.user_id}/{filename}",
+                original_name=display_name,
+                origin=ORIGIN_EXPORT,
+            )
+        except Exception:
+            # A finished render must not be turned into a failure by bookkeeping.
+            logger.exception("Could not register export %s for job %s", filename, job.id)
+
+
 def _run_job(job_id: str) -> None:
     with Session(engine) as session:
         job = session.get(VideoRenderJob, job_id)
@@ -244,6 +276,8 @@ def _run_job(job_id: str) -> None:
             inserted=inserted,
         )
 
+        _register_exports(session, row, result, note.title or "Untitled")
+
 
 def _loop() -> None:
     while True:
@@ -303,6 +337,9 @@ def _sweep_old_artifacts() -> None:
             in_use: Set[str] = set()
             for note in session.exec(select(Note)).all():
                 in_use.update(extract_media_urls(note.content or ""))
+            # A render kept in a note's Assets but not embedded in its body is still
+            # wanted — the Assets tab is where the user curates it, not this sweep.
+            in_use.update(session.exec(select(NoteAsset.url)).all())
 
             removed = 0
             for job in stale:

@@ -7,6 +7,8 @@ import { Link } from 'react-router-dom'
 import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useRecipesStore } from '@/stores/recipes'
+import { useAssetsStore } from '@/stores/assets'
+import type { NoteAsset, NoteAssetUpdate } from '@/api/assets'
 import { useDictation } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { useVoiceMode } from '@/hooks/useVoiceMode'
@@ -14,6 +16,7 @@ import VoiceModeOverlay from '@/components/VoiceModeOverlay'
 import DictationWaveIcon from '@/components/DictationWaveIcon'
 import NotePickerModal from '@/components/NotePickerModal'
 import RecipesPanel from '@/components/RecipesPanel'
+import AssetsPanel from '@/components/AssetsPanel'
 import RecipePickerDropdown from '@/components/RecipePickerDropdown'
 import { settingsApi } from '@/api/settings'
 import { configApi } from '@/api/config'
@@ -200,6 +203,13 @@ interface AIConversationPanelProps {
   onNotesChanged?: () => void
   getAnnotations?: () => { id: string; block_id: string; text: string }[]
   onAnnotationsChanged?: () => Promise<void> | void
+  // Assets tab: insert a block at the cursor, strip every block pointing at a media URL,
+  // and force a save. Block edits go through the live editor rather than the server
+  // because the editor holds the document — a server-side rewrite of note.content would
+  // just be overwritten by the next autosave.
+  onInsertBlocks?: (blocks: unknown[]) => void
+  onRemoveMediaBlocks?: (url: string) => void
+  onFlushSave?: () => Promise<void>
 }
 
 function uid() {
@@ -348,21 +358,48 @@ async function processFile(file: File): Promise<ProcessedFile> {
   return { kind: 'unsupported', name: file.name }
 }
 
-async function urlToAttachment(url: string): Promise<FileAttachment | null> {
+// A per-file ceiling on what may ride along as AI context. Attachments are base64'd
+// into the request body, so one large PDF is enough to blow a whole turn.
+const MAX_CONTEXT_FILE_BYTES = 10 * 1024 * 1024
+
+async function urlToAttachment(url: string, name?: string): Promise<FileAttachment | null> {
   try {
     const resp = await fetch(url)
     if (!resp.ok) return null
     const blob = await resp.blob()
-    if (!blob.type.startsWith('image/')) return null
+    const isImage = blob.type.startsWith('image/')
+    const isPdf = blob.type === 'application/pdf'
+    if (!isImage && !isPdf) return null
+    if (blob.size > MAX_CONTEXT_FILE_BYTES) return null
     return new Promise((resolve) => {
       const reader = new FileReader()
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1]
-        resolve({ type: 'image', mimeType: blob.type, data: base64, name: url.split('/').pop() ?? 'file' })
+        resolve({
+          type: isPdf ? 'document' : 'image',
+          mimeType: blob.type,
+          data: base64,
+          name: name ?? url.split('/').pop() ?? 'file',
+        })
       }
       reader.onerror = () => resolve(null)
       reader.readAsDataURL(blob)
     })
+  } catch {
+    return null
+  }
+}
+
+// Reference material a model can read as plain text rather than as a content block.
+const TEXT_CONTEXT_EXTENSIONS = ['.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.toml']
+
+async function urlToContextText(url: string): Promise<string | null> {
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const blob = await resp.blob()
+    if (blob.size > MAX_CONTEXT_FILE_BYTES) return null
+    return await blob.text()
   } catch {
     return null
   }
@@ -391,11 +428,17 @@ export default function AIConversationPanel({
   onNotesChanged,
   getAnnotations,
   onAnnotationsChanged,
+  onInsertBlocks,
+  onRemoveMediaBlocks,
+  onFlushSave,
 }: AIConversationPanelProps) {
   const isList = mode === 'list'
   // Sessions are available when scoped to a saved note (editor) or in the global
   // list-view assistant (null note_id). A brand-new, unsaved editor note has no id yet.
   const sessionsEnabled = isList || !!noteId
+  // Assets belong to a saved note, so unlike sessions there is nothing to show in
+  // list mode or before the first save.
+  const assetsEnabled = !isList && !!noteId
   const aiService = useSettingsStore((s) => s.aiService)
   const activeProvider = useSettingsStore((s) => s.activeProvider)
   // Whether the active provider can take image/PDF content blocks. Default to true
@@ -431,8 +474,8 @@ export default function AIConversationPanel({
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [sessions, setSessions] = useState<AISession[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  // Chat | Recipes | History — three tabs sharing this one side panel.
-  const [panelTab, setPanelTab] = useState<'chat' | 'recipes' | 'history'>('chat')
+  // Chat | Recipes | History | Assets — four tabs sharing this one side panel.
+  const [panelTab, setPanelTab] = useState<'chat' | 'recipes' | 'history' | 'assets'>('chat')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
 
@@ -441,6 +484,10 @@ export default function AIConversationPanel({
   const createRecipe = useRecipesStore((s) => s.createRecipe)
   const updateRecipe = useRecipesStore((s) => s.updateRecipe)
   const deleteRecipe = useRecipesStore((s) => s.deleteRecipe)
+
+  const assets = useAssetsStore((s) => s.assets)
+  const assetsLoading = useAssetsStore((s) => s.loading)
+  const assetsError = useAssetsStore((s) => s.error)
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -642,6 +689,19 @@ export default function AIConversationPanel({
     }).catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId])
+
+  // Keep the assets cache pointed at the open note, and only let the editor's autosave
+  // refresh it while the tab is actually on screen (see stores/assets.ts).
+  useEffect(() => {
+    const store = useAssetsStore.getState()
+    if (panelTab !== 'assets' || !noteId) {
+      store.setWatching(false)
+      return
+    }
+    store.setWatching(true)
+    void store.load(noteId)
+    return () => { useAssetsStore.getState().setWatching(false) }
+  }, [panelTab, noteId])
 
   useEffect(() => {
     try { localStorage.setItem('ai-context-scope', contextScope) } catch { /* noop */ }
@@ -941,7 +1001,7 @@ export default function AIConversationPanel({
     // Collect linked file URLs (images only — others not supported as content blocks)
     if (includeLinkedFiles) {
       const allUrls = notes.flatMap((n) => extractLinkedFileUrls(n.blocks))
-      const fetched = await Promise.all(allUrls.map(urlToAttachment))
+      const fetched = await Promise.all(allUrls.map((u) => urlToAttachment(u)))
       fileAttachments.push(...(fetched.filter(Boolean) as FileAttachment[]))
     }
 
@@ -956,7 +1016,38 @@ export default function AIConversationPanel({
       ? 0
       : notes.findIndex((n) => Boolean(n.id) && n.id === noteId)
     const currentNoteParts: string[] = currentIndex >= 0 ? [rendered[currentIndex]] : []
-    const referenceContextText = rendered.filter((_, i) => i !== currentIndex).join('\n\n---\n\n')
+    const referenceParts = rendered.filter((_, i) => i !== currentIndex)
+
+    // Assets marked "use as AI context" — the reference material kept alongside the note
+    // rather than published in it. Images and PDFs go as content blocks; text-ish files
+    // are appended to the REFERENCE block rather than the current-note message, because
+    // the split here is by cache stability and this material doesn't change between
+    // turns. Putting a long PDF's text in the volatile half would re-send it every turn
+    // and undo the point of freezing the context.
+    if (!isList && noteId) {
+      try {
+        const contextAssets = (await useAssetsStore.getState().loadForContext(noteId))
+          .filter((a) => a.ai_context && a.ai_eligible && !a.missing)
+        const docParts: string[] = []
+        for (const asset of contextAssets) {
+          const ext = asset.filename.slice(asset.filename.lastIndexOf('.')).toLowerCase()
+          if (TEXT_CONTEXT_EXTENSIONS.includes(ext)) {
+            const text = await urlToContextText(asset.url)
+            if (text) docParts.push(`### ${asset.display_name}\n\`\`\`\n${text}\n\`\`\``)
+          } else {
+            const attachment = await urlToAttachment(asset.url, asset.display_name)
+            if (attachment) fileAttachments.push(attachment)
+          }
+        }
+        if (docParts.length > 0) {
+          referenceParts.push(`**Reference documents for this note:**\n\n${docParts.join('\n\n')}`)
+        }
+      } catch {
+        // Context is best-effort: a failed asset fetch must not stop the turn.
+      }
+    }
+
+    const referenceContextText = referenceParts.join('\n\n---\n\n')
 
     // Pending uploaded files — images go as content blocks; text/other ride with the
     // volatile current-note message (they change per upload, so keep them out of cache).
@@ -1543,6 +1634,60 @@ export default function AIConversationPanel({
     void handleSend(prompt, conversation)
   }
 
+  // ─── Assets tab ────────────────────────────────────────────────────────────
+
+  async function handleAssetUpload(file: File) {
+    if (!noteId) return
+    await useAssetsStore.getState().upload(noteId, file)
+  }
+
+  async function handleAssetUpdate(assetId: string, payload: NoteAssetUpdate) {
+    if (!noteId) return
+    await useAssetsStore.getState().update(noteId, assetId, payload)
+    // Adding or removing a reference document changes what the next turn would send, so
+    // a pinned snapshot of the old context is now stale — same reason the scope toggles
+    // unfreeze it.
+    if (payload.ai_context !== undefined) setFrozenContext(null)
+  }
+
+  /**
+   * Delete an asset, optionally taking its blocks out of the note first.
+   *
+   * The order matters. Reconciliation re-registers any /media/ URL it finds when the
+   * note is saved, so deleting the row while the block is still in the body means the
+   * next autosave resurrects it — pointing at a file that no longer exists. Removing the
+   * block and flushing the save first closes that window. If the user opts out, the row
+   * does come back, marked as missing, which is at least honest.
+   */
+  async function handleAssetDelete(asset: NoteAsset, alsoRemoveFromNote: boolean) {
+    if (!noteId) return
+    if (alsoRemoveFromNote && asset.in_note && onRemoveMediaBlocks) {
+      onRemoveMediaBlocks(asset.url)
+      if (onFlushSave) await onFlushSave()
+    }
+    await useAssetsStore.getState().remove(noteId, asset.id)
+    await useAssetsStore.getState().load(noteId, true)
+  }
+
+  // Put an asset back into the note using the same block shapes the editor writes.
+  function handleAssetInsert(asset: NoteAsset) {
+    if (!onInsertBlocks) return
+    const type =
+      asset.kind === 'images' ? 'image'
+      : asset.kind === 'video' ? 'videoFile'
+      : asset.kind === 'audio' ? 'audioFile'
+      : 'file'
+    onInsertBlocks([{ type, props: { url: asset.url, name: asset.display_name } }])
+    // Save before refreshing. The server decides `in_note` from the note's stored
+    // content, so the row only moves out of Reference once the insert has landed — and
+    // onCurrentNoteEdited must not be used here: it re-hydrates the editor from the
+    // server, which would throw the new block away before it was ever saved.
+    void (async () => {
+      if (onFlushSave) await onFlushSave()
+      if (noteId) await useAssetsStore.getState().load(noteId, true)
+    })()
+  }
+
   function handleEdit(idx: number) {
     const priorMessages = conversation.slice(0, idx)
     setEditingId(null)
@@ -1812,6 +1957,18 @@ export default function AIConversationPanel({
             <History className="w-3.5 h-3.5" />
             History
           </button>
+          <button
+            onClick={() => setPanelTab('assets')}
+            disabled={!assetsEnabled}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors disabled:opacity-40 ${
+              panelTab === 'assets'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            <Paperclip className="w-3.5 h-3.5" />
+            Assets
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {voiceCapable && (
@@ -1870,6 +2027,22 @@ export default function AIConversationPanel({
           onRun={handleRunRecipe}
           previewContext={{ title: noteTitle, selectedText: getCurrentSelectionText() }}
           disabled={!aiService}
+        />
+      )}
+
+      {/* Assets tab: every file related to this note — in it, alongside it, or made from it */}
+      {panelTab === 'assets' && (
+        <AssetsPanel
+          assets={assets}
+          loading={assetsLoading}
+          error={assetsError}
+          noteId={noteId ?? null}
+          canInsert={!!editor && !!onInsertBlocks}
+          onUpload={handleAssetUpload}
+          onDelete={handleAssetDelete}
+          onUpdate={handleAssetUpdate}
+          onInsert={handleAssetInsert}
+          onRefresh={() => { if (noteId) void useAssetsStore.getState().load(noteId, true) }}
         />
       )}
 

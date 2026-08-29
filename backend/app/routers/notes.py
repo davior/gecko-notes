@@ -8,6 +8,11 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlmodel import Session, select, func, or_, and_, col
 
+from app.asset_utils import (  # noqa: F401  (extract_media_urls re-exported for video.worker)
+    extract_media_urls,
+    purge_note_assets,
+    sync_note_assets,
+)
 from app.database import get_session
 from app.folder_utils import archived_subtree_ids, get_folder_subtree, get_or_create_archive_folder
 from app.models import Note, NoteVersion, Folder, Annotation
@@ -104,35 +109,6 @@ def extract_full_text(content_str: str) -> str:
 
     walk(blocks)
     return "".join(texts).strip()
-
-
-def extract_media_urls(content_str: str) -> List[str]:
-    """Return the unique `/media/...` URLs referenced by a note's blocks.
-
-    Covers images and the custom/built-in file blocks (videoFile, audioFile,
-    file) — all of which store their file location in `props.url`.
-    """
-    try:
-        blocks = json.loads(content_str)
-    except Exception:
-        return []
-
-    urls: List[str] = []
-    seen = set()
-
-    def walk(block_list):
-        for block in block_list:
-            if not isinstance(block, dict):
-                continue
-            props = block.get("props", {}) or {}
-            url = props.get("url")
-            if isinstance(url, str) and url.startswith("/media/") and url not in seen:
-                seen.add(url)
-                urls.append(url)
-            walk(block.get("children", []) or [])
-
-    walk(blocks)
-    return urls
 
 
 # Matches the note-link convention written by the diagram editor's "Link to note" control
@@ -582,6 +558,7 @@ def create_note(payload: NoteCreate, request: Request, session: Session = Depend
     session.add(note)
     session.commit()
     session.refresh(note)
+    sync_note_assets(session, note)
     return DataResponse(data=note_to_read(note))
 
 
@@ -618,6 +595,8 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
     session.add(note)
     session.commit()
     session.refresh(note)
+    if payload.content is not None:
+        sync_note_assets(session, note)
     return DataResponse(data=note_to_read(note))
 
 
@@ -737,6 +716,10 @@ def delete_note(note_id: str, request: Request, session: Session = Depends(get_s
         session.delete(annotation)
     session.delete(note)
     session.commit()
+    # Reclaim the note's files. Permanent deletion only — archiving is a soft delete
+    # (see archive_note above) and has to leave the media alone so the note can come
+    # back intact. Files another note still uses are kept; see purge_note_assets.
+    purge_note_assets(session, note_id)
 
 
 @router.post("/{note_id}/share", response_model=DataResponse[NoteRead])
@@ -842,6 +825,7 @@ def restore_version(
         session.add(new_note)
         session.commit()
         session.refresh(new_note)
+        sync_note_assets(session, new_note)
         return DataResponse(data=note_to_read(new_note))
 
     # in_place: preserve the current state as a version before overwriting it.
@@ -854,4 +838,5 @@ def restore_version(
     session.add(note)
     session.commit()
     session.refresh(note)
+    sync_note_assets(session, note)
     return DataResponse(data=note_to_read(note))

@@ -595,6 +595,57 @@ class MediaUploadResponse(BaseModel):
     filename: str
     mime_type: str
     size: int
+    # Set when the upload named a note and was registered against it, so the caller can
+    # tell a registered upload from one that will only be picked up on the next save.
+    note_id: Optional[str] = None
+
+
+# Note asset schemas (the Assets tab)
+class NoteAssetRead(BaseModel):
+    id: str
+    note_id: str
+    url: str
+    filename: str
+    display_name: str                 # title > original_name > filename
+    original_name: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    mime_type: Optional[str] = None
+    kind: str
+    origin: str
+    size_bytes: Optional[int] = None
+    thumb_url: Optional[str] = None   # only when the .thumb sidecar exists on disk
+    in_note: bool                     # url appears in the note's current content
+    role: str                         # in_note | reference | export | detached
+    missing: bool                     # registered but no longer on disk
+    ai_context: bool
+    ai_eligible: bool                 # can be sent to a model at all (not video/audio/archives)
+    created_at: UTCDatetime
+
+
+class NoteAssetUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    origin: Optional[str] = None
+    ai_context: Optional[bool] = None
+
+
+class UnlinkedFile(BaseModel):
+    """A file in the user's media dir that nothing references any more."""
+    filename: str
+    url: str
+    kind: str
+    size_bytes: int
+    modified_at: UTCDatetime
+
+
+class UnlinkedScan(BaseModel):
+    files: List[UnlinkedFile]
+    total_bytes: int
+
+
+class AdoptRequest(BaseModel):
+    note_id: str
 
 
 # URL import schemas (web page -> note)

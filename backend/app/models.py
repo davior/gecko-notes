@@ -1,5 +1,6 @@
 from typing import Optional
 from datetime import datetime
+from sqlalchemy import UniqueConstraint
 from sqlmodel import SQLModel, Field
 
 
@@ -108,6 +109,38 @@ class Annotation(SQLModel, table=True):
     text: str = Field(default='')  # markdown body
     created_at: datetime
     modified_at: datetime
+
+
+class NoteAsset(SQLModel, table=True):
+    """A file belonging to a note.
+
+    Media itself lives on disk in a flat, per-user tree (MEDIA_DIR/{user_id}/{uuid}{ext}),
+    which cannot express "belongs to this note" — that association lives here. Rows are
+    created when a file is uploaded against a note and by additive reconciliation on
+    every note-content write (see app/asset_utils.py); nothing but an explicit delete
+    removes one, which is what keeps a file listed after its block is taken out of the
+    note body.
+    """
+
+    __table_args__ = (UniqueConstraint("note_id", "url", name="uq_noteasset_note_url"),)
+
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    note_id: str = Field(index=True)
+    url: str                             # "/media/{owner}/{uuid}.ext" — matched against note content
+    filename: str = Field(index=True)    # "{uuid}.ext" — locates the file on disk
+    original_name: Optional[str] = None  # as uploaded, or the block's name/caption when reconciled
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    kind: str = Field(default="other")   # categorize_extension(): images|video|audio|documents|archives|data|other
+    # How the file came to belong to the note: "embedded" (added to the body),
+    # "reference" (source material kept alongside it), "export" (produced from it).
+    # Whether it is in the body *right now* is recomputed on read, never stored.
+    origin: str = Field(default="embedded")
+    ai_context: bool = Field(default=False)  # include in the assistant's context
+    title: Optional[str] = None              # user-editable display name
+    description: Optional[str] = None        # user-editable note about the file
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class AIProvider(SQLModel, table=True):

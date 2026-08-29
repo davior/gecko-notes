@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, select, col
 
+from app.asset_utils import purge_note_assets
 from app.database import get_session
 from app.folder_utils import ARCHIVE_SYSTEM_KEY, get_folder_subtree, get_or_create_archive_folder
 from app.models import Folder, Note, NoteVersion, Annotation
@@ -81,9 +82,13 @@ def _reject_if_dynamic_parent(session: Session, parent_id: Optional[str], user_i
         )
 
 
-def _delete_note_hard(session: Session, note: Note) -> None:
+def _delete_note_hard(session: Session, note: Note) -> str:
     """Permanently delete a note plus its versions/annotations, orphaning any child
-    notes — mirrors the note router's delete_note cleanup."""
+    notes — mirrors the note router's delete_note cleanup.
+
+    Returns the note's id so the caller can reclaim its media once the transaction is
+    committed. Asset cleanup can't happen here: purge_note_assets commits, and this
+    function deliberately leaves the transaction boundary to its caller."""
     for version in session.exec(select(NoteVersion).where(NoteVersion.note_id == note.id)).all():
         session.delete(version)
     for annotation in session.exec(select(Annotation).where(Annotation.note_id == note.id)).all():
@@ -91,17 +96,22 @@ def _delete_note_hard(session: Session, note: Note) -> None:
     for child in session.exec(select(Note).where(Note.parent_note_id == note.id)).all():
         child.parent_note_id = None
         session.add(child)
+    note_id = note.id
     session.delete(note)
+    return note_id
 
 
-def _delete_folder_recursive(session: Session, folder_id: str, user_id: str) -> None:
+def _delete_folder_recursive(session: Session, folder_id: str, user_id: str) -> List[str]:
     """Permanently delete a folder and everything nested inside it (subfolders + notes).
-    Does not commit — the caller owns the transaction boundary."""
+    Does not commit — the caller owns the transaction boundary. Returns the ids of the
+    notes it deleted, for media cleanup after the commit."""
     subtree_ids = get_folder_subtree(folder_id, user_id, session)
-    for note in session.exec(
-        select(Note).where(Note.user_id == user_id, col(Note.folder_id).in_(subtree_ids))
-    ).all():
+    deleted_note_ids = [
         _delete_note_hard(session, note)
+        for note in session.exec(
+            select(Note).where(Note.user_id == user_id, col(Note.folder_id).in_(subtree_ids))
+        ).all()
+    ]
     folders_by_id = {
         f.id: f
         for f in session.exec(
@@ -113,6 +123,7 @@ def _delete_folder_recursive(session: Session, folder_id: str, user_id: str) -> 
         f = folders_by_id.get(fid)
         if f is not None:
             session.delete(f)
+    return deleted_note_ids
 
 
 @router.get("", response_model=ListResponse[FolderRead])
@@ -246,8 +257,10 @@ def delete_folder(
     _reject_if_system(folder)
 
     if recursive:
-        _delete_folder_recursive(session, folder_id, user_id)
+        deleted_note_ids = _delete_folder_recursive(session, folder_id, user_id)
         session.commit()
+        for deleted_id in deleted_note_ids:
+            purge_note_assets(session, deleted_id)
         return
 
     new_parent = folder.parent_folder_id
@@ -277,15 +290,20 @@ def empty_archive(request: Request, session: Session = Depends(get_session)):
     ).first()
     if not bin_folder:
         return
+    deleted_note_ids: List[str] = []
     for child in session.exec(
         select(Folder).where(Folder.user_id == user_id, Folder.parent_folder_id == bin_folder.id)
     ).all():
-        _delete_folder_recursive(session, child.id, user_id)
+        deleted_note_ids.extend(_delete_folder_recursive(session, child.id, user_id))
     for note in session.exec(
         select(Note).where(Note.user_id == user_id, Note.folder_id == bin_folder.id)
     ).all():
-        _delete_note_hard(session, note)
+        deleted_note_ids.append(_delete_note_hard(session, note))
     session.commit()
+    # Emptying the bin is the one archive path that is permanent, so this is where the
+    # archived notes' media is finally reclaimed.
+    for deleted_id in deleted_note_ids:
+        purge_note_assets(session, deleted_id)
 
 
 @router.post("/{folder_id}/archive", response_model=DataResponse[FolderRead])

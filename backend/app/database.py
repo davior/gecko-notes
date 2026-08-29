@@ -1,8 +1,11 @@
+import logging
 import os
 import uuid as _uuid
 from pathlib import Path
 from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import event, text
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "db" / "notes.db"
@@ -545,6 +548,101 @@ def _run_migrations():
             conn.commit()
         except Exception:
             pass
+        # Note assets registry (the Assets tab). Media lives on disk in a flat,
+        # per-user tree, so this table is the only thing that knows which note a file
+        # belongs to. create_all also creates it, but an explicit idempotent create
+        # matches the codebase's defensive convention (see usageevent above).
+        try:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS noteasset (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    note_id TEXT,
+                    url TEXT,
+                    filename TEXT,
+                    original_name TEXT,
+                    mime_type TEXT,
+                    size_bytes INTEGER,
+                    kind TEXT,
+                    origin TEXT,
+                    ai_context BOOLEAN NOT NULL DEFAULT 0,
+                    title TEXT,
+                    description TEXT,
+                    created_at TEXT
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_noteasset_note_id ON noteasset (note_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_noteasset_user_id ON noteasset (user_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_noteasset_filename ON noteasset (filename)"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_noteasset_note_url ON noteasset (note_id, url)"
+            ))
+            conn.commit()
+        except Exception:
+            pass
+        # One-time backfill: register the media every existing note already references,
+        # so the Assets tab is populated on day one rather than only for notes touched
+        # after this deploy. Gated on the table being empty rather than riding an
+        # ALTER's one-time success, because CREATE TABLE IF NOT EXISTS doesn't throw on
+        # a second boot; INSERT OR IGNORE against the unique index makes a re-run
+        # harmless either way. Imported inside the try because database.py is imported
+        # by nearly everything, and asset_utils reaches back into the routers.
+        try:
+            already = conn.execute(text("SELECT COUNT(*) FROM noteasset")).scalar() or 0
+            if not already:
+                from datetime import datetime as _dt
+                from app.asset_utils import (
+                    ORIGIN_EMBEDDED, ORIGIN_EXPORT, extract_media_refs, kind_for,
+                    guess_mime, parse_media_url,
+                )
+                # Filenames the video renderer produced, so its output is filed as an
+                # export rather than as ordinary embedded media.
+                export_names = {
+                    row[0]
+                    for row in conn.execute(text(
+                        "SELECT result_filename FROM videorenderjob WHERE result_filename IS NOT NULL "
+                        "UNION SELECT subtitle_filename FROM videorenderjob WHERE subtitle_filename IS NOT NULL "
+                        "UNION SELECT thumbnail_filename FROM videorenderjob WHERE thumbnail_filename IS NOT NULL"
+                    )).fetchall()
+                }
+                notes = conn.execute(text("SELECT id, user_id, content FROM note")).fetchall()
+                now = _dt.utcnow().isoformat()
+                added = 0
+                for note_id, user_id, content in notes:
+                    if not content or "/media/" not in content:
+                        continue
+                    for ref in extract_media_refs(content):
+                        parsed = parse_media_url(ref.url)
+                        if not parsed:
+                            continue
+                        _owner, fname = parsed
+                        conn.execute(text("""
+                            INSERT OR IGNORE INTO noteasset
+                                (id, user_id, note_id, url, filename, original_name,
+                                 mime_type, kind, origin, ai_context, created_at)
+                            VALUES
+                                (:id, :user_id, :note_id, :url, :filename, :original_name,
+                                 :mime_type, :kind, :origin, 0, :created_at)
+                        """), {
+                            "id": str(_uuid.uuid4()),
+                            "user_id": user_id,
+                            "note_id": note_id,
+                            "url": ref.url,
+                            "filename": fname,
+                            # Uploads keep only a UUID on disk, so a block's own name or
+                            # caption is the only readable label available here.
+                            "original_name": ref.name or ref.caption,
+                            "mime_type": guess_mime(fname),
+                            "kind": kind_for(fname),
+                            "origin": ORIGIN_EXPORT if fname in export_names else ORIGIN_EMBEDDED,
+                            "created_at": now,
+                        })
+                        added += 1
+                conn.commit()
+                if added:
+                    logger.info("Backfilled %d note asset(s) from %d note(s)", added, len(notes))
+        except Exception:
+            logger.exception("Note asset backfill failed; the Assets tab will fill in as notes are saved")
 
 
 def _seed_after_migrations():

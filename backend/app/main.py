@@ -27,6 +27,7 @@ from app.routers import data as data_router
 from app.routers import shared as shared_router
 from app.routers import ai_sessions as ai_sessions_router
 from app.routers import recipes as recipes_router
+from app.routers import assets as assets_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.mail import email_enabled
 from app.app_settings import get_bool, REGISTRATION_ENABLED, EMAIL_VERIFICATION_REQUIRED, VOICE_MODE_ENABLED
@@ -147,6 +148,8 @@ app.include_router(notes.router, prefix="/api/notes", tags=["notes"])
 app.include_router(annotations.router, prefix="/api/notes", tags=["annotations"])
 app.include_router(ai_sessions_router.router, prefix="/api/notes", tags=["ai-sessions"])
 app.include_router(ai_sessions_router.global_router, prefix="/api/ai-sessions", tags=["ai-sessions"])
+app.include_router(assets_router.router, prefix="/api/notes", tags=["assets"])
+app.include_router(assets_router.library_router, prefix="/api/assets", tags=["assets"])
 app.include_router(recipes_router.router, prefix="/api/recipes", tags=["recipes"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(folders.router, prefix="/api/folders", tags=["folders"])

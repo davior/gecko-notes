@@ -37,6 +37,7 @@ import NoteStatsModal from '@/components/NoteStatsModal'
 import FindReplaceBar from '@/components/FindReplaceBar'
 
 import { useNotesStore } from '@/stores/notes'
+import { useAssetsStore } from '@/stores/assets'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
 import { useVideoJobsStore } from '@/stores/videoJobs'
@@ -235,7 +236,11 @@ export default function EditorView() {
       const settled = new Promise<void>((resolve) => { markSettled = resolve })
       pendingUploads.current.add(settled)
       try {
-        const response = await mediaApi.upload(file)
+        // Naming the note here is the only chance to keep the original filename —
+        // the file is stored under a UUID. When the note has no id yet (a brand-new
+        // /notes/new draft) the server registers nothing and picks the file up when
+        // the note is first saved.
+        const response = await mediaApi.upload(file, createdNoteId.current || latestNoteId.current)
         return response.data.url
       } finally {
         // Defer clearing to a macrotask: BlockNote writes the resolved URL
@@ -262,6 +267,24 @@ export default function EditorView() {
     const doc = editor.document
     const lastBlock = doc[doc.length - 1]
     return lastBlock ? editor.insertBlocks(blocks, lastBlock, 'after') : []
+  }, [editor])
+
+  // Take every block referencing a media URL out of the note. Used by the Assets tab
+  // when a file is deleted while still in the body: the block has to go before the row
+  // does, or the next autosave re-registers the file from content that still names it.
+  // Doing it through the editor rather than the server also means it lands in the undo
+  // stack and saves by the normal path.
+  const removeMediaBlocks = useCallback((url: string) => {
+    if (!editor) return
+    const ids: string[] = []
+    const walk = (blocks: unknown[]) => {
+      for (const block of blocks as { id?: string; props?: { url?: string }; children?: unknown[] }[]) {
+        if (block?.props?.url === url && block.id) ids.push(block.id)
+        if (block?.children?.length) walk(block.children)
+      }
+    }
+    walk(editor.document as unknown[])
+    if (ids.length) editor.removeBlocks(ids)
   }, [editor])
 
   const insertBlocksAtTop = useCallback((blocks: PartialBlock[]) => {
@@ -312,7 +335,7 @@ export default function EditorView() {
     const ext = blob.type.includes('ogg') ? 'ogg' : blob.type.includes('webm') ? 'webm' : 'mp3'
     const safeBase = (baseName || 'audio').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'audio'
     const file = new File([blob], `${safeBase}.${ext}`, { type: blob.type || 'application/octet-stream' })
-    const res = await mediaApi.upload(file)
+    const res = await mediaApi.upload(file, createdNoteId.current || latestNoteId.current)
     return res.data.url
   }, [])
 
@@ -359,7 +382,7 @@ export default function EditorView() {
     const ext = mimeType.includes('mp4') ? 'mp4' : 'webm'
     const safeBase = (baseName || 'video').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_').slice(0, 80) || 'video'
     const file = new File([blob], `${safeBase}.${ext}`, { type: mimeType || 'application/octet-stream' })
-    const res = await mediaApi.upload(file)
+    const res = await mediaApi.upload(file, createdNoteId.current || latestNoteId.current)
     return { url: res.data.url, filename: res.data.filename }
   }, [])
 
@@ -633,6 +656,11 @@ export default function EditorView() {
 
       hasPendingChanges.current = false
       setSaveStatus('All changes saved')
+      // The save is what makes the server reconcile the note's media, so this is the
+      // moment the Assets list can change. Deliberately not done on upload: at that
+      // point the block hasn't been saved yet, so the file would briefly show as
+      // detached. A no-op unless the Assets tab is open on this note.
+      useAssetsStore.getState().invalidate(saved.id)
     } catch {
       setSaveStatus('Error saving')
       hasPendingChanges.current = true
@@ -944,7 +972,7 @@ export default function EditorView() {
         if (!svg) continue
         const { data } = await svgToPngData(svg)
         const file = new File([new Blob([data as BlobPart], { type: 'image/png' })], `diagram-${block.id}.png`, { type: 'image/png' })
-        const uploaded = await mediaApi.upload(file)
+        const uploaded = await mediaApi.upload(file, createdNoteId.current || latestNoteId.current)
         rasterised[block.id] = uploaded.data.url
       } catch {
         // A diagram that won't render just isn't used as a background.
@@ -1850,6 +1878,12 @@ export default function EditorView() {
           onNotesChanged={() => { void notesStore.loadNotes() }}
           getAnnotations={() => annotations}
           onAnnotationsChanged={reloadAnnotations}
+          onInsertBlocks={(blocks) => { insertBlocksAtCursor(blocks as PartialBlock[]) }}
+          onRemoveMediaBlocks={removeMediaBlocks}
+          // Unconditional, unlike onBeforeExecute above: after removing a block the
+          // document has to reach the server before the asset row is deleted, whether or
+          // not anything else was pending.
+          onFlushSave={async () => { await doSave(true) }}
         />
       </div>
 
