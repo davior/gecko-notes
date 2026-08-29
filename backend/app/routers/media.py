@@ -1,9 +1,14 @@
+import mimetypes
 import os
+import re
 from pathlib import Path
+from typing import Optional, Tuple
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
+from sqlmodel import Session
 
+from app.database import get_session
 from app.schemas import MediaUploadResponse, DataResponse
 
 router = APIRouter()
@@ -57,12 +62,30 @@ def get_user_media_dir(user_id: str) -> str:
     return path
 
 
-@router.post("/upload", response_model=DataResponse[MediaUploadResponse])
-async def upload_media(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\\/]")
 
+
+def sanitize_original_name(name: Optional[str]) -> Optional[str]:
+    """Reduce an uploaded filename to something safe to store and display.
+
+    Files are saved under a UUID, so this never touches the path — it only guards the
+    label shown in the Assets tab, which is otherwise attacker-controlled text.
+    """
+    if not name:
+        return None
+    cleaned = _UNSAFE_NAME_CHARS.sub("", os.path.basename(name)).strip()
+    return cleaned[:255] or None
+
+
+async def save_upload(
+    user_id: str,
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+) -> Tuple[str, str, int, str]:
+    """Stream an upload to the user's media dir. Returns (filename, url, size, mime_type).
+
+    Raises 400 for a file type outside the allowlist.
+    """
     user_dir = get_user_media_dir(user_id)
 
     ext = ""
@@ -84,7 +107,9 @@ async def upload_media(request: Request, background_tasks: BackgroundTasks, file
             f.write(chunk)
             size += len(chunk)
 
-    mime_type = file.content_type or "application/octet-stream"
+    # Prefer the extension's registered type over the browser's Content-Type: the latter
+    # is unvalidated and now gets stored and displayed, not just echoed back.
+    mime_type = mimetypes.guess_type(filename)[0] or file.content_type or "application/octet-stream"
 
     if ext in IMAGE_EXTENSIONS:
         # Local import breaks a circular dependency: thumbnails.py reads
@@ -92,13 +117,48 @@ async def upload_media(request: Request, background_tasks: BackgroundTasks, file
         from app.thumbnails import generate_thumbnail
         background_tasks.add_task(generate_thumbnail, Path(file_path))
 
-    url = f"/media/{user_id}/{filename}"
+    return filename, f"/media/{user_id}/{filename}", size, mime_type
+
+
+@router.post("/upload", response_model=DataResponse[MediaUploadResponse])
+async def upload_media(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    note_id: Optional[str] = Form(None),
+    session: Session = Depends(get_session),
+):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    filename, url, size, mime_type = await save_upload(user_id, file, background_tasks)
+
+    # Register the file against its note while the original filename is still in hand —
+    # this is the only point at which it exists, since the file is stored under a UUID.
+    # A note_id that names nothing (an upload into an unsaved note, say) is not an
+    # error: reconciliation picks the file up on the first save. An upload must never
+    # fail because bookkeeping did.
+    registered = None
+    if note_id:
+        from app.asset_utils import ORIGIN_EMBEDDED, register_asset
+        registered = register_asset(
+            session,
+            user_id=user_id,
+            note_id=note_id,
+            url=url,
+            original_name=sanitize_original_name(file.filename),
+            mime_type=mime_type,
+            size_bytes=size,
+            origin=ORIGIN_EMBEDDED,
+        )
 
     return DataResponse(data=MediaUploadResponse(
         url=url,
         filename=filename,
         mime_type=mime_type,
         size=size,
+        note_id=registered.note_id if registered else None,
     ))
 
 
@@ -116,11 +176,8 @@ def delete_media(filename: str, request: Request):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "File not found"})
 
-    os.remove(file_path)
-
-    ext = os.path.splitext(filename)[1].lower()
-    if ext in IMAGE_EXTENSIONS:
-        from app.thumbnails import thumbnail_filename_for
-        thumb_path = os.path.join(MEDIA_DIR, user_id, thumbnail_filename_for(filename))
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
+    # Local import: asset_utils reads MEDIA_DIR and the extension sets from this module.
+    # Note this deletes the file outright, with no check for a note still using it —
+    # /api/notes/{id}/assets/{asset_id} is the reference-counted way to remove media.
+    from app.asset_utils import remove_media_file
+    remove_media_file(user_id, filename)

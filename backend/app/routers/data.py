@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.asset_utils import sync_note_assets
 from app.database import get_session
 from app.models import Category, Note
 from app.routers.media import get_user_media_dir
@@ -312,6 +313,7 @@ def import_apply(
 
     imported_categories = 0
     imported_notes = 0
+    imported_note_ids: list[str] = []
 
     for cat in data.get("categories", []):
         existing_category = db.exec(
@@ -350,6 +352,7 @@ def import_apply(
 
         # If the ID is taken by another user's note, mint a new one
         note_id = note["id"] if not existing else str(uuid.uuid4())
+        imported_note_ids.append(note_id)
 
         db.add(
             Note(
@@ -368,6 +371,14 @@ def import_apply(
         imported_notes += 1
 
     db.commit()
+
+    # Imported notes arrive with their media URLs already remapped, so nothing has gone
+    # through the upload path — register them here rather than waiting for the user to
+    # open and edit every imported note.
+    for imported_id in imported_note_ids:
+        imported = db.get(Note, imported_id)
+        if imported:
+            sync_note_assets(db, imported)
 
     media_count = sess["media_count"]
     del import_sessions[body.session_id]

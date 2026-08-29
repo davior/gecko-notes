@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select, func
 
 from app.database import get_session
-from app.models import User, Note, Folder
+from app.models import User, Note, Folder, NoteAsset
 from app.routers.media import MEDIA_DIR, IMAGE_EXTENSIONS, categorize_extension
 from app.thumbnails import is_thumbnail_filename, thumbnail_filename_for
 from app.schemas import (
@@ -166,5 +166,10 @@ def delete_user(user_id: str, request: Request, session: Session = Depends(get_s
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    # Their notes and media dir are left in place (a long-standing gap in this
+    # endpoint), but asset rows must not outlive the account — they carry a user_id that
+    # no longer resolves, and would otherwise keep counting as references.
+    for asset in session.exec(select(NoteAsset).where(NoteAsset.user_id == user_id)).all():
+        session.delete(asset)
     session.delete(user)
     session.commit()

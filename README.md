@@ -15,6 +15,7 @@ A full-featured, self-hosted notes application with a block editor, an agentic A
 - Tags with AI-powered tag generation
 - Block-level annotations (highlight a block and attach notes, with AI assistance)
 - Version history with periodic snapshots, checksum deduplication, and a side-by-side diff view
+- **Assets panel** — every file related to a note in one place: what's embedded in it, reference material kept alongside it, and exports produced from it. Files added to a note are registered automatically with their original filename; taking one out of the note body leaves it in Assets as *detached* until you delete it, which is what finally removes it from disk. Reference documents can be marked for the assistant to read as context, and an on-demand scan finds media no note, note version, avatar or theme still uses so the space can be reclaimed
 - Per-note statistics (word/character count, reading time, size including attachments, versions, and likes) from an info button in the status bar
 
 ### AI assistant
