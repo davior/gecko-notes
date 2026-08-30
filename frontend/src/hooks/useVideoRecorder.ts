@@ -7,6 +7,27 @@ export interface MediaDeviceOption {
 
 export type VideoRecorderStatus = 'idle' | 'requesting' | 'previewing' | 'recording' | 'error'
 
+/** What the compositor draws each frame: the camera full-frame, the shared
+ *  screen with the camera as an inset bubble, or the shared screen on its own. */
+export type VideoRecordingMode = 'camera' | 'presentation' | 'screen'
+
+/** Which live sources feed the recording's single audio track. */
+export type AudioSourceId = 'mic' | 'system' | 'both' | 'none'
+
+export interface AudioSourceOption {
+  id: AudioSourceId
+  label: string
+  /** True for the options that need the screen share to have carried an audio track. */
+  needsSystemAudio: boolean
+}
+
+export const AUDIO_SOURCES: readonly AudioSourceOption[] = [
+  { id: 'mic', label: 'Microphone', needsSystemAudio: false },
+  { id: 'system', label: 'Computer audio', needsSystemAudio: true },
+  { id: 'both', label: 'Mic + computer', needsSystemAudio: true },
+  { id: 'none', label: 'No audio', needsSystemAudio: false },
+]
+
 // Tried in order; the first one MediaRecorder.isTypeSupported() accepts wins.
 // Chrome/Edge prefer vp9, Firefox commonly only supports vp8, Safari (14.1+)
 // supports plain video/mp4 recording instead of webm.
@@ -27,6 +48,26 @@ export const hasVideoRecordingSupport =
 
 export const hasScreenShareSupport =
   typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia
+
+function getAudioContextCtor(): typeof AudioContext | undefined {
+  if (typeof window === 'undefined') return undefined
+  return window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+}
+
+// Asks for the screen share with audio, because whether the browser can hand us
+// system audio at all is only discoverable by trying: Chrome/Edge attach an audio
+// track when the user ticks "Share tab audio" (or "Share system audio" on Windows),
+// Firefox silently returns none, and Safari can reject the constraint outright.
+// Only that last case is worth retrying video-only — a dismissed picker must not
+// re-prompt the user.
+async function requestDisplayStream(): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+  } catch (err) {
+    if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) throw err
+    return await navigator.mediaDevices.getDisplayMedia({ video: true })
+  }
+}
 
 export interface VideoQualityPreset {
   id: string
@@ -60,8 +101,10 @@ export const AUDIO_QUALITY_PRESETS: readonly AudioQualityPreset[] = [
 
 const DEFAULT_VIDEO_QUALITY = '720p'
 const DEFAULT_AUDIO_QUALITY = 'standard'
+const DEFAULT_AUDIO_SOURCE: AudioSourceId = 'mic'
 const VIDEO_QUALITY_STORAGE_KEY = 'gecko-video-recorder-video-quality'
 const AUDIO_QUALITY_STORAGE_KEY = 'gecko-video-recorder-audio-quality'
+const AUDIO_SOURCE_STORAGE_KEY = 'gecko-video-recorder-audio-source'
 
 // Remembers the last-picked quality in this browser (i.e. "for the current
 // device"), the same pattern EditorView uses for TTS dock/insert-mode prefs.
@@ -71,6 +114,15 @@ function loadStoredId(key: string, presets: readonly { id: string }[], fallback:
     if (stored && presets.some((p) => p.id === stored)) return stored
   } catch { /* ignore */ }
   return fallback
+}
+
+// Restores the remembered audio source, except that 'system' is downgraded to
+// 'mic': nothing is shared yet when the recorder opens, so restoring it would
+// silently record nothing. 'both' is safe to restore as-is — with no system
+// audio wired up it just behaves as mic-only until a share with audio arrives.
+function loadStoredAudioSource(): AudioSourceId {
+  const stored = loadStoredId(AUDIO_SOURCE_STORAGE_KEY, AUDIO_SOURCES, DEFAULT_AUDIO_SOURCE) as AudioSourceId
+  return stored === 'system' ? 'mic' : stored
 }
 
 function findPreset(id: string): VideoQualityPreset {
@@ -144,14 +196,20 @@ export interface UseVideoRecorderReturn {
   mics: MediaDeviceOption[]
   cameraId: string
   micId: string
-  /** Composited stream (canvas video + mic audio) — bind this to the preview
-   *  <video>; it's exactly what gets recorded, whether or not presentation
-   *  mode is on. */
+  /** Composited stream (canvas video + mixed audio) — bind this to the preview
+   *  <video>; it's what gets recorded, in every mode. */
   previewStream: MediaStream | null
   isSupported: boolean
-  canPresentationMode: boolean
-  presentationMode: boolean
+  canShareScreen: boolean
+  mode: VideoRecordingMode
   desktopRequesting: boolean
+  /** True once a screen share has been acquired that actually carried an audio
+   *  track — the computer-audio options are only meaningful then. */
+  hasSystemAudio: boolean
+  audioSourceId: AudioSourceId
+  /** True while a recording that started with no audio source is running: the
+   *  file has no audio track, so the choice can't be changed until it stops. */
+  audioLockedOff: boolean
   videoQualityId: string
   audioQualityId: string
   open: () => void
@@ -159,7 +217,8 @@ export interface UseVideoRecorderReturn {
   selectMic: (deviceId: string) => void
   setVideoQuality: (id: string) => void
   setAudioQuality: (id: string) => void
-  togglePresentationMode: () => void
+  setAudioSource: (id: AudioSourceId) => void
+  setMode: (mode: VideoRecordingMode) => void
   startRecording: () => void
   stopRecording: () => void
   close: () => void
@@ -168,13 +227,12 @@ export interface UseVideoRecorderReturn {
 /** Camera/mic device picker + live preview + MediaRecorder capture, mirroring the
  *  MediaRecorder fallback path in useDictation.ts but for combined video+audio.
  *
- *  Recording always goes through an internal <canvas> compositor rather than
- *  the raw camera stream directly: in normal mode the canvas just draws the
- *  camera full-frame, and in presentation mode it draws a screen/window/tab
- *  capture full-frame with the camera as a small inset bubble. Because
- *  MediaRecorder is bound to the canvas's stream (not to whichever source is
- *  "current"), toggling presentation mode only flips what gets drawn each
- *  frame — the recorder never needs to stop/restart. */
+ *  Both halves of the recording go through a fixed intermediary rather than the
+ *  raw device streams, so that MediaRecorder is bound once to track objects whose
+ *  identity never changes: video via an internal <canvas> compositor, audio via a
+ *  Web Audio mix graph. Switching mode only changes what the draw loop paints,
+ *  and switching audio source only changes two gain values — neither ever needs
+ *  the recorder to stop and restart, which is why both can be changed mid-take. */
 export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => void): UseVideoRecorderReturn {
   const [status, setStatus] = useState<VideoRecorderStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
@@ -185,8 +243,11 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
   const [micId, setMicId] = useState('')
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null)
-  const [presentationMode, setPresentationModeState] = useState(false)
+  const [mode, setModeState] = useState<VideoRecordingMode>('camera')
   const [desktopRequesting, setDesktopRequesting] = useState(false)
+  const [hasSystemAudio, setHasSystemAudioState] = useState(false)
+  const [audioSourceId, setAudioSourceIdState] = useState<AudioSourceId>(loadStoredAudioSource)
+  const [audioLockedOff, setAudioLockedOff] = useState(false)
   const [videoQualityId, setVideoQualityIdState] = useState(() => loadStoredId(VIDEO_QUALITY_STORAGE_KEY, VIDEO_QUALITY_PRESETS, DEFAULT_VIDEO_QUALITY))
   const [audioQualityId, setAudioQualityIdState] = useState(() => loadStoredId(AUDIO_QUALITY_STORAGE_KEY, AUDIO_QUALITY_PRESETS, DEFAULT_AUDIO_QUALITY))
 
@@ -204,7 +265,9 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
   useEffect(() => { videoQualityRef.current = videoQualityId }, [videoQualityId])
   const previewStreamRef = useRef<MediaStream | null>(null)
   useEffect(() => { previewStreamRef.current = previewStream }, [previewStream])
-  const presentationModeRef = useRef(false)
+  const modeRef = useRef<VideoRecordingMode>('camera')
+  const audioSourceRef = useRef<AudioSourceId>(audioSourceId)
+  const hasSystemAudioRef = useRef(false)
 
   const canvasElRef = useRef<HTMLCanvasElement | null>(null)
   const canvasStreamRef = useRef<MediaStream | null>(null)
@@ -212,6 +275,15 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
   const desktopVideoElRef = useRef<HTMLVideoElement | null>(null)
   const rafRef = useRef<number | null>(null)
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // The audio mix graph: mic and system sources each pass through their own gain
+  // node into one destination, whose single output track is what gets recorded.
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const mixDestRef = useRef<MediaStreamAudioDestinationNode | null>(null)
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const micGainRef = useRef<GainNode | null>(null)
+  const systemSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const systemGainRef = useRef<GainNode | null>(null)
 
   if (!canvasElRef.current) {
     const preset = findPreset(videoQualityRef.current)
@@ -233,6 +305,64 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     noticeTimerRef.current = setTimeout(() => setNoticeState(''), 4000)
   }, [])
 
+  // Selecting a source is just a pair of gain changes, so it takes effect
+  // instantly and is safe to do while recording.
+  const applyGains = useCallback((source: AudioSourceId) => {
+    if (micGainRef.current) micGainRef.current.gain.value = source === 'mic' || source === 'both' ? 1 : 0
+    if (systemGainRef.current) systemGainRef.current.gain.value = source === 'system' || source === 'both' ? 1 : 0
+  }, [])
+
+  const ensureAudioGraph = useCallback((): AudioContext | null => {
+    if (!audioCtxRef.current) {
+      const Ctor = getAudioContextCtor()
+      if (!Ctor) return null
+      const ctx = new Ctor()
+      const dest = ctx.createMediaStreamDestination()
+      const micGain = ctx.createGain()
+      const systemGain = ctx.createGain()
+      micGain.connect(dest)
+      systemGain.connect(dest)
+      audioCtxRef.current = ctx
+      mixDestRef.current = dest
+      micGainRef.current = micGain
+      systemGainRef.current = systemGain
+      applyGains(audioSourceRef.current)
+    }
+    // An AudioContext can be handed to us suspended; a suspended graph emits
+    // silence, so nudge it every time we touch the graph.
+    if (audioCtxRef.current.state === 'suspended') void audioCtxRef.current.resume().catch(() => { /* ignore */ })
+    return audioCtxRef.current
+  }, [applyGains])
+
+  const connectMicSource = useCallback((src: MediaStream | null) => {
+    micSourceRef.current?.disconnect()
+    micSourceRef.current = null
+    const tracks = src?.getAudioTracks() ?? []
+    if (tracks.length === 0) return
+    const ctx = ensureAudioGraph()
+    if (!ctx || !micGainRef.current) return
+    const node = ctx.createMediaStreamSource(new MediaStream(tracks))
+    node.connect(micGainRef.current)
+    micSourceRef.current = node
+  }, [ensureAudioGraph])
+
+  const connectSystemSource = useCallback((src: MediaStream | null) => {
+    systemSourceRef.current?.disconnect()
+    systemSourceRef.current = null
+    const tracks = src?.getAudioTracks() ?? []
+    const ctx = tracks.length > 0 ? ensureAudioGraph() : null
+    if (!ctx || !systemGainRef.current) {
+      hasSystemAudioRef.current = false
+      setHasSystemAudioState(false)
+      return
+    }
+    const node = ctx.createMediaStreamSource(new MediaStream(tracks))
+    node.connect(systemGainRef.current)
+    systemSourceRef.current = node
+    hasSystemAudioRef.current = true
+    setHasSystemAudioState(true)
+  }, [ensureAudioGraph])
+
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
@@ -242,9 +372,18 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
   const stopDesktopStream = useCallback(() => {
     desktopStreamRef.current?.getTracks().forEach((t) => t.stop())
     desktopStreamRef.current = null
-    presentationModeRef.current = false
-    setPresentationModeState(false)
-  }, [])
+    connectSystemSource(null)
+    modeRef.current = 'camera'
+    setModeState('camera')
+    // Losing the share takes the computer-audio options with it. Fall back to the
+    // mic rather than silently recording nothing, but don't persist the fallback
+    // — the stored preference should survive to the next share.
+    if (audioSourceRef.current === 'system' || audioSourceRef.current === 'both') {
+      audioSourceRef.current = 'mic'
+      setAudioSourceIdState('mic')
+      applyGains('mic')
+    }
+  }, [connectSystemSource, applyGains])
 
   const refreshDevices = useCallback(async () => {
     const devices = await navigator.mediaDevices.enumerateDevices()
@@ -316,6 +455,16 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     try { localStorage.setItem(AUDIO_QUALITY_STORAGE_KEY, id) } catch { /* ignore */ }
   }, [])
 
+  const setAudioSource = useCallback((id: AudioSourceId) => {
+    const option = AUDIO_SOURCES.find((o) => o.id === id)
+    if (!option || (option.needsSystemAudio && !hasSystemAudioRef.current)) return
+    audioSourceRef.current = id
+    setAudioSourceIdState(id)
+    try { localStorage.setItem(AUDIO_SOURCE_STORAGE_KEY, id) } catch { /* ignore */ }
+    ensureAudioGraph()
+    applyGains(id)
+  }, [ensureAudioGraph, applyGains])
+
   // Feeds the camera stream into an off-DOM <video> the draw loop reads from.
   useEffect(() => {
     const el = cameraVideoElRef.current
@@ -324,21 +473,31 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     if (stream) void el.play().catch(() => { /* autoplay quirks — draw loop just skips frames until ready */ })
   }, [stream])
 
-  // Rebuilds the composited (canvas video + mic audio) stream whenever the
-  // camera stream changes, e.g. switching devices swaps in a new audio track.
+  // Rebuilds the composited (canvas video + mixed audio) stream whenever the
+  // camera stream changes. Switching device or resolution hands us a brand new
+  // mic track, so its source node is rewired here; the mix destination's output
+  // track survives that, which is why audio keeps flowing mid-recording.
   useEffect(() => {
-    if (!stream || !canvasElRef.current) { setPreviewStream(null); return }
+    if (!stream || !canvasElRef.current) {
+      connectMicSource(null)
+      setPreviewStream(null)
+      return
+    }
     if (!canvasStreamRef.current) {
       canvasStreamRef.current = canvasElRef.current.captureStream(30)
     }
+    ensureAudioGraph()
+    connectMicSource(stream)
     const videoTrack = canvasStreamRef.current.getVideoTracks()[0]
-    const audioTrack = stream.getAudioTracks()[0]
+    // Falls back to the raw mic track if this browser has no AudioContext, in
+    // which case there's no mixing to be had and system audio stays unavailable.
+    const audioTrack = mixDestRef.current?.stream.getAudioTracks()[0] ?? stream.getAudioTracks()[0]
     setPreviewStream(new MediaStream([videoTrack, ...(audioTrack ? [audioTrack] : [])]))
-  }, [stream])
+  }, [stream, ensureAudioGraph, connectMicSource])
 
   // Continuous draw loop: composites whichever source(s) are active onto the
-  // canvas every frame. Reads refs only, so it never needs to restart when
-  // presentation mode (or anything else) toggles.
+  // canvas every frame. Reads refs only, so it never needs to restart when the
+  // mode (or anything else) changes.
   useEffect(() => {
     let active = true
     function frame() {
@@ -351,14 +510,20 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
 
         const desktopEl = desktopVideoElRef.current
         const cameraEl = cameraVideoElRef.current
-        const usingDesktop = presentationModeRef.current && desktopEl && desktopEl.readyState >= 2
+        const cameraReady = !!cameraEl && cameraEl.readyState >= 2
+        const wantsDesktop = modeRef.current !== 'camera'
+        const usingDesktop = wantsDesktop && !!desktopEl && desktopEl.readyState >= 2
+
         if (usingDesktop && desktopEl) {
           drawContain(ctx, desktopEl, canvas.width, canvas.height)
-        } else if (cameraEl && cameraEl.readyState >= 2) {
+        } else if (!wantsDesktop && cameraEl && cameraReady) {
+          // Only ever fall back to a full-frame camera when a camera mode asked
+          // for it — in a screen mode those few frames before the share is ready
+          // would put the user's face in a recording that's meant to exclude it.
           drawContain(ctx, cameraEl, canvas.width, canvas.height)
         }
 
-        if (presentationModeRef.current && usingDesktop && cameraEl && cameraEl.readyState >= 2) {
+        if (modeRef.current === 'presentation' && usingDesktop && cameraEl && cameraReady) {
           const box = insetBox(canvas.width, canvas.height)
           ctx.save()
           roundRectPath(ctx, box.x, box.y, box.w, box.h, box.r)
@@ -382,21 +547,30 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     }
   }, [])
 
-  const enablePresentationMode = useCallback(async () => {
-    if (!hasScreenShareSupport || presentationModeRef.current) return
-    if (desktopStreamRef.current) {
-      presentationModeRef.current = true
-      setPresentationModeState(true)
+  // Switching to a screen mode acquires the share on first use; switching between
+  // the two screen modes (i.e. dropping or restoring the camera inset) reuses the
+  // stream we already hold, so it's instant and never re-prompts the picker.
+  // Switching back to 'camera' deliberately keeps the share alive in the
+  // background for the same reason — it's only released on close()/session end.
+  const changeMode = useCallback(async (next: VideoRecordingMode) => {
+    if (next === modeRef.current) return
+    if (next !== 'camera' && !hasScreenShareSupport) return
+    if (next === 'camera' || desktopStreamRef.current) {
+      modeRef.current = next
+      setModeState(next)
       return
     }
     setDesktopRequesting(true)
     try {
-      const display = await navigator.mediaDevices.getDisplayMedia({ video: true })
+      const display = await requestDisplayStream()
       desktopStreamRef.current = display
       const track = display.getVideoTracks()[0]
       track.onended = () => {
+        const losingSystemAudio = audioSourceRef.current === 'system' || audioSourceRef.current === 'both'
         stopDesktopStream()
-        setNotice('Screen sharing ended — back to camera')
+        setNotice(losingSystemAudio
+          ? 'Screen sharing ended — back to camera and microphone'
+          : 'Screen sharing ended — back to camera')
       }
       if (!desktopVideoElRef.current) {
         const el = document.createElement('video')
@@ -406,32 +580,23 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
       }
       desktopVideoElRef.current.srcObject = display
       await desktopVideoElRef.current.play().catch(() => { /* draw loop just skips frames until ready */ })
-      presentationModeRef.current = true
-      setPresentationModeState(true)
+      connectSystemSource(display)
+      modeRef.current = next
+      setModeState(next)
     } catch {
       setNotice('Screen sharing was cancelled')
     } finally {
       setDesktopRequesting(false)
     }
-  }, [stopDesktopStream, setNotice])
+  }, [stopDesktopStream, setNotice, connectSystemSource])
 
-  // Turning presentation mode off keeps the desktop stream alive in the
-  // background (just stops drawing it) so toggling back on is instant and
-  // doesn't re-prompt the browser's share picker. It's fully released on
-  // close()/session end.
-  const disablePresentationMode = useCallback(() => {
-    presentationModeRef.current = false
-    setPresentationModeState(false)
-  }, [])
-
-  const togglePresentationMode = useCallback(() => {
-    if (presentationModeRef.current) disablePresentationMode()
-    else void enablePresentationMode()
-  }, [enablePresentationMode, disablePresentationMode])
+  const setMode = useCallback((next: VideoRecordingMode) => { void changeMode(next) }, [changeMode])
 
   const startRecording = useCallback(() => {
-    const recordingStream = previewStreamRef.current
-    if (!recordingStream) return
+    const preview = previewStreamRef.current
+    const videoTrack = preview?.getVideoTracks()[0]
+    if (!preview || !videoTrack) return
+    void audioCtxRef.current?.resume().catch(() => { /* ignore */ })
     const mimeType = pickMimeType()
     const videoPreset = findPreset(videoQualityId)
     const audioPreset = AUDIO_QUALITY_PRESETS.find((p) => p.id === audioQualityId) ?? AUDIO_QUALITY_PRESETS[0]
@@ -440,6 +605,12 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
       videoBitsPerSecond: videoPreset.videoBitsPerSecond,
       audioBitsPerSecond: audioPreset.audioBitsPerSecond,
     }
+    // Choosing "No audio" up front leaves the audio track out entirely, so the
+    // file has none at all rather than a silent one. Switching to it mid-take can
+    // only mute what's left, since the track is already part of the recording —
+    // hence the lock while such a recording runs.
+    const silent = audioSourceRef.current === 'none'
+    const recordingStream = new MediaStream([videoTrack, ...(silent ? [] : preview.getAudioTracks())])
     chunksRef.current = []
     const recorder = new MediaRecorder(recordingStream, options)
 
@@ -454,11 +625,13 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
 
     recorderRef.current = recorder
     recorder.start()
+    setAudioLockedOff(silent)
     setStatus('recording')
   }, [videoQualityId, audioQualityId])
 
   const stopRecording = useCallback(() => {
     recorderRef.current?.stop()
+    setAudioLockedOff(false)
     setStatus('previewing')
   }, [])
 
@@ -467,16 +640,20 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     stopStream()
     desktopStreamRef.current?.getTracks().forEach((t) => t.stop())
     desktopStreamRef.current = null
-    presentationModeRef.current = false
-    setPresentationModeState(false)
+    connectSystemSource(null)
+    connectMicSource(null)
+    modeRef.current = 'camera'
+    setModeState('camera')
+    setAudioLockedOff(false)
     setStatus('idle')
-  }, [stopStream])
+  }, [stopStream, connectSystemSource, connectMicSource])
 
   // Release everything on unmount regardless of how the modal closes.
   useEffect(() => () => {
     recorderRef.current?.stop()
     streamRef.current?.getTracks().forEach((t) => t.stop())
     desktopStreamRef.current?.getTracks().forEach((t) => t.stop())
+    void audioCtxRef.current?.close().catch(() => { /* ignore */ })
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
   }, [])
 
@@ -490,9 +667,12 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     micId,
     previewStream,
     isSupported: hasVideoRecordingSupport,
-    canPresentationMode: hasScreenShareSupport,
-    presentationMode,
+    canShareScreen: hasScreenShareSupport,
+    mode,
     desktopRequesting,
+    hasSystemAudio,
+    audioSourceId,
+    audioLockedOff,
     videoQualityId,
     audioQualityId,
     open,
@@ -500,7 +680,8 @@ export function useVideoRecorder(onComplete: (blob: Blob, mimeType: string) => v
     selectMic,
     setVideoQuality,
     setAudioQuality,
-    togglePresentationMode,
+    setAudioSource,
+    setMode,
     startRecording,
     stopRecording,
     close,
