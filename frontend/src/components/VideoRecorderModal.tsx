@@ -1,13 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, Circle, Square, Video as VideoIcon, MonitorPlay } from 'lucide-react'
-import { useVideoRecorder, VIDEO_QUALITY_PRESETS, AUDIO_QUALITY_PRESETS } from '@/hooks/useVideoRecorder'
+import { X, Circle, Square, Video as VideoIcon, MonitorPlay, Monitor, MicOff } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { useVideoRecorder, VIDEO_QUALITY_PRESETS, AUDIO_QUALITY_PRESETS, AUDIO_SOURCES } from '@/hooks/useVideoRecorder'
+import type { AudioSourceId, VideoRecordingMode } from '@/hooks/useVideoRecorder'
 
 interface Props {
   onClose: () => void
   onRecorded: (blob: Blob, mimeType: string, wantTranscript: boolean) => void
   canTranscribe: boolean
 }
+
+interface ModeOption {
+  id: VideoRecordingMode
+  label: string
+  icon: LucideIcon
+  needsScreen: boolean
+  hint: string
+}
+
+const MODE_OPTIONS: readonly ModeOption[] = [
+  { id: 'camera', label: 'Camera', icon: VideoIcon, needsScreen: false, hint: 'Just your camera, full frame' },
+  { id: 'presentation', label: 'Screen + camera', icon: MonitorPlay, needsScreen: true, hint: 'Your shared screen with a camera inset in the corner' },
+  { id: 'screen', label: 'Screen only', icon: Monitor, needsScreen: true, hint: 'Just your shared screen — no camera inset' },
+]
 
 function formatTime(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0')
@@ -19,12 +35,19 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
   const videoRef = useRef<HTMLVideoElement>(null)
   const [wantTranscript, setWantTranscript] = useState(canTranscribe)
   const [seconds, setSeconds] = useState(0)
+  // Mirrored so the (async) recorder callback below sees the current choice
+  // without having to close over the recorder it's being passed to.
+  const audioOffRef = useRef(false)
 
   const recorder = useVideoRecorder((blob, mimeType) => {
-    onRecorded(blob, mimeType, wantTranscript)
+    onRecorded(blob, mimeType, wantTranscript && !audioOffRef.current)
     onClose()
   })
   const { open, close } = recorder
+
+  const audioOff = recorder.audioSourceId === 'none'
+  audioOffRef.current = audioOff
+  const sharingScreen = recorder.mode !== 'camera'
 
   useEffect(() => {
     open()
@@ -89,9 +112,15 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
                 {formatTime(seconds)}
               </div>
             )}
-            {recorder.presentationMode && (
+            {sharingScreen && (
               <div className="absolute top-2 right-2 flex items-center gap-1 bg-blue-600/80 text-white text-xs px-2 py-1 rounded-full">
-                <MonitorPlay className="w-3 h-3" /> Presentation mode
+                {recorder.mode === 'presentation' ? <MonitorPlay className="w-3 h-3" /> : <Monitor className="w-3 h-3" />}
+                {recorder.mode === 'presentation' ? 'Screen + camera' : 'Screen only'}
+              </div>
+            )}
+            {audioOff && (
+              <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-amber-500/90 text-white text-xs px-2 py-1 rounded-full">
+                <MicOff className="w-3 h-3" /> No audio
               </div>
             )}
             {recorder.status === 'requesting' && (
@@ -117,26 +146,33 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
             </div>
           )}
 
-          <button
-            type="button"
-            className={`w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg border transition-colors ${
-              recorder.presentationMode
-                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-                : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-            disabled={!recorder.canPresentationMode || recorder.desktopRequesting}
-            onClick={recorder.togglePresentationMode}
-            title={
-              !recorder.canPresentationMode
-                ? "This browser doesn't support screen sharing"
-                : recorder.presentationMode
-                  ? 'Switch back to camera only'
-                  : 'Share your screen with a camera inset — can be toggled any time, including while recording'
-            }
-          >
-            <MonitorPlay className="w-3.5 h-3.5" />
-            {recorder.presentationMode ? 'Presentation mode on — screen + camera inset' : 'Turn on presentation mode (screen + camera inset)'}
-          </button>
+          {/* Modes stay switchable while recording — the compositor swaps what it
+              draws without ever restarting MediaRecorder. */}
+          <div className="flex gap-1 p-1 rounded-lg bg-gray-100 dark:bg-gray-700/50" role="group" aria-label="Recording mode">
+            {MODE_OPTIONS.map((opt) => {
+              const Icon = opt.icon
+              const active = recorder.mode === opt.id
+              const blocked = opt.needsScreen && !recorder.canShareScreen
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-medium px-2 py-1.5 rounded-md transition-colors ${
+                    active
+                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'text-gray-600 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-gray-600'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  disabled={blocked || recorder.desktopRequesting}
+                  aria-pressed={active}
+                  onClick={() => recorder.setMode(opt.id)}
+                  title={blocked ? "This browser doesn't support screen sharing" : opt.hint}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{opt.label}</span>
+                </button>
+              )
+            })}
+          </div>
 
           <div className="flex flex-wrap gap-2">
             <select
@@ -168,6 +204,31 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
           <div className="flex flex-wrap gap-2">
             <select
               className="input text-xs flex-1 min-w-[140px]"
+              value={recorder.audioSourceId}
+              onChange={(e) => recorder.setAudioSource(e.target.value as AudioSourceId)}
+              disabled={recorder.audioLockedOff}
+              aria-label="Audio source"
+              title={
+                recorder.audioLockedOff
+                  ? 'This recording was started with no audio, so it has no audio track to turn back on'
+                  : 'Which sound goes into the recording'
+              }
+            >
+              {AUDIO_SOURCES.map((s) => (
+                <option
+                  key={s.id}
+                  value={s.id}
+                  // A restored preference can name computer audio before any share exists;
+                  // greying out the value that's actually selected would just look broken,
+                  // so only the options you can't switch *to* are disabled.
+                  disabled={s.needsSystemAudio && !recorder.hasSystemAudio && s.id !== recorder.audioSourceId}
+                >
+                  {s.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input text-xs flex-1 min-w-[140px]"
               value={recorder.videoQualityId}
               onChange={(e) => recorder.setVideoQuality(e.target.value)}
               disabled={recorder.status === 'recording'}
@@ -181,7 +242,7 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
               className="input text-xs flex-1 min-w-[140px]"
               value={recorder.audioQualityId}
               onChange={(e) => recorder.setAudioQuality(e.target.value)}
-              disabled={recorder.status === 'recording'}
+              disabled={recorder.status === 'recording' || audioOff}
               aria-label="Audio quality"
             >
               {AUDIO_QUALITY_PRESETS.map((p) => (
@@ -190,11 +251,18 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
             </select>
           </div>
 
+          {sharingScreen && !recorder.hasSystemAudio && (
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              This share has no audio track, so computer audio isn&apos;t available. To capture it, re-share a
+              tab with &ldquo;Share tab audio&rdquo; ticked (or your whole screen with &ldquo;Share system audio&rdquo;).
+            </div>
+          )}
+
           <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
             <input
               type="checkbox"
-              checked={wantTranscript}
-              disabled={!canTranscribe}
+              checked={wantTranscript && !audioOff}
+              disabled={!canTranscribe || audioOff}
               onChange={(e) => setWantTranscript(e.target.checked)}
             />
             Generate transcript after recording
@@ -202,6 +270,9 @@ export default function VideoRecorderModal({ onClose, onRecorded, canTranscribe 
               <span className="text-xs text-amber-600 dark:text-amber-400">
                 (set a fal.ai key in Settings → AI Services → Providers)
               </span>
+            )}
+            {canTranscribe && audioOff && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">(audio is off)</span>
             )}
           </label>
 
