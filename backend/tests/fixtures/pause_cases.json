@@ -34,7 +34,7 @@
       "expect": [
         [
           "One sentence.",
-          900
+          250
         ],
         [
           "Two sentence.",
@@ -60,7 +60,7 @@
       "expect": [
         [
           "Dr. Smith arrived.",
-          900
+          250
         ],
         [
           "e.g. this one.",
@@ -119,7 +119,7 @@
       "expect": [
         [
           "He said \"go.\"",
-          900
+          250
         ],
         [
           "Then left.",
@@ -134,7 +134,7 @@
       "expect": [
         [
           "(He left.)",
-          900
+          250
         ],
         [
           "Next.",
@@ -671,7 +671,7 @@
       "expect": [
         [
           "One.",
-          900
+          250
         ],
         [
           "Two",

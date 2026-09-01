@@ -42,7 +42,8 @@ def test_the_snippet_reconstructs_to_the_original_prose_minus_markers_and_blank_
 
 
 def test_explicit_marker_overrides_rather_than_stacks_with_the_implicit_pause():
-    # If it stacked, "side." would carry 900 + 2000 = 2900ms instead of 2000ms.
+    # If it stacked, "side." would carry the full stop's pause *plus* 2000ms
+    # instead of the 2000ms the marker asked for.
     chunks = parse_pause_markup(SNIPPET)
     side_chunk = next(c for c in chunks if c.text == "Then you took a side.")
     assert side_chunk.pause_after_ms == NAMED_PAUSE_MS["xlong"]
