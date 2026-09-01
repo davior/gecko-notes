@@ -27,6 +27,7 @@ from app.routers.settings import (
 from app.video import ffmpeg as F
 from app.video.narration import stitch_chunks_to_mp3, synthesize_shot
 from app.video.options import RenderOptions
+from app.video.pause_markup import DEFAULT_PAUSE_MS
 
 
 # ── chunking ──────────────────────────────────────────────────────────────────
@@ -34,7 +35,9 @@ from app.video.options import RenderOptions
 def test_markers_are_stripped_and_their_pauses_carried():
     chunks = _pack_export_chunks("One. Two [pause:2s] three... four.")
     assert [c.text for c in chunks] == ["One.", "Two", "three...", "four."]
-    assert [c.pause_after_ms for c in chunks] == [900, 2000, 1300, 0]
+    assert [c.pause_after_ms for c in chunks] == [
+        DEFAULT_PAUSE_MS["."], 2000, DEFAULT_PAUSE_MS["…"], 0,
+    ]
 
 
 def test_emoji_are_dropped_before_synthesis():

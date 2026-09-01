@@ -44,7 +44,21 @@ class Chunk:
 # while still honouring "…"/"..." and "[pause:...]", rather than forcing
 # every sentence into its own request with a 0ms gap, which would cost
 # ordinary prose its natural one-breath prosody.
-DEFAULT_PAUSE_MS: Dict[str, int] = {".": 900, "…": 1300, "\n\n": 1600}
+#
+# These are *added* silence, on top of the gap a chunk boundary already
+# creates: every chunk is its own TTS request, so its audio arrives with the
+# engine's own trailing fall and leading lead-in, and the player needs a moment
+# to swap clips (the export stitches the same silence in with ffmpeg, so both
+# sides hear the same thing). Read the numbers as "how much longer than an
+# ordinary sentence break", not as the length of the gap a listener hears.
+#
+# Hence the ordinary "." is small. It is the one trigger nobody opts into —
+# every sentence in every note ends with one — so it has to sound like prose,
+# not like a beat. It sits below even `NAMED_PAUSE_MS["short"]`, so a writer
+# who actually types `[pause:short]` still gets something audibly longer than
+# the full stop they'd have got for free. The deliberate marks — an ellipsis, a
+# blank line — are where the long pauses belong.
+DEFAULT_PAUSE_MS: Dict[str, int] = {".": 250, "…": 1300, "\n\n": 1600}
 
 # Named levels for the `[pause:short|medium|long|xlong]` marker.
 NAMED_PAUSE_MS: Dict[str, int] = {"short": 350, "medium": 750, "long": 1200, "xlong": 2000}
