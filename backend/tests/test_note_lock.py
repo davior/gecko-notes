@@ -10,11 +10,14 @@ are about letting go rather than holding on.
 """
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.jobs import registry
@@ -30,7 +33,13 @@ CATEGORY = "cat-1"
 
 @pytest.fixture
 def engine():
-    return create_engine("sqlite://", connect_args={"check_same_thread": False})
+    # StaticPool so every thread shares one connection: an in-memory SQLite otherwise
+    # gives each new connection its own empty database, and the heartbeat runs on a
+    # thread of its own. Production is file-backed, which is how the worker threads
+    # already share state.
+    return create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
 
 
 @pytest.fixture
@@ -219,3 +228,105 @@ def test_a_finished_run_reports_that_it_locks_nothing(session, status):
     — otherwise a finished run advertises a lock it is not holding."""
     job = make_run(session, status=status)
     assert registry.get_job(session, USER, "assistant", job.id).locks_note is False
+
+
+# ─── the heartbeat ───────────────────────────────────────────────────────────
+#
+# Progress reports are milestones, and they can be far apart: one body generation is
+# a single upstream call that may run for twenty minutes with nothing to say in
+# between. Liveness therefore cannot be inferred from progress — without a heartbeat
+# the sweeper ends a long run mid-flight, and not gently: it marks the job failed and
+# cancels it.
+
+
+def test_the_heartbeat_keeps_a_slow_job_looking_alive(session, engine, monkeypatch):
+    import app.jobs.runner as runner
+
+    monkeypatch.setattr(runner, "engine", engine)
+    monkeypatch.setattr(runner, "HEARTBEAT_SECONDS", 0.01)
+    # A job whose last progress report was long enough ago to be swept.
+    job = make_run(session, minutes_idle=STALE_AFTER_MINUTES + 5)
+    queue = JobQueue(AssistantRunJob, lambda job_id: None, name="test")
+
+    stop = threading.Event()
+    beat = threading.Thread(target=queue.heartbeat, args=(job.id, stop), daemon=True)
+    beat.start()
+    time.sleep(0.1)
+    stop.set()
+    beat.join(timeout=2)
+
+    session.expire_all()
+    row = session.get(AssistantRunJob, job.id)
+    assert is_stale(row) is False
+    # And it is still holding its note, which is the point.
+    assert registry.note_lock_holder(session, USER, "note-1") is not None
+
+
+def test_a_beating_job_survives_the_sweeper(session, engine, monkeypatch):
+    """The scenario this exists for: a run that legitimately takes 20 minutes."""
+    import app.jobs.runner as runner
+
+    monkeypatch.setattr(runner, "engine", engine)
+    monkeypatch.setattr(runner, "HEARTBEAT_SECONDS", 0.01)
+    job = make_run(session, minutes_idle=STALE_AFTER_MINUTES + 5)
+    queue = JobQueue(AssistantRunJob, lambda job_id: None, name="test")
+
+    stop = threading.Event()
+    beat = threading.Thread(target=queue.heartbeat, args=(job.id, stop), daemon=True)
+    beat.start()
+    time.sleep(0.1)
+
+    assert queue.sweep_stale() == 0          # not ended
+    stop.set()
+    beat.join(timeout=2)
+    session.expire_all()
+    assert session.get(AssistantRunJob, job.id).status == "processing"
+
+
+def test_the_heartbeat_does_not_overwrite_what_the_job_reported(session, engine, monkeypatch):
+    """Liveness, not a progress report — stage and progress are the job's to set."""
+    import app.jobs.runner as runner
+
+    monkeypatch.setattr(runner, "engine", engine)
+    monkeypatch.setattr(runner, "HEARTBEAT_SECONDS", 0.01)
+    job = make_run(session)
+    queue = JobQueue(AssistantRunJob, lambda job_id: None, name="test")
+
+    stop = threading.Event()
+    beat = threading.Thread(target=queue.heartbeat, args=(job.id, stop), daemon=True)
+    beat.start()
+    time.sleep(0.05)
+    stop.set()
+    beat.join(timeout=2)
+
+    session.expire_all()
+    row = session.get(AssistantRunJob, job.id)
+    assert (row.stage, row.progress) == ("Writing", 40)
+
+
+def test_the_heartbeat_stops_once_the_job_is_no_longer_active(session, engine, monkeypatch):
+    """A cancelled run must not be kept looking alive by its own worker."""
+    import app.jobs.runner as runner
+
+    monkeypatch.setattr(runner, "engine", engine)
+    monkeypatch.setattr(runner, "HEARTBEAT_SECONDS", 0.01)
+    job = make_run(session, status="cancelled")
+    queue = JobQueue(AssistantRunJob, lambda job_id: None, name="test")
+
+    stop = threading.Event()
+    beat = threading.Thread(target=queue.heartbeat, args=(job.id, stop), daemon=True)
+    beat.start()
+    beat.join(timeout=2)
+    assert beat.is_alive() is False          # returned on its own, without stop being set
+
+
+def test_a_dead_worker_is_still_caught(session, engine, monkeypatch):
+    """The heartbeat must not defeat the thing it beats for: nothing beating means
+    the worker is gone, and the sweeper still ends it."""
+    import app.jobs.runner as runner
+
+    monkeypatch.setattr(runner, "engine", engine)
+    make_run(session, minutes_idle=STALE_AFTER_MINUTES + 1)
+    queue = JobQueue(AssistantRunJob, lambda job_id: None, name="test")
+
+    assert queue.sweep_stale() == 1

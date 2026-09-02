@@ -46,15 +46,22 @@ def int_env(name: str, default: int) -> int:
         return default
 
 
-# How long a job may go without its heartbeat moving before it is treated as dead.
-# `set_fields` touches `updated_at` on every progress tick, so this is free — but it
-# has to be generous: one long generation call can legitimately run for minutes
-# between ticks, and killing live work is far worse than a note staying locked a
-# little longer.
-STALE_AFTER_MINUTES = int_env("JOB_STALE_MINUTES", 15)
+# How long a job may go without its heartbeat before it is treated as dead. With
+# `heartbeat` beating every 30s this is a backstop rather than the mechanism, so it is
+# set well beyond any real run — runs of 20 to 40 minutes are ordinary here, and
+# killing live work is far worse than a note staying locked a little longer. A note
+# held by a genuinely dead worker can always be released by hand from the indicator or
+# the note's own banner, so nobody has to wait this out.
+STALE_AFTER_MINUTES = int_env("JOB_STALE_MINUTES", 40)
 
 # How often the sweeper looks for them.
 STALE_SWEEP_SECONDS = int_env("JOB_STALE_SWEEP_SECONDS", 60)
+
+# How often a running job says it is still alive. Progress reports are milestones and
+# can be far apart — one body generation is a single upstream call that may run for
+# twenty minutes with nothing to report in between — so liveness cannot be inferred
+# from them. Well under STALE_AFTER_MINUTES, or the beat is no use.
+HEARTBEAT_SECONDS = int_env("JOB_HEARTBEAT_SECONDS", 30)
 
 
 def is_stale(job: Any) -> bool:
@@ -190,14 +197,45 @@ class JobQueue:
             time.sleep(STALE_SWEEP_SECONDS)
             self.sweep_stale()
 
+    def heartbeat(self, job_id: str, stop: threading.Event) -> None:
+        """Say "still alive" until `stop` is set.
+
+        Only `updated_at` is touched, never stage or progress: this is liveness, not
+        a progress report, and it must not overwrite what the job last said about
+        itself. It stops early once the row is no longer active, so a cancelled job
+        is not kept looking live.
+        """
+        while not stop.wait(HEARTBEAT_SECONDS):
+            try:
+                with Session(engine) as session:
+                    row = session.get(self.model, job_id)
+                    if not row or row.status not in ACTIVE_STATUSES:
+                        return
+                    row.updated_at = datetime.utcnow()
+                    session.add(row)
+                    session.commit()
+            except Exception:
+                # A missed beat is survivable; a heartbeat that kills the worker is not.
+                logger.exception("Heartbeat failed for %s job %s", self.name, job_id)
+
     def _loop(self) -> None:
         while True:
             job_id = self._queue.get()
+            # Beats for as long as the job runs, so work that is genuinely slow is not
+            # mistaken for a worker that died. Without it the sweeper ends a long
+            # generation mid-flight — it does not merely release the note, it marks the
+            # job failed and cancels it.
+            stop = threading.Event()
+            threading.Thread(
+                target=self.heartbeat, args=(job_id, stop), daemon=True,
+                name=f"{self.name}-beat",
+            ).start()
             try:
                 self.run(job_id)
             except Exception:
                 logger.exception("Unhandled error in the %s worker", self.name)
             finally:
+                stop.set()
                 with self._lock:
                     self._cancelled.discard(job_id)
                 self._queue.task_done()
