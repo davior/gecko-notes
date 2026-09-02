@@ -167,6 +167,11 @@ interface PendingPlan {
   // a byte-identical cached prefix — same history + request the planning call used.
   history: ConversationTurn[]
   userRequest: string
+  // Captured here rather than read from state when the run starts: on the first
+  // message of a conversation the session is created during this same handler, and
+  // `currentSessionId` has not re-rendered yet. `persistCurrentSession` takes an
+  // explicit id for exactly this reason.
+  sessionId: string | null
 }
 
 interface AIConversationPanelProps {
@@ -1188,7 +1193,11 @@ export default function AIConversationPanel({
     baseMessages: ConversationMessage[],
     history: ConversationTurn[],
     userRequest: string,
+    sessionId?: string | null,
   ) {
+    // Never fall back to reading it from state here: the plan-mode-off path runs
+    // inside the same handler that created the session, where state is still stale.
+    const sid = sessionId ?? currentSessionId ?? null
     setExecuting(true)
     try {
       // Flush unsaved edits first, so amend/append build on the latest content and the
@@ -1235,7 +1244,7 @@ export default function AIConversationPanel({
           valid_recipe_ids: ctx.recipes.map((r) => r.id),
         },
         note_id: noteId ?? null,
-        session_id: currentSessionId ?? null,
+        session_id: sid,
       })
 
       // A plan can answer the user as well as edit their notes. That answer is
@@ -1256,7 +1265,7 @@ export default function AIConversationPanel({
         assistantMsg([reply, RUN_STARTED_NOTICE].filter(Boolean).join('\n\n')),
       ]
       setConversation(started)
-      await persistCurrentSession(started)
+      await persistCurrentSession(started, sid)
 
       useActivityStore.getState().track(job)
     } catch (e) {
@@ -1536,14 +1545,14 @@ export default function AIConversationPanel({
       } else if (voiceActiveRef.current) {
         // Voice mode: read the plan back and wait for a spoken confirmation before
         // running it, regardless of the panel's Plan-mode setting.
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
         const readback = describePlanForVoice(plan, ctx.labelMap)
         setVoiceConfirmText(readback)
         voice.speak(readback)
       } else if (planMode) {
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
       } else {
-        await runPlan(plan, ctx, withUser, history, userContent.trim())
+        await runPlan(plan, ctx, withUser, history, userContent.trim(), sessionId)
       }
     } catch (e: unknown) {
       // A user-initiated Stop aborts the fetch — treat it as a soft cancel: keep the
@@ -1756,7 +1765,7 @@ export default function AIConversationPanel({
       if (decision === 'yes') {
         const pp = pendingPlanRef.current
         setVoiceConfirmText(null)
-        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
         voice.speak('Done.')
       } else if (decision === 'no') {
         setVoiceConfirmText(null)
@@ -1970,7 +1979,7 @@ export default function AIConversationPanel({
             if (!pp) return
             setVoiceConfirmText(null)
             void (async () => {
-              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
               voice.speak('Done.')
             })()
           }}
@@ -2583,7 +2592,7 @@ export default function AIConversationPanel({
                 onClick={() => {
                   // Respond steps are always kept (auto-accepted); mutation steps follow their checkbox.
                   const filtered = { actions: pendingPlan.plan.actions.filter((a, i) => a.type === 'respond' || selectedSteps[i]) }
-                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest)
+                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest, pendingPlan.sessionId)
                 }}
               >
                 {runInFlight ? <><Spinner /> Running…</> : 'Approve & run'}
