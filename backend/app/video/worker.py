@@ -1,11 +1,9 @@
 """The render queue.
 
-Renders run on a dedicated worker thread rather than through FastAPI's
-BackgroundTasks, for three reasons: an x264 encode saturates the CPU and shares
-its container with the API, so unbounded parallel renders would starve request
-handling; a job needs to be cancellable mid-encode; and a render that was
-in flight when the process restarted needs to be picked up again rather than
-left stuck at "processing" forever.
+The queue, worker threads, cancellation and restart recovery are `jobs/runner.py`
+now — this file is what a render actually *is*: segmenting the note, narrating it,
+encoding, and filing the result. The reasoning for running it on threads rather
+than FastAPI's BackgroundTasks moved with the machinery and is documented there.
 
 Concurrency defaults to one and is settable with RENDER_MAX_CONCURRENCY.
 """
@@ -14,7 +12,6 @@ import asyncio
 import json
 import logging
 import os
-import queue
 import shutil
 import threading
 import uuid
@@ -24,6 +21,9 @@ from typing import Optional, Set
 from sqlmodel import Session, select
 
 from app.database import engine
+from app.jobs.runner import JobQueue, int_env, progress_reporter
+from app.jobs.runner import readable_error as _readable_error
+from app.jobs.runner import set_fields as _set
 from app.models import Note, NoteAsset, User, VideoRenderJob
 from app.video import ffmpeg as F
 from app.video.options import RenderOptions
@@ -32,39 +32,25 @@ from app.video.renderer import RenderCancelled, WORK_ROOT_NAME, render
 logger = logging.getLogger(__name__)
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        return max(1, int(os.getenv(name, str(default))))
-    except ValueError:
-        return default
-
-
 MEDIA_DIR = os.getenv("MEDIA_DIR") or ""
-MAX_CONCURRENCY = _int_env("RENDER_MAX_CONCURRENCY", 1)
-MAX_SHOTS = _int_env("VIDEO_MAX_SHOTS", 200)
-MAX_NARRATION_CHARS = _int_env("VIDEO_MAX_NARRATION_CHARS", 60_000)
-RETENTION_DAYS = _int_env("VIDEO_JOB_RETENTION_DAYS", 14)
-
-_queue: "queue.Queue[str]" = queue.Queue()
-_cancelled: Set[str] = set()
-_lock = threading.Lock()
-_started = False
+MAX_CONCURRENCY = int_env("RENDER_MAX_CONCURRENCY", 1)
+MAX_SHOTS = int_env("VIDEO_MAX_SHOTS", 200)
+MAX_NARRATION_CHARS = int_env("VIDEO_MAX_NARRATION_CHARS", 60_000)
+RETENTION_DAYS = int_env("VIDEO_JOB_RETENTION_DAYS", 14)
 
 
 def cancel(job_id: str) -> None:
-    """Ask a job to stop. A queued job never starts; a running one unwinds at its
-    next progress checkpoint, which is between shots."""
-    with _lock:
-        _cancelled.add(job_id)
+    """Ask a render to stop. A queued one never starts; a running one unwinds at
+    its next progress checkpoint, which is between shots."""
+    _renders.cancel(job_id)
 
 
 def is_cancelled(job_id: str) -> bool:
-    with _lock:
-        return job_id in _cancelled
+    return _renders.is_cancelled(job_id)
 
 
 def enqueue(job_id: str) -> None:
-    _queue.put(job_id)
+    _renders.enqueue(job_id)
 
 
 def _media_dir() -> str:
@@ -72,29 +58,6 @@ def _media_dir() -> str:
     # env var is set by compose, so import order must not matter.
     from app.routers.media import MEDIA_DIR as resolved
     return resolved
-
-
-def _set(session: Session, job: VideoRenderJob, **fields) -> None:
-    for key, value in fields.items():
-        setattr(job, key, value)
-    job.updated_at = datetime.utcnow()
-    session.add(job)
-    session.commit()
-
-
-def _readable_error(exc: Exception) -> str:
-    """Turn an exception into something worth showing in the UI.
-
-    Synthesis raises FastAPI's HTTPException, whose str() is the raw
-    `400: {'code': ..., 'message': ...}` repr; the message inside it is the part
-    a user can act on ("fal.ai API key is not configured").
-    """
-    detail = getattr(exc, "detail", None)
-    if isinstance(detail, dict) and detail.get("message"):
-        return str(detail["message"])
-    if isinstance(detail, str) and detail:
-        return detail
-    return str(exc)
 
 
 def _tts_caller(user_id: str):
@@ -212,13 +175,12 @@ def _run_job(job_id: str) -> None:
             _set(session, job, status="error", error_message=f"Invalid render options: {exc}"[:500])
             return
 
-        def progress(stage: str, percent: int, detail: str) -> None:
-            if is_cancelled(job_id):
-                raise RenderCancelled()
-            with Session(engine) as inner:
-                row = inner.get(VideoRenderJob, job_id)
-                if row:
-                    _set(inner, row, stage=stage, progress=max(0, min(99, percent)), detail=detail)
+        # Reports progress and doubles as the cancellation checkpoint: a render
+        # unwinds between shots, wherever it happens to be reporting from.
+        def raise_cancelled() -> None:
+            raise RenderCancelled()
+
+        progress = progress_reporter(_renders, job_id, raise_cancelled)
 
         try:
             result = render(
@@ -279,39 +241,6 @@ def _run_job(job_id: str) -> None:
         _register_exports(session, row, result, note.title or "Untitled")
 
 
-def _loop() -> None:
-    while True:
-        job_id = _queue.get()
-        try:
-            _run_job(job_id)
-        except Exception:
-            logger.exception("Unhandled error in the video render worker")
-        finally:
-            with _lock:
-                _cancelled.discard(job_id)
-            _queue.task_done()
-
-
-def _recover_pending() -> None:
-    """Re-enqueue work that outlived the process that was doing it.
-
-    A job left at "processing" by a restart has no worker any more, so it is put
-    back on the queue; its scratch directory is discarded and it starts over.
-    """
-    try:
-        with Session(engine) as session:
-            rows = session.exec(
-                select(VideoRenderJob).where(VideoRenderJob.status.in_(("queued", "processing")))
-            ).all()
-            for row in rows:
-                _set(session, row, status="queued", stage="", progress=0, detail="Requeued after a restart")
-                _queue.put(row.id)
-            if rows:
-                logger.info("Requeued %d unfinished video render job(s)", len(rows))
-    except Exception:
-        logger.exception("Could not recover pending video render jobs")
-
-
 def _sweep_old_artifacts() -> None:
     """Delete render output nobody kept.
 
@@ -362,17 +291,16 @@ def _sweep_old_artifacts() -> None:
         logger.exception("Video render artefact sweep failed")
 
 
+# Defined after _run_job so the queue can be handed the real callable.
+_renders = JobQueue(
+    VideoRenderJob, _run_job, name="video-render", concurrency=MAX_CONCURRENCY
+)
+
+
 def start() -> None:
     """Start the render worker(s). Called once from the app lifespan."""
-    global _started
-    if _started:
-        return
-    _started = True
-
     if not F.ffmpeg_available():
         logger.warning("ffmpeg/ffprobe not found — article-to-video rendering is unavailable")
 
-    for index in range(MAX_CONCURRENCY):
-        threading.Thread(target=_loop, daemon=True, name=f"video-render-{index}").start()
     threading.Thread(target=_sweep_old_artifacts, daemon=True, name="video-sweep").start()
-    _recover_pending()
+    _renders.start()

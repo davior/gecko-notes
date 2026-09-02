@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
-from app.routers import notes, categories, media, search, settings, folders, annotations, transcription, images, stt_stream, flux_stream, import_url, video
+from app.routers import notes, categories, media, search, settings, folders, annotations, transcription, images, stt_stream, flux_stream, import_url, video, activity
 from app.thumbnails import backfill_thumbnails
 from app.video import worker as video_worker
 from app.routers import auth as auth_router
@@ -160,6 +160,9 @@ app.include_router(flux_stream.router, prefix="/api/flux-stream", tags=["flux-st
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(import_url.router, prefix="/api/import", tags=["import"])
 app.include_router(video.router, prefix="/api/video", tags=["video"])
+# One read-only view over every background job, so the header can show and stop
+# everything the app is working on without knowing what kinds exist.
+app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])

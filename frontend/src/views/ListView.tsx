@@ -20,7 +20,7 @@ import BulkExportMenu from '@/components/BulkExportMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import { noteSchema } from '@/blocks/childNoteBlock'
 import UserAvatar from '@/components/UserAvatar'
-import VideoJobIndicator from '@/components/VideoJobIndicator'
+import ActivityIndicator from '@/components/ActivityIndicator'
 import { useNotesStore } from '@/stores/notes'
 import { useFoldersStore } from '@/stores/folders'
 import { useCategoriesStore } from '@/stores/categories'
@@ -664,7 +664,7 @@ export default function ListView() {
               <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 animate-spin" />
             )}
           </form>
-          <VideoJobIndicator />
+          <ActivityIndicator />
           <UserAvatar />
         </div>
 

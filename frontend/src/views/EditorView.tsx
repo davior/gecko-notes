@@ -32,7 +32,7 @@ import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
 import ImageGenModal from '@/components/ImageGenModal'
 import VideoGenModal from '@/components/VideoGenModal'
-import VideoJobIndicator from '@/components/VideoJobIndicator'
+import ActivityIndicator from '@/components/ActivityIndicator'
 import NoteStatsModal from '@/components/NoteStatsModal'
 import FindReplaceBar from '@/components/FindReplaceBar'
 
@@ -40,8 +40,9 @@ import { useNotesStore } from '@/stores/notes'
 import { useAssetsStore } from '@/stores/assets'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
-import { useVideoJobsStore } from '@/stores/videoJobs'
-import type { RenderOptions, VideoRenderJob } from '@/api/videoGen'
+import { useActivityStore } from '@/stores/activity'
+import type { ActivityJob } from '@/api/activity'
+import type { RenderOptions } from '@/api/videoGen'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { transcriptionApi } from '@/api/transcription'
@@ -947,7 +948,7 @@ export default function EditorView() {
     tts.play(text)
   }
 
-  const startVideoJob = useVideoJobsStore((s) => s.start)
+  const startVideoJob = useActivityStore((s) => s.startVideo)
 
   /**
    * Open the render dialog, rasterising any Mermaid diagrams first.
@@ -1009,7 +1010,7 @@ export default function EditorView() {
     return syncedEditorKey.current === noteIdToMatch
   }, [editor, loaded])
 
-  const insertRenderedVideo = useCallback((job: VideoRenderJob) => {
+  const insertRenderedVideo = useCallback((job: ActivityJob) => {
     if (!job.result_url || !editor) return false
     if (!editorHoldsNote(createdNoteId.current || latestNoteId.current)) return false
     const already = editor.document.some(
@@ -1027,7 +1028,7 @@ export default function EditorView() {
   // Reconcile finished renders with the open editor. Runs for every completed
   // job on this note, whether it finished while the user watched or while the
   // tab was closed and the server attached it on their behalf.
-  const videoJobs = useVideoJobsStore((s) => s.jobs)
+  const activityJobs = useActivityStore((s) => s.jobs)
   const reconciledVideos = useRef<Set<string>>(new Set())
   useEffect(() => {
     const openNoteId = createdNoteId.current || latestNoteId.current
@@ -1036,9 +1037,10 @@ export default function EditorView() {
     // otherwise be inserted into the empty document and saved over the note.
     // Once hydration completes this effect re-runs and picks the job up.
     if (!editorHoldsNote(openNoteId)) return
-    for (const job of Object.values(videoJobs)) {
+    for (const job of Object.values(activityJobs)) {
+      if (job.kind !== 'video') continue
       if (job.status !== 'done' || !job.result_url) continue
-      if (job.note_id !== openNoteId || !job.auto_insert) continue
+      if (job.note_id !== openNoteId || !job.meta?.auto_insert) continue
       if (reconciledVideos.current.has(job.id)) continue
       reconciledVideos.current.add(job.id)
       if (insertRenderedVideo(job)) {
@@ -1049,7 +1051,7 @@ export default function EditorView() {
     // `note` is a dependency because it is what re-hydration changes: a history
     // restore or an AI edit clears syncedEditorKey and reloads the document, and
     // this has to re-evaluate once the editor is holding real content again.
-  }, [videoJobs, note, editorHoldsNote, insertRenderedVideo])
+  }, [activityJobs, note, editorHoldsNote, insertRenderedVideo])
 
   async function handleExportAudio() {
     const text = speechText()
@@ -1546,7 +1548,7 @@ export default function EditorView() {
           >
             <FolderInput className="w-4 h-4" />
           </button>
-          <VideoJobIndicator
+          <ActivityIndicator
             onInsert={(job) => {
               if (insertRenderedVideo(job)) { showToast('Video inserted'); void doSave(true) }
               else showToast('That video is already in this note')
