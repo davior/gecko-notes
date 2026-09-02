@@ -25,7 +25,8 @@ import logging
 import os
 import queue
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Any, Callable, Optional, Set, Type
 
 from sqlmodel import Session, select
@@ -35,15 +36,40 @@ from app.database import engine
 logger = logging.getLogger(__name__)
 
 # A job is "active" while it is waiting for, or sitting on, a worker thread. The
-# activity API and (later) the note lock both key off this.
+# activity API and the note lock both key off this.
 ACTIVE_STATUSES = ("queued", "processing")
-
 
 def int_env(name: str, default: int) -> int:
     try:
         return max(1, int(os.getenv(name, str(default))))
     except ValueError:
         return default
+
+
+# How long a job may go without its heartbeat moving before it is treated as dead.
+# `set_fields` touches `updated_at` on every progress tick, so this is free — but it
+# has to be generous: one long generation call can legitimately run for minutes
+# between ticks, and killing live work is far worse than a note staying locked a
+# little longer.
+STALE_AFTER_MINUTES = int_env("JOB_STALE_MINUTES", 15)
+
+# How often the sweeper looks for them.
+STALE_SWEEP_SECONDS = int_env("JOB_STALE_SWEEP_SECONDS", 60)
+
+
+def is_stale(job: Any) -> bool:
+    """True when an active job has stopped reporting progress.
+
+    This is what stops a crashed or wedged worker from holding a note read-only
+    forever: nothing derived from "still active" believes a job whose heartbeat
+    stopped, so the lock releases on its own without anyone pressing anything.
+    """
+    if getattr(job, "status", None) not in ACTIVE_STATUSES:
+        return False
+    updated = getattr(job, "updated_at", None)
+    if not updated:
+        return False
+    return datetime.utcnow() - updated > timedelta(minutes=STALE_AFTER_MINUTES)
 
 
 def set_fields(session: Session, job: Any, **fields: Any) -> None:
@@ -123,7 +149,46 @@ class JobQueue:
             threading.Thread(
                 target=self._loop, daemon=True, name=f"{self.name}-{index}"
             ).start()
+        threading.Thread(
+            target=self._sweeper, daemon=True, name=f"{self.name}-sweep"
+        ).start()
         self.recover_pending()
+
+    def sweep_stale(self) -> int:
+        """Fail jobs whose heartbeat stopped, and tell their worker to unwind.
+
+        Cancelling as well as marking matters: a thread that later comes back from a
+        wedged call must not write to a note the lock has already released, and the
+        cancelled set is what its next checkpoint reads.
+        """
+        swept = 0
+        try:
+            with Session(engine) as session:
+                rows = session.exec(
+                    select(self.model).where(self.model.status.in_(ACTIVE_STATUSES))
+                ).all()
+                for row in rows:
+                    if not is_stale(row):
+                        continue
+                    self.cancel(row.id)
+                    fields: dict = {
+                        "status": "error",
+                        "error_message": "Stopped responding and was ended automatically",
+                    }
+                    if hasattr(row, "stage"):
+                        fields["stage"] = ""
+                    set_fields(session, row, **fields)
+                    swept += 1
+                if swept:
+                    logger.warning("Ended %d stalled %s job(s)", swept, self.name)
+        except Exception:
+            logger.exception("Could not sweep stalled %s jobs", self.name)
+        return swept
+
+    def _sweeper(self) -> None:
+        while True:
+            time.sleep(STALE_SWEEP_SECONDS)
+            self.sweep_stale()
 
     def _loop(self) -> None:
         while True:

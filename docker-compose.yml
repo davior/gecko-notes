@@ -17,6 +17,9 @@ services:
       - VIDEO_MAX_SHOTS=${VIDEO_MAX_SHOTS:-200}
       - VIDEO_MAX_NARRATION_CHARS=${VIDEO_MAX_NARRATION_CHARS:-60000}
       - VIDEO_JOB_RETENTION_DAYS=${VIDEO_JOB_RETENTION_DAYS:-14}
+      # Server-side AI assistant runs (see .env.example).
+      - ASSISTANT_MAX_CONCURRENCY=${ASSISTANT_MAX_CONCURRENCY:-2}
+      - JOB_STALE_MINUTES=${JOB_STALE_MINUTES:-15}
       # Email (optional) — features stay off unless SMTP_HOST and SMTP_FROM are set.
       - APP_BASE_URL=${APP_BASE_URL:-}
       - SMTP_HOST=${SMTP_HOST:-}

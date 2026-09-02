@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback, Component } from 'react'
+import { useState, useEffect, useRef, useCallback, Component, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard, Loader2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -40,7 +40,7 @@ import { useNotesStore } from '@/stores/notes'
 import { useAssetsStore } from '@/stores/assets'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
-import { useActivityStore } from '@/stores/activity'
+import { useActivityStore, jobsLockingNote } from '@/stores/activity'
 import type { ActivityJob } from '@/api/activity'
 import type { RenderOptions } from '@/api/videoGen'
 import { mediaApi } from '@/api/media'
@@ -196,6 +196,9 @@ export default function EditorView() {
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Read inside scheduleAutosave, which is a stable callback and cannot close over
+  // the lock itself.
+  const lockedRef = useRef(false)
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
   const hasPendingChanges = useRef(false)
@@ -582,6 +585,10 @@ export default function EditorView() {
 
   const scheduleAutosave = useCallback(() => {
     if (isHydratingEditor.current) return
+    // Belt and braces with the read-only editor: the server refuses a content write
+    // while a run holds the note, and a queued autosave firing as the lock lifts
+    // would race the run's own result.
+    if (lockedRef.current) return
     hasPendingChanges.current = true
     dirtySinceSnapshot.current = true
     currentNoteContent.current = extractPlainText(editor?.document as unknown[] ?? [])
@@ -662,9 +669,18 @@ export default function EditorView() {
       // point the block hasn't been saved yet, so the file would briefly show as
       // detached. A no-op unless the Assets tab is open on this note.
       useAssetsStore.getState().invalidate(saved.id)
-    } catch {
-      setSaveStatus('Error saving')
-      hasPendingChanges.current = true
+    } catch (e) {
+      // A 409 here means an assistant run owns the note; the banner already says so,
+      // and the pending edits are dropped rather than replayed over the run's work.
+      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
+        ?.response?.data?.detail?.code
+      if (code === 'note_locked') {
+        setSaveStatus('The assistant is writing — your changes were not saved')
+        hasPendingChanges.current = false
+      } else {
+        setSaveStatus('Error saving')
+        hasPendingChanges.current = true
+      }
     } finally {
       isSaving.current = false
     }
@@ -1029,6 +1045,31 @@ export default function EditorView() {
   // job on this note, whether it finished while the user watched or while the
   // tab was closed and the server attached it on their behalf.
   const activityJobs = useActivityStore((s) => s.jobs)
+  const cancelActivity = useActivityStore((s) => s.cancel)
+
+  /** The assistant run rewriting this note, if any.
+   *
+   * While one is working the document is held read-only: the run writes note.content
+   * on the server, and an editor that kept accepting keystrokes would overwrite that
+   * on its next autosave. Derived from the job rather than a flag on the note, so it
+   * clears the moment the run ends, is cancelled, or simply stops reporting progress
+   * — there is no lock left behind to get stuck. */
+  const noteLock = useMemo(
+    () => jobsLockingNote(activityJobs, createdNoteId.current || latestNoteId.current)[0],
+    [activityJobs, note],
+  )
+
+  useEffect(() => { lockedRef.current = !!noteLock }, [noteLock])
+
+  // When the run lets go, take its work: the server rewrote the note underneath us.
+  const wasLocked = useRef(false)
+  useEffect(() => {
+    if (noteLock) { wasLocked.current = true; return }
+    if (!wasLocked.current) return
+    wasLocked.current = false
+    void refreshOpenNote()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteLock])
   const reconciledVideos = useRef<Set<string>>(new Set())
   useEffect(() => {
     const openNoteId = createdNoteId.current || latestNoteId.current
@@ -1786,11 +1827,37 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
+                {noteLock && (
+                  // Says what is happening, and offers the way out. Stopping a run
+                  // leaves whatever it already applied in place — the pre-run snapshot
+                  // in version history is the undo point.
+                  <div className="mb-3 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950 no-print">
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin text-blue-500" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-blue-900 dark:text-blue-200">
+                        The assistant is writing this note
+                      </div>
+                      <div className="text-xs text-blue-700 dark:text-blue-300 truncate">
+                        {noteLock.stage || 'Working'}
+                        {noteLock.detail ? ` · ${noteLock.detail}` : ''}
+                        {` · ${noteLock.progress}% · editing is paused until it finishes`}
+                      </div>
+                    </div>
+                    <button
+                      className="btn-ghost shrink-0 px-2 py-1 text-xs"
+                      onClick={() => void cancelActivity(noteLock)}
+                      title="Stop the assistant and unlock this note"
+                    >
+                      Stop &amp; unlock
+                    </button>
+                  </div>
+                )}
                 <EditorNoteContext.Provider value={noteId ? { id: noteId, title } : null}>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
                   <div ref={annotationContainerRef} className="relative">
                     <BlockNoteView
                       editor={editor}
+                      editable={!noteLock}
                       onChange={scheduleAutosave}
                       theme={editorTheme}
                       slashMenu={false}

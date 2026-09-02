@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from sqlmodel import Session, select
 
-from app.jobs.runner import ACTIVE_STATUSES
+from app.jobs.runner import ACTIVE_STATUSES, is_stale
 from app.models import AssistantRunJob, VideoRenderJob
 from app.schemas import ActivityJobRead
 
@@ -103,8 +103,11 @@ def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
         note_id=job.note_id,
         note_title=job.note_title or "",
         # Unlike a render, a run rewrites the document itself — so the editor holds
-        # every note it may touch read-only until it finishes.
-        locks_note=True,
+        # every note it may touch read-only while it works. Two things end that: the
+        # run finishing, and its heartbeat stopping (which releases the note
+        # immediately rather than waiting for the sweeper, because a lock nobody can
+        # clear is worse than no lock).
+        locks_note=job.status in ACTIVE_STATUSES and not is_stale(job),
         error_message=job.error_message,
         created_at=job.created_at,
         meta={
@@ -165,6 +168,35 @@ def list_jobs(
     # blow up the sort by comparing a datetime against a string.
     collected.sort(key=lambda job: job.created_at or datetime.min, reverse=True)
     return collected[:limit]
+
+
+def note_lock_holder(session: Session, user_id: str, note_id: str) -> Optional[Any]:
+    """The live job holding `note_id` read-only, if any.
+
+    Derived from job rows rather than stored on the note, which is what makes a lock
+    impossible to strand: cancelling a run — or its heartbeat simply stopping —
+    releases the note at once, with no lock state to clean up and nothing to
+    coordinate with the worker thread.
+    """
+    for kind in KINDS.values():
+        if not hasattr(kind.model, "touched_note_ids"):
+            continue
+        rows = session.exec(
+            select(kind.model).where(
+                kind.model.user_id == user_id,
+                kind.model.status.in_(ACTIVE_STATUSES),
+            )
+        ).all()
+        for row in rows:
+            if is_stale(row):
+                continue
+            try:
+                touched = json.loads(row.touched_note_ids or "[]") or []
+            except (ValueError, TypeError):
+                continue
+            if note_id in touched:
+                return row
+    return None
 
 
 def get_job(

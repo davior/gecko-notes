@@ -160,15 +160,22 @@ export const useActivityStore = create<ActivityState>((set, get) => {
   }
 })
 
-/** Active jobs holding a given note read-only. */
+/** Active jobs holding a given note read-only.
+ *
+ * A plan can write several notes, so the anchor note is not enough — `touched_note_ids`
+ * is every note the run may edit, and each of them locks. A job stops reporting
+ * `locks_note` the moment its heartbeat goes stale, so a wedged run releases the note
+ * here without any client-side timeout of our own. */
 export function jobsLockingNote(
   jobs: Record<string, ActivityJob>,
   noteId: string | null | undefined,
 ): ActivityJob[] {
   if (!noteId) return []
-  return Object.values(jobs).filter(
-    (job) => job.locks_note && isActive(job) && job.note_id === noteId,
-  )
+  return Object.values(jobs).filter((job) => {
+    if (!job.locks_note || !isActive(job)) return false
+    const touched = job.meta?.touched_note_ids
+    return Array.isArray(touched) ? touched.includes(noteId) : job.note_id === noteId
+  })
 }
 
 export type { ActivityJob, ActivityKind }
