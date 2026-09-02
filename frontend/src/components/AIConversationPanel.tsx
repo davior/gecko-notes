@@ -26,6 +26,7 @@ import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { assistantApi } from '@/api/assistant'
+import { errorMessage } from '@/utils/aiErrors'
 import { isActive } from '@/api/activity'
 import { useActivityStore } from '@/stores/activity'
 import type { GenerationRequest } from '@/services/ai'
@@ -254,23 +255,6 @@ function describeFindNotes(action: Extract<PlanAction, { type: 'find_notes' }>, 
 
 function safeStringify(v: unknown): string {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
-}
-
-// Short, human-readable error line shown in the chat. Unwraps the backend's
-// `detail`, which for AI-proxy failures holds the upstream API error body.
-function errorMessage(e: unknown, fallback = 'An error occurred'): string {
-  let msg = e instanceof Error ? e.message : fallback
-  const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail
-  if (typeof detail === 'string') {
-    try {
-      const parsed = JSON.parse(detail) as { error?: { message?: string } }
-      msg = parsed?.error?.message ?? detail
-    } catch { msg = detail }
-  } else if (detail && typeof detail === 'object') {
-    const m = (detail as Record<string, unknown>).message
-    if (typeof m === 'string') msg = m
-  }
-  return msg
 }
 
 // Full error dump for the collapsible "More details" panel: request line, HTTP
