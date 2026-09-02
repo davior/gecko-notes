@@ -19,6 +19,7 @@ from app.seed import run_seed
 from app.routers import notes, categories, media, search, settings, folders, annotations, transcription, images, stt_stream, flux_stream, import_url, video, activity
 from app.thumbnails import backfill_thumbnails
 from app.video import worker as video_worker
+from app.assistant import worker as assistant_worker
 from app.routers import auth as auth_router
 from app.routers import users as users_router
 from app.routers import admin as admin_router
@@ -26,6 +27,7 @@ from app.routers import data as data_router
 from app.routers import shared as shared_router
 from app.routers import ai_sessions as ai_sessions_router
 from app.routers import recipes as recipes_router
+from app.routers import assistant as assistant_router
 from app.routers import assets as assets_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.mail import email_enabled
@@ -78,6 +80,7 @@ async def lifespan(app: FastAPI):
     os.makedirs(MEDIA_DIR, exist_ok=True)
     threading.Thread(target=backfill_thumbnails, daemon=True).start()
     video_worker.start()
+    assistant_worker.start()
     yield
 
 
@@ -163,6 +166,7 @@ app.include_router(video.router, prefix="/api/video", tags=["video"])
 # One read-only view over every background job, so the header can show and stop
 # everything the app is working on without knowing what kinds exist.
 app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
+app.include_router(assistant_router.router, prefix="/api/assistant", tags=["assistant"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(data_router.router, prefix="/api/data", tags=["data"])

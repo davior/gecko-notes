@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from sqlmodel import Session, select
 
 from app.jobs.runner import ACTIVE_STATUSES
-from app.models import VideoRenderJob
+from app.models import AssistantRunJob, VideoRenderJob
 from app.schemas import ActivityJobRead
 
 
@@ -83,6 +83,45 @@ def _video_to_activity(job: VideoRenderJob) -> ActivityJobRead:
     )
 
 
+# ─── assistant runs ──────────────────────────────────────────────────────────
+
+
+def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
+    try:
+        touched = json.loads(job.touched_note_ids or "[]") or []
+    except (ValueError, TypeError):
+        touched = []
+
+    return ActivityJobRead(
+        id=job.id,
+        kind="assistant",
+        status=job.status,
+        stage=job.stage or "",
+        progress=job.progress or 0,
+        detail=job.detail or "",
+        title=job.note_title or "Assistant",
+        note_id=job.note_id,
+        note_title=job.note_title or "",
+        # Unlike a render, a run rewrites the document itself — so the editor holds
+        # every note it may touch read-only until it finishes.
+        locks_note=True,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        meta={
+            "session_id": job.session_id,
+            # Every note this run may write, not just the one it is anchored to: a
+            # plan can edit several, and each of them locks.
+            "touched_note_ids": touched,
+        },
+    )
+
+
+def _cancel_assistant(job_id: str) -> None:
+    from app.assistant import worker as assistant_worker
+
+    assistant_worker.cancel(job_id)
+
+
 def _cancel_video(job_id: str) -> None:
     # Imported lazily: the video worker pulls in ffmpeg helpers and the renderer,
     # which the activity API has no reason to load just to list a row.
@@ -92,6 +131,7 @@ def _cancel_video(job_id: str) -> None:
 
 
 KINDS: Dict[str, JobKind] = {
+    "assistant": JobKind("assistant", AssistantRunJob, _assistant_to_activity, _cancel_assistant),
     "video": JobKind("video", VideoRenderJob, _video_to_activity, _cancel_video),
 }
 

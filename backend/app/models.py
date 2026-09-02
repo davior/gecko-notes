@@ -290,6 +290,40 @@ class VideoRenderJob(SQLModel, table=True):
     updated_at: datetime
 
 
+class AssistantRunJob(SQLModel, table=True):
+    """One approved AI-assistant plan, being written and applied on the server.
+
+    Follows VideoRenderJob's shape. Everything after the user presses Approve — the
+    per-step body generation and then the edits themselves — runs here instead of in
+    the browser, because a plan that writes an essay takes minutes and the panel that
+    used to do it is unmounted the moment the user leaves the note.
+
+    The prompts are not rebuilt here: `prompt_ctx` carries the request body the
+    browser already assembled (cache breakpoints and all) plus each step's follow-up
+    messages, so the worker appends and sends rather than re-deriving.
+    """
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    # Null for a run started from the list view's global session, which has no note.
+    note_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = None       # AISession to write the summary into
+    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
+    stage: str = Field(default="")         # "Writing" | "Applying"
+    progress: int = Field(default=0)       # 0-100
+    detail: str = Field(default="")        # e.g. "step 3 of 7"
+    note_title: str = Field(default="")    # snapshot, for the indicator row
+    plan: str = Field(default='{"actions":[]}')   # the approved Plan, JSON as text
+    prompt_ctx: str = Field(default="{}")  # base_body + per-step follow-ups
+    exec_ctx: str = Field(default="{}")    # PlanExecContext minus the live editor
+    # Every note this run may write, so the editor knows which documents to hold
+    # read-only while it is in flight.
+    touched_note_ids: str = Field(default="[]")
+    results: str = Field(default="[]")     # ActionResult[] once it has run
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class Theme(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str

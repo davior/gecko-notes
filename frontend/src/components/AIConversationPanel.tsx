@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
@@ -25,10 +25,14 @@ import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
+import { assistantApi } from '@/api/assistant'
+import { isActive } from '@/api/activity'
+import { useActivityStore } from '@/stores/activity'
+import type { GenerationRequest } from '@/services/ai'
 import type { Recipe } from '@/api/recipes'
 import { renderRecipePrompt, getCurrentSelectionText } from '@/utils/recipeVariables'
 import { matchRecipeVoiceCommand } from '@/utils/recipeVoiceCommand'
-import { extractPlainText, extractLinkedFileUrls, extractBlockTexts } from '@/utils/blocks'
+import { extractPlainText, extractLinkedFileUrls, extractBlockTexts, type MarkdownEditor } from '@/utils/blocks'
 import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
 import {
@@ -53,7 +57,6 @@ import {
   type ContextCategory,
   type ContextRecipe,
 } from '@/services/aiPlan'
-import { executePlan, type PlanEditor, type ActionResult } from '@/services/planExecutor'
 
 export interface ConversationMessage {
   id: string
@@ -61,6 +64,12 @@ export interface ConversationMessage {
   content: string
   timestamp: string
 }
+
+// Shown as soon as a run is handed to the server. The point of the whole change is
+// that the user can act on this and leave.
+const RUN_STARTED_NOTICE =
+  '_Working on it. You can close this note or the tab — the results will appear here, ' +
+  'and in the note, when it finishes._'
 
 type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
 
@@ -73,14 +82,6 @@ function stripNoteLinks(text: string): string {
   return text
     .replace(/\[([^\]]*)\]\(\/notes\/[^)]*\)/g, '$1')
     .replace(/\/notes\/[0-9a-fA-F-]{8,}/g, 'a note')
-}
-
-// Run an async op over items with a concurrency cap (chunked). Used to fan out the
-// per-document content-generation calls in parallel without flooding the provider.
-async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  for (let i = 0; i < items.length; i += limit) {
-    await Promise.all(items.slice(i, i + limit).map(fn))
-  }
 }
 
 // Strip a code fence that wraps an *entire* generation result (the model is told not to add
@@ -128,7 +129,6 @@ function liveExtractText(buf: string): string {
 }
 
 // How many per-document generation calls to run at once (see Phase 2 plan).
-const GEN_CONCURRENCY = 5
 
 // Max retrieval rounds per request — find_notes over the note library and web_search
 // over the web share one budget (bounds an agentic search loop, whichever it searches).
@@ -195,7 +195,7 @@ interface AIConversationPanelProps {
   getNoteDocument?: () => unknown[]
   onAddToNote: (text: string) => Promise<void>
   // Plan execution wiring (provided by EditorView)
-  editor?: PlanEditor | null
+  editor?: MarkdownEditor | null
   defaultCategoryId?: string
   currentFolderId?: string | null
   onBeforeExecute?: () => Promise<void> | void
@@ -526,7 +526,6 @@ export default function AIConversationPanel({
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null)
   const [selectedSteps, setSelectedSteps] = useState<boolean[]>([])
   const [executing, setExecuting] = useState(false)
-  const [generating, setGenerating] = useState(false)  // Phase 2: filling deferred note bodies
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   // Notes the user hand-attached as extra AI context (on top of the scope). {id, title}:
   // the id is authoritative (bodies are re-fetched live each send); title is for the pill.
@@ -541,7 +540,6 @@ export default function AIConversationPanel({
   const [streamingText, setStreamingText] = useState<string | null>(null)
   // Phase 2 (deferred body) generation progress, shown live in the plan modal so a long
   // multi-minute stream doesn't look frozen. null = not generating.
-  const [genProgress, setGenProgress] = useState<{ done: number; total: number; chars: number } | null>(null)
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -553,13 +551,9 @@ export default function AIConversationPanel({
   const streamBufRef = useRef('')                          // raw accumulated stream text
   const abortRef = useRef<AbortController | null>(null)     // cancels the in-flight stream
   const liveRafRef = useRef<number | null>(null)            // rAF handle throttling live updates
-  const genAbortRef = useRef<AbortController | null>(null)  // cancels in-flight Phase 2 body generation
-  const genCharsRef = useRef(0)                            // chars streamed so far across all in-flight bodies
-  const genDoneRef = useRef(0)                             // bodies finished (ok or failed) this run
-  const genRafRef = useRef<number | null>(null)            // rAF handle throttling genProgress updates
 
   // Abort any in-flight stream on unmount so its reader/state updates don't leak.
-  useEffect(() => () => { abortRef.current?.abort(); genAbortRef.current?.abort() }, [])
+  useEffect(() => () => { abortRef.current?.abort() }, [])
 
   // Tracks whether the *current* dictation session has recognized any speech
   // yet, so stopping the mic without having said anything never re-sends
@@ -606,7 +600,7 @@ export default function AIConversationPanel({
   useEffect(() => { conversationRef.current = conversation })
   const voice = useVoiceMode({
     onUserTurn: (t) => voiceTurnRef.current(t),
-    onBargeIn: () => { abortRef.current?.abort(); genAbortRef.current?.abort() },
+    onBargeIn: () => { abortRef.current?.abort() },
     onError: (msg) => { setError(msg); void endVoiceSession(false) },
   })
   // Voice mode is available only when the instance flag, the user's opt-in, and a
@@ -689,6 +683,44 @@ export default function AIConversationPanel({
     }).catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId])
+
+  // A run belonging to this conversation, while it is still going. Its presence locks
+  // the composer: a second turn would race a plan that is still being applied.
+  const activityJobs = useActivityStore((s) => s.jobs)
+  const activeRun = useMemo(
+    () => Object.values(activityJobs).find(
+      (job) => job.kind === 'assistant' && isActive(job) && job.meta?.session_id === currentSessionId,
+    ),
+    [activityJobs, currentSessionId],
+  )
+
+  const runInFlight = executing || activeRun !== undefined
+
+  // When a run lands, the summary it wrote is in the stored session, not in this
+  // component's state — reload the transcript rather than trying to reproduce it, and
+  // refresh whatever it may have changed.
+  const settledRuns = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const job of Object.values(activityJobs)) {
+      if (job.kind !== 'assistant' || isActive(job)) continue
+      if (job.meta?.session_id !== currentSessionId || !currentSessionId) continue
+      if (settledRuns.current.has(job.id)) continue
+      settledRuns.current.add(job.id)
+
+      void aiSessionsApi.list(noteId ?? null).then((data) => {
+        setSessions(data)
+        const mine = data.find((s) => s.id === currentSessionId)
+        if (!mine) return
+        try { setConversation(JSON.parse(mine.messages) as ConversationMessage[]) } catch { /* keep what we have */ }
+      }).catch(() => {})
+
+      onNotesChanged?.()
+      void onCurrentNoteEdited?.()
+      void onAnnotationsChanged?.()
+      void useRecipesStore.getState().loadRecipes()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityJobs, currentSessionId, noteId])
 
   // Keep the assets cache pointed at the open note, and only let the editor's autosave
   // refresh it while the tab is actually on screen (see stores/assets.ts).
@@ -1130,109 +1162,22 @@ export default function AIConversationPanel({
 
   // Turn the per-action results into one assistant chat message: respond actions
   // render as their text, mutations as a ✓/✗ line.
-  function buildResultSummary(results: ActionResult[]): string {
-    // Respond-kind actions emit text (rare in mutation plans) — show above the table.
-    const respondParts = results.filter((r) => r.kind === 'respond').map((r) => r.message)
-    const mutationRows = results
-      .filter((r) => r.kind !== 'respond')
-      .map((r) => {
-        const icon = r.ok ? '✅' : '❌'
-        const pill = r.ok && r.noteId && r.noteTitle ? ` [${r.noteTitle}](/notes/${r.noteId})` : ''
-        return `| ${icon} | ${r.message}${pill} |`
-      })
-    const parts: string[] = []
-    if (respondParts.length) parts.push(respondParts.join('\n\n'))
-    if (mutationRows.length) parts.push(['| | |', '|:---:|:---|', ...mutationRows].join('\n'))
-    const failures = results.filter((r) => r.kind !== 'respond' && !r.ok).length
-    const text = parts.join('\n\n')
-    return failures > 0 ? `${text}\n\n_(${failures} action${failures === 1 ? '' : 's'} could not be completed.)_` : text
-  }
-
-  // Throttle live Phase 2 progress to at most one update per frame — 5 parallel body streams
-  // would otherwise re-render on every token. `total` is preserved from the initial set.
-  const flushGenProgress = () => {
-    if (genRafRef.current !== null) return
-    genRafRef.current = requestAnimationFrame(() => {
-      genRafRef.current = null
-      setGenProgress((p) => (p ? { ...p, done: genDoneRef.current, chars: genCharsRef.current } : p))
-    })
-  }
-
-  // Abort in-flight Phase 2 body generation (the long-running step). runPlan treats the
-  // resulting abort as a soft cancel and skips execution — see below.
-  function stopGenerating() {
-    genAbortRef.current?.abort()
-  }
-
   // Phase 2: fill in deferred note bodies. For each action that declared a `spec` but left
   // `content` empty, make a per-document generation call that reuses the planning call's
   // cached prefix (same instructions/reference/history/current-note + request) and appends
   // [assistant: <compact plan>, user: <step instruction>]. Runs in parallel (capped). Mutates
   // the successful actions' `content` in place; returns a runnable plan with any failed
   // actions removed plus their failures as result rows.
-  async function generatePlanContent(
-    plan: Plan,
-    ctx: PlanContext,
-    history: ConversationTurn[],
-    userRequest: string,
-  ): Promise<{ plan: Plan; genFailures: ActionResult[]; cancelled: boolean }> {
-    const svc = aiService
-    const targets = plan.actions
-      .map((action, index) => ({ action, index }))
-      .filter(({ action }) => actionNeedsGeneration(action))
-    if (!targets.length || !svc) return { plan, genFailures: [], cancelled: false }
-
-    const planSummary = buildPlanSummary(plan)
-    const genFailures: ActionResult[] = []
-    const failedIdx = new Set<number>()
-    const signal = genAbortRef.current?.signal
-
-    // Reset the live progress counters and show the indicator for this run.
-    genCharsRef.current = 0
-    genDoneRef.current = 0
-    setGenProgress({ done: 0, total: targets.length, chars: 0 })
-
-    await mapWithConcurrency(targets, GEN_CONCURRENCY, async ({ action, index }) => {
-      if (signal?.aborted) return  // cancelled — don't start further bodies
-      try {
-        const req: ConversationRequest = {
-          instructions: ctx.instructions,
-          referenceBlock: ctx.referenceBlock,
-          currentNoteText: ctx.currentNoteText || undefined,
-          history,
-          userRequest,
-          followups: [
-            { role: 'assistant', content: planSummary },
-            { role: 'user', content: buildContentStepInstruction(action, index, ctx.labelMap) },
-          ],
-          enableWebSearch: false,
-        }
-        // Stream so the read timeout bounds the gap between tokens, not the whole
-        // generation — a long body no longer trips the blocking cap (or nginx's 300s).
-        // onDelta only sums a character total, so parallel streams can't interleave; it
-        // also drives the live progress indicator and lets the fetch be aborted.
-        const raw = svc.streamConversation
-          ? await svc.streamConversation(req, (t) => { genCharsRef.current += t.length; flushGenProgress() }, signal)
-          : await svc.completeConversation(req)
-        const body = stripCodeFence(raw)
-        if (!body.trim()) throw new Error('the model returned an empty body')
-        ;(action as { content: string }).content = body
-      } catch (e) {
-        // A user-initiated Stop aborts the fetch — not a real failure. Don't record it;
-        // runPlan detects the abort and cancels the whole run.
-        if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
-        failedIdx.add(index)
-        genFailures.push({ ok: false, message: `Couldn't write “${defaultActionLabel(action, ctx.labelMap)}”: ${errorMessage(e)}` })
-      } finally {
-        genDoneRef.current += 1
-        flushGenProgress()
-      }
-    })
-
-    if (signal?.aborted) return { plan, genFailures: [], cancelled: true }
-    return { plan: { actions: plan.actions.filter((_, i) => !failedIdx.has(i)) }, genFailures, cancelled: false }
-  }
-
+  /**
+   * Hand an approved plan to the server and stop watching it.
+   *
+   * Writing the deferred bodies and applying the actions used to happen right here,
+   * which is why leaving the note threw the work away: this component is unmounted by
+   * the route, and its cleanup aborts every in-flight stream. Both halves now run as a
+   * job. What stays here is prompt assembly — the browser already knows how to build a
+   * request for each provider, cache breakpoints and all, so the bodies are built now
+   * and shipped with the run rather than rebuilt server-side.
+   */
   async function runPlan(
     plan: Plan,
     ctx: PlanContext,
@@ -1240,78 +1185,68 @@ export default function AIConversationPanel({
     history: ConversationTurn[],
     userRequest: string,
   ) {
-    if (!editor) {
-      setError('Editor is not ready yet — try again in a moment.')
-      setPendingPlan(null)
-      return
-    }
     setExecuting(true)
     try {
-      // Phase 2: write any deferred note bodies (spec → content) before executing. Engaged
-      // only when at least one action deferred its body; otherwise this is a no-op.
-      let runnable = plan
-      let genFailures: ActionResult[] = []
-      if (plan.actions.some(actionNeedsGeneration)) {
-        genAbortRef.current = new AbortController()  // lets the user Stop the long generation
-        setGenerating(true)
-        try {
-          const out = await generatePlanContent(plan, ctx, history, userRequest)
-          // User pressed Stop: abandon this run rather than execute a partially-written plan.
-          if (out.cancelled) {
-            const cancelled = [...baseMessages, assistantMsg('_Generation cancelled._')]
-            setConversation(cancelled)
-            void persistCurrentSession(cancelled)
-            setPendingPlan(null)
-            return
-          }
-          runnable = out.plan
-          genFailures = out.genFailures
-        } finally {
-          setGenerating(false)
-        }
-      }
-
-      // Flush any unsaved edits to the open note so amend/append build on the
-      // latest content and a later re-hydrate won't clobber the user's typing.
+      // Flush unsaved edits first, so amend/append build on the latest content and the
+      // run isn't overwritten by a stale autosave a moment later.
       await onBeforeExecute?.()
 
-      const execResults = await executePlan(runnable, {
-        editor,
-        currentNoteId: noteId ?? null,
-        defaultCategoryId: defaultCategoryId ?? '',
-        currentFolderId: currentFolderId ?? null,
-        validNoteIds: new Set(ctx.targetNotes.map((n) => n.id)),
-        validFolderIds: new Set(ctx.folders.map((f) => f.id)),
-        validCategoryIds: new Set(ctx.categories.map((c) => c.id)),
-        validAnnotationIds: ctx.annotationIds,
-        validRecipeIds: new Set(ctx.recipes.map((r) => r.id)),
+      const deferred = plan.actions
+        .map((action, index) => ({ action, index }))
+        .filter(({ action }) => actionNeedsGeneration(action))
+
+      let promptCtx: GenerationRequest | Record<string, never> = {}
+      if (deferred.length && aiService) {
+        const planSummary = buildPlanSummary(plan)
+        promptCtx = aiService.buildGenerationRequest(
+          {
+            instructions: ctx.instructions,
+            referenceBlock: ctx.referenceBlock,
+            currentNoteText: ctx.currentNoteText || undefined,
+            history,
+            userRequest,
+            enableWebSearch: false,
+          },
+          deferred.map(({ action, index }) => ({
+            index,
+            turns: [
+              { role: 'assistant', content: planSummary },
+              { role: 'user', content: buildContentStepInstruction(action, index, ctx.labelMap) },
+            ],
+          })),
+        )
+      }
+
+      const { data: job } = await assistantApi.start({
+        plan,
+        prompt_ctx: promptCtx,
+        exec_ctx: {
+          current_note_id: noteId ?? null,
+          default_category_id: defaultCategoryId ?? '',
+          current_folder_id: currentFolderId ?? null,
+          valid_note_ids: ctx.targetNotes.map((n) => n.id),
+          valid_folder_ids: ctx.folders.map((f) => f.id),
+          valid_category_ids: ctx.categories.map((c) => c.id),
+          valid_annotation_ids: [...ctx.annotationIds],
+          valid_recipe_ids: ctx.recipes.map((r) => r.id),
+        },
+        note_id: noteId ?? null,
+        session_id: currentSessionId ?? null,
       })
-      // Generation failures (excluded from execution) are surfaced alongside execution rows.
-      const results = [...genFailures, ...execResults]
 
-      const finalMessages = [
-        ...baseMessages,
-        assistantMsg(buildResultSummary(results)),
-        assistantMsg('_Plan completed._'),
-      ]
+      // Persist this now, before the worker finishes: it appends its own summary to the
+      // same session, and the transcript is reloaded when the run ends.
+      const started = [...baseMessages, assistantMsg(RUN_STARTED_NOTICE)]
+      setConversation(started)
+      await persistCurrentSession(started)
 
-      // Refresh in-memory note state (re-fetch + re-hydrate for content/title/tag/category changes).
-      if (results.some((r) => r.notesChanged)) onNotesChanged?.()
-      if (results.some((r) => r.touchedCurrentNote)) await onCurrentNoteEdited?.()
-      if (results.some((r) => r.annotationsChanged)) await onAnnotationsChanged?.()
-      if (results.some((r) => r.recipesChanged)) void useRecipesStore.getState().loadRecipes()
-
-      setConversation(finalMessages)
-      await persistCurrentSession(finalMessages)
+      useActivityStore.getState().track(job)
     } catch (e) {
-      setError(errorMessage(e, 'Failed to run plan'))
+      setError(errorMessage(e, 'Failed to start the plan'))
       setErrorDetails(formatErrorDetails(e))
     } finally {
       setExecuting(false)
       setPendingPlan(null)
-      genAbortRef.current = null
-      if (genRafRef.current !== null) { cancelAnimationFrame(genRafRef.current); genRafRef.current = null }
-      setGenProgress(null)
     }
   }
 
@@ -2377,7 +2312,7 @@ export default function AIConversationPanel({
               Plan mode
             </label>
 
-            <RecipePickerDropdown recipes={recipes} disabled={loading || executing} onSelect={handleRunRecipe} />
+            <RecipePickerDropdown recipes={recipes} disabled={loading || runInFlight} onSelect={handleRunRecipe} />
 
             {!isList && (
               <button
@@ -2523,7 +2458,7 @@ export default function AIConversationPanel({
                 placeholder="Ask a question or tell me what to do…"
                 rows={1}
                 className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
-                disabled={loading || executing}
+                disabled={loading || runInFlight}
               />
               {loading ? (
                 // While a reply is streaming/planning, the send button becomes a Stop
@@ -2540,7 +2475,7 @@ export default function AIConversationPanel({
               ) : (
                 <button
                   className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-                  disabled={executing || !input.trim()}
+                  disabled={runInFlight || !input.trim()}
                   onClick={submitFromInput}
                   type="button"
                 >
@@ -2559,7 +2494,7 @@ export default function AIConversationPanel({
       {pendingPlan && (
         <div
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-3"
-          onClick={() => { if (!executing && !generating) cancelPlan() }}
+          onClick={() => { if (!runInFlight) cancelPlan() }}
         >
           <div
             className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-sm max-h-full flex flex-col"
@@ -2592,48 +2527,37 @@ export default function AIConversationPanel({
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
               </p>
             )}
-            {generating && genProgress && (
-              // Live liveness cue for the long streaming generation (a static spinner alone
-              // reads as frozen): a growing char count for a single body, done/total for many.
+            {activeRun && (
+              // Progress for a run that is now the server's. Unlike the old in-panel
+              // counter this survives leaving the note and coming back.
               <div className="flex items-center gap-2 px-4 pb-2 text-xs text-gray-500 dark:text-gray-400">
                 <Spinner />
                 <span>
-                  {genProgress.total > 1
-                    ? `Writing note bodies… ${genProgress.done}/${genProgress.total}`
-                    : 'Writing the note body…'}
-                  {genProgress.chars > 0 ? ` · ${genProgress.chars.toLocaleString()} characters` : ''}
+                  {activeRun.stage || 'Working'}
+                  {activeRun.detail ? ` · ${activeRun.detail}` : ''}
+                  {` · ${activeRun.progress}%`}
                 </span>
               </div>
             )}
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
-                disabled={executing || generating || selectedReviewCount === 0}
+                disabled={runInFlight || selectedReviewCount === 0}
                 onClick={() => {
                   // Respond steps are always kept (auto-accepted); mutation steps follow their checkbox.
                   const filtered = { actions: pendingPlan.plan.actions.filter((a, i) => a.type === 'respond' || selectedSteps[i]) }
                   void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest)
                 }}
               >
-                {generating ? <><Spinner /> Writing…</> : executing ? <><Spinner /> Running…</> : 'Approve & run'}
+                {runInFlight ? <><Spinner /> Running…</> : 'Approve & run'}
               </button>
-              {generating ? (
-                // While generating, Cancel becomes an active Stop that aborts the streams.
-                <button
-                  className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                  onClick={stopGenerating}
-                >
-                  Stop
-                </button>
-              ) : (
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
-                disabled={executing}
+                disabled={runInFlight}
                 onClick={cancelPlan}
               >
                 Cancel
               </button>
-              )}
             </div>
           </div>
         </div>

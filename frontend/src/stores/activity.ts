@@ -18,6 +18,8 @@ const POLL_MS = 2000
 interface ActivityState {
   /** Active and recently finished jobs, keyed by `kind:id`. */
   jobs: Record<string, ActivityJob>
+  /** Follow a job that was just started elsewhere (the assistant panel, say). */
+  track: (job: ActivityJob) => void
   cancel: (job: ActivityJob) => Promise<void>
   dismiss: (key: string) => void
   /** Called on mount: recover anything still running after a reload. */
@@ -101,6 +103,11 @@ export const useActivityStore = create<ActivityState>((set, get) => {
 
   return {
     jobs: {},
+
+    track(job) {
+      apply([job], true)
+      schedulePoll()
+    },
 
     async cancel(job) {
       const key = jobKey(job)
