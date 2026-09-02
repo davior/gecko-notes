@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from sqlmodel import Session, select
 
 from app.jobs.runner import ACTIVE_STATUSES, is_stale
-from app.models import AssistantRunJob, VideoRenderJob
+from app.models import AssistantRunJob, TranscriptionJob, VideoRenderJob
 from app.schemas import ActivityJobRead
 
 
@@ -133,9 +133,42 @@ def _cancel_video(job_id: str) -> None:
     video_worker.cancel(job_id)
 
 
+# ─── transcriptions ──────────────────────────────────────────────────────────
+
+
+def _transcription_to_activity(job: TranscriptionJob) -> ActivityJobRead:
+    return ActivityJobRead(
+        id=job.id,
+        kind="transcription",
+        status=job.status,
+        stage=job.stage or "",
+        progress=job.progress or 0,
+        detail=job.detail or "",
+        title=job.note_title or job.source_filename or "Transcript",
+        note_id=job.note_id,
+        note_title=job.note_title or "",
+        # A transcript is appended to the note, not a rewrite of it, so there is no
+        # reason to hold the document read-only while it runs.
+        locks_note=False,
+        result_url=_media_url(job.user_id, job.result_filename),
+        error_message=job.error_message,
+        created_at=job.created_at,
+        meta={"source_filename": job.source_filename},
+    )
+
+
+def _cancel_transcription(job_id: str) -> None:
+    from app.routers import transcription
+
+    transcription.cancel(job_id)
+
+
 KINDS: Dict[str, JobKind] = {
     "assistant": JobKind("assistant", AssistantRunJob, _assistant_to_activity, _cancel_assistant),
     "video": JobKind("video", VideoRenderJob, _video_to_activity, _cancel_video),
+    "transcription": JobKind(
+        "transcription", TranscriptionJob, _transcription_to_activity, _cancel_transcription
+    ),
 }
 
 

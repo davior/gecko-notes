@@ -249,10 +249,26 @@ class Recipe(SQLModel, table=True):
 
 
 class TranscriptionJob(SQLModel, table=True):
+    """One "transcribe this recording" job.
+
+    Extracting an audio track and transcribing it takes minutes, and the note it
+    belongs to is recorded here rather than held by the browser: the worker attaches
+    the finished transcript itself, so navigating away no longer loses it.
+    """
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
     source_filename: str  # video filename in the user's media dir
-    status: str = Field(default="queued")  # "queued" | "processing" | "done" | "error"
+    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
+    stage: str = Field(default="")         # "Extracting audio" | "Uploading" | "Transcribing"
+    progress: int = Field(default=0)       # 0-100
+    detail: str = Field(default="")
+    # The note the recording lives in, and the block the transcript goes after. Both
+    # are on the row because the worker does the attaching now; the shared runner
+    # hands it only a job id, so anything it needs has to be here.
+    note_id: Optional[str] = Field(default=None, index=True)
+    note_title: str = Field(default="")
+    after_block_id: Optional[str] = None
+    model: str = Field(default="")         # resolved STT model, snapshot at creation
     result_filename: Optional[str] = None  # transcript .txt filename, once done
     error_message: Optional[str] = None
     created_at: datetime

@@ -144,6 +144,7 @@ Additional optional settings (see `.env.example` for the full list):
 | `VIDEO_MAX_NARRATION_CHARS` | Refuse a render with more narration than this (default `60000`) |
 | `VIDEO_JOB_RETENTION_DAYS` | Delete render artefacts older than this, unless the video was added to a note (default `14`; `0` keeps everything) |
 | `ASSISTANT_MAX_CONCURRENCY` | How many AI-assistant plans may run at once (default `2`) |
+| `TRANSCRIBE_MAX_CONCURRENCY` | How many recordings may be transcribed at once (default `1`) |
 | `JOB_STALE_MINUTES` | End a background job whose progress has not moved for this long, releasing any note it held (default `15`) |
 | `COMPOSE_FILE` | Set to `docker-compose.yml:docker-compose.prod.yml` to always include the reverse-proxy overlay |
 | `APP_BASE_URL` | Public origin used to build links in emails (e.g. `https://notes.example.com`) |

@@ -19,6 +19,7 @@ services:
       - VIDEO_JOB_RETENTION_DAYS=${VIDEO_JOB_RETENTION_DAYS:-14}
       # Server-side AI assistant runs (see .env.example).
       - ASSISTANT_MAX_CONCURRENCY=${ASSISTANT_MAX_CONCURRENCY:-2}
+      - TRANSCRIBE_MAX_CONCURRENCY=${TRANSCRIBE_MAX_CONCURRENCY:-1}
       - JOB_STALE_MINUTES=${JOB_STALE_MINUTES:-15}
       # Email (optional) — features stay off unless SMTP_HOST and SMTP_FROM are set.
       - APP_BASE_URL=${APP_BASE_URL:-}

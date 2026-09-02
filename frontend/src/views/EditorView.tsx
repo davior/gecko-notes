@@ -392,44 +392,6 @@ export default function EditorView() {
 
   // Poll a background transcription job until it finishes, then insert the
   // resulting transcript as a file block right after the video it belongs to.
-  // Runs independently of the recorder modal so closing it doesn't lose the job.
-  // Guards against inserting into the wrong note: if the user has since
-  // navigated to a different note, the transcript is left unattached (rather
-  // than risk corrupting whatever note is now open) and the toast says so.
-  const pollTranscriptionJob = useCallback((jobId: string, afterBlockId: string, ownerNoteId: string | undefined, ownerNoteTitle: string) => {
-    const POLL_MS = 4000
-    const poll = async () => {
-      try {
-        const res = await transcriptionApi.getJob(jobId)
-        const job = res.data
-        if (job.status === 'done' && job.result_url) {
-          const stillOpen = (createdNoteId.current || latestNoteId.current) === ownerNoteId
-          if (!stillOpen) {
-            showToast(`Transcript ready for "${ownerNoteTitle}" — reopen that note to attach it`)
-            return
-          }
-          const fileBlock = {
-            type: 'file',
-            props: { url: job.result_url, name: `Transcript — ${new Date().toLocaleString()}` },
-          } as unknown as PartialBlock
-          const target = editor?.getBlock(afterBlockId)
-          if (target) editor?.insertBlocks([fileBlock], target as never, 'after')
-          else insertBlocksAtCursor([fileBlock])
-          showToast('Transcript ready')
-          return
-        }
-        if (job.status === 'error') {
-          showToast(`Transcription failed${job.error_message ? `: ${job.error_message}` : ''}`)
-          return
-        }
-      } catch {
-        showToast('Lost connection while checking transcript status')
-        return
-      }
-      setTimeout(() => { void poll() }, POLL_MS)
-    }
-    setTimeout(() => { void poll() }, POLL_MS)
-  }, [editor, insertBlocksAtCursor])
 
   // Record button in the video recorder modal: save the recorded video as a
   // video block, then (optionally) kick off async transcription in the background.
@@ -446,10 +408,13 @@ export default function EditorView() {
 
       if (wantTranscript && falKeyConfigured) {
         try {
+          // Flush first: the recording block only reaches the server on the next
+          // autosave, and the worker needs it there to place the transcript after it.
+          await doSave(true)
           const ownerNoteId = createdNoteId.current || latestNoteId.current
-          const res = await transcriptionApi.createJob(filename)
-          showToast('Transcribing in the background…')
-          pollTranscriptionJob(res.data.id, videoBlockId, ownerNoteId, latestTitle.current || 'Untitled')
+          await transcriptionApi.createJob(filename, ownerNoteId, videoBlockId)
+          showToast('Transcribing in the background — you can leave this note')
+          void useActivityStore.getState().resume()
         } catch {
           showToast('Could not start transcription')
         }
@@ -457,7 +422,7 @@ export default function EditorView() {
     } catch {
       showToast('Failed to save recorded video')
     }
-  }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, pollTranscriptionJob, title])
+  }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, title])
   const tts = useTextToSpeech({ model: settingsStore.voice })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
@@ -1093,6 +1058,32 @@ export default function EditorView() {
     // restore or an AI edit clears syncedEditorKey and reloads the document, and
     // this has to re-evaluate once the editor is holding real content again.
   }, [activityJobs, note, editorHoldsNote, insertRenderedVideo])
+
+  // Reconcile a finished transcript with the open editor, the same way a finished
+  // render is reconciled: the server has already put it in the stored note, and an
+  // editor holding its own document would overwrite that on the next autosave.
+  const reconciledTranscripts = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const openNoteId = createdNoteId.current || latestNoteId.current
+    if (!editorHoldsNote(openNoteId) || !editor) return
+    for (const job of Object.values(activityJobs)) {
+      if (job.kind !== 'transcription' || job.status !== 'done' || !job.result_url) continue
+      if (job.note_id !== openNoteId) continue
+      if (reconciledTranscripts.current.has(job.id)) continue
+      reconciledTranscripts.current.add(job.id)
+
+      const url = job.result_url
+      if (editor.document.some((b) => (b.props as { url?: string } | undefined)?.url === url)) continue
+      insertBlocksAtCursor([{
+        id: `transcript-${job.id}`,
+        type: 'file',
+        props: { url, name: `Transcript — ${job.meta?.source_filename ?? 'recording'}` },
+      } as unknown as PartialBlock])
+      showToast('Transcript added to this note')
+      void doSave(true)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityJobs, note, editorHoldsNote, insertBlocksAtCursor])
 
   async function handleExportAudio() {
     const text = speechText()

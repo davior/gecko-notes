@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=backfill_thumbnails, daemon=True).start()
     video_worker.start()
     assistant_worker.start()
+    transcription.start()
     yield
 
 
