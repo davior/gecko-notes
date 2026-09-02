@@ -249,10 +249,26 @@ class Recipe(SQLModel, table=True):
 
 
 class TranscriptionJob(SQLModel, table=True):
+    """One "transcribe this recording" job.
+
+    Extracting an audio track and transcribing it takes minutes, and the note it
+    belongs to is recorded here rather than held by the browser: the worker attaches
+    the finished transcript itself, so navigating away no longer loses it.
+    """
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
     source_filename: str  # video filename in the user's media dir
-    status: str = Field(default="queued")  # "queued" | "processing" | "done" | "error"
+    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
+    stage: str = Field(default="")         # "Extracting audio" | "Uploading" | "Transcribing"
+    progress: int = Field(default=0)       # 0-100
+    detail: str = Field(default="")
+    # The note the recording lives in, and the block the transcript goes after. Both
+    # are on the row because the worker does the attaching now; the shared runner
+    # hands it only a job id, so anything it needs has to be here.
+    note_id: Optional[str] = Field(default=None, index=True)
+    note_title: str = Field(default="")
+    after_block_id: Optional[str] = None
+    model: str = Field(default="")         # resolved STT model, snapshot at creation
     result_filename: Optional[str] = None  # transcript .txt filename, once done
     error_message: Optional[str] = None
     created_at: datetime
@@ -285,6 +301,40 @@ class VideoRenderJob(SQLModel, table=True):
     # True once the worker has appended the result to the note, so neither side
     # inserts it twice.
     inserted: bool = Field(default=False)
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssistantRunJob(SQLModel, table=True):
+    """One approved AI-assistant plan, being written and applied on the server.
+
+    Follows VideoRenderJob's shape. Everything after the user presses Approve — the
+    per-step body generation and then the edits themselves — runs here instead of in
+    the browser, because a plan that writes an essay takes minutes and the panel that
+    used to do it is unmounted the moment the user leaves the note.
+
+    The prompts are not rebuilt here: `prompt_ctx` carries the request body the
+    browser already assembled (cache breakpoints and all) plus each step's follow-up
+    messages, so the worker appends and sends rather than re-deriving.
+    """
+    id: str = Field(primary_key=True)
+    user_id: str = Field(index=True)
+    # Null for a run started from the list view's global session, which has no note.
+    note_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = None       # AISession to write the summary into
+    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
+    stage: str = Field(default="")         # "Writing" | "Applying"
+    progress: int = Field(default=0)       # 0-100
+    detail: str = Field(default="")        # e.g. "step 3 of 7"
+    note_title: str = Field(default="")    # snapshot, for the indicator row
+    plan: str = Field(default='{"actions":[]}')   # the approved Plan, JSON as text
+    prompt_ctx: str = Field(default="{}")  # base_body + per-step follow-ups
+    exec_ctx: str = Field(default="{}")    # PlanExecContext minus the live editor
+    # Every note this run may write, so the editor knows which documents to hold
+    # read-only while it is in flight.
+    touched_note_ids: str = Field(default="[]")
+    results: str = Field(default="[]")     # ActionResult[] once it has run
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime

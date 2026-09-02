@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback, Component } from 'react'
+import { useState, useEffect, useRef, useCallback, Component, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard, Loader2 } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -32,7 +32,7 @@ import DocumentOutline from '@/components/DocumentOutline'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
 import ImageGenModal from '@/components/ImageGenModal'
 import VideoGenModal from '@/components/VideoGenModal'
-import VideoJobIndicator from '@/components/VideoJobIndicator'
+import ActivityIndicator from '@/components/ActivityIndicator'
 import NoteStatsModal from '@/components/NoteStatsModal'
 import FindReplaceBar from '@/components/FindReplaceBar'
 
@@ -40,8 +40,9 @@ import { useNotesStore } from '@/stores/notes'
 import { useAssetsStore } from '@/stores/assets'
 import { useCategoriesStore } from '@/stores/categories'
 import { useSettingsStore } from '@/stores/settings'
-import { useVideoJobsStore } from '@/stores/videoJobs'
-import type { RenderOptions, VideoRenderJob } from '@/api/videoGen'
+import { useActivityStore, jobsLockingNote } from '@/stores/activity'
+import type { ActivityJob } from '@/api/activity'
+import type { RenderOptions } from '@/api/videoGen'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import { transcriptionApi } from '@/api/transcription'
@@ -195,6 +196,9 @@ export default function EditorView() {
 
   const titleRef = useRef<HTMLTextAreaElement>(null)
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Read inside scheduleAutosave, which is a stable callback and cannot close over
+  // the lock itself.
+  const lockedRef = useRef(false)
   const createdNoteId = useRef<string | null>(null)
   const currentNoteContent = useRef('')
   const hasPendingChanges = useRef(false)
@@ -388,44 +392,6 @@ export default function EditorView() {
 
   // Poll a background transcription job until it finishes, then insert the
   // resulting transcript as a file block right after the video it belongs to.
-  // Runs independently of the recorder modal so closing it doesn't lose the job.
-  // Guards against inserting into the wrong note: if the user has since
-  // navigated to a different note, the transcript is left unattached (rather
-  // than risk corrupting whatever note is now open) and the toast says so.
-  const pollTranscriptionJob = useCallback((jobId: string, afterBlockId: string, ownerNoteId: string | undefined, ownerNoteTitle: string) => {
-    const POLL_MS = 4000
-    const poll = async () => {
-      try {
-        const res = await transcriptionApi.getJob(jobId)
-        const job = res.data
-        if (job.status === 'done' && job.result_url) {
-          const stillOpen = (createdNoteId.current || latestNoteId.current) === ownerNoteId
-          if (!stillOpen) {
-            showToast(`Transcript ready for "${ownerNoteTitle}" — reopen that note to attach it`)
-            return
-          }
-          const fileBlock = {
-            type: 'file',
-            props: { url: job.result_url, name: `Transcript — ${new Date().toLocaleString()}` },
-          } as unknown as PartialBlock
-          const target = editor?.getBlock(afterBlockId)
-          if (target) editor?.insertBlocks([fileBlock], target as never, 'after')
-          else insertBlocksAtCursor([fileBlock])
-          showToast('Transcript ready')
-          return
-        }
-        if (job.status === 'error') {
-          showToast(`Transcription failed${job.error_message ? `: ${job.error_message}` : ''}`)
-          return
-        }
-      } catch {
-        showToast('Lost connection while checking transcript status')
-        return
-      }
-      setTimeout(() => { void poll() }, POLL_MS)
-    }
-    setTimeout(() => { void poll() }, POLL_MS)
-  }, [editor, insertBlocksAtCursor])
 
   // Record button in the video recorder modal: save the recorded video as a
   // video block, then (optionally) kick off async transcription in the background.
@@ -442,10 +408,13 @@ export default function EditorView() {
 
       if (wantTranscript && falKeyConfigured) {
         try {
+          // Flush first: the recording block only reaches the server on the next
+          // autosave, and the worker needs it there to place the transcript after it.
+          await doSave(true)
           const ownerNoteId = createdNoteId.current || latestNoteId.current
-          const res = await transcriptionApi.createJob(filename)
-          showToast('Transcribing in the background…')
-          pollTranscriptionJob(res.data.id, videoBlockId, ownerNoteId, latestTitle.current || 'Untitled')
+          await transcriptionApi.createJob(filename, ownerNoteId, videoBlockId)
+          showToast('Transcribing in the background — you can leave this note')
+          void useActivityStore.getState().resume()
         } catch {
           showToast('Could not start transcription')
         }
@@ -453,7 +422,7 @@ export default function EditorView() {
     } catch {
       showToast('Failed to save recorded video')
     }
-  }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, pollTranscriptionJob, title])
+  }, [uploadVideoBlob, insertBlocksAtCursor, falKeyConfigured, title])
   const tts = useTextToSpeech({ model: settingsStore.voice })
   const exportAnchorRef = useRef<HTMLSpanElement>(null)
 
@@ -581,6 +550,10 @@ export default function EditorView() {
 
   const scheduleAutosave = useCallback(() => {
     if (isHydratingEditor.current) return
+    // Belt and braces with the read-only editor: the server refuses a content write
+    // while a run holds the note, and a queued autosave firing as the lock lifts
+    // would race the run's own result.
+    if (lockedRef.current) return
     hasPendingChanges.current = true
     dirtySinceSnapshot.current = true
     currentNoteContent.current = extractPlainText(editor?.document as unknown[] ?? [])
@@ -661,9 +634,18 @@ export default function EditorView() {
       // point the block hasn't been saved yet, so the file would briefly show as
       // detached. A no-op unless the Assets tab is open on this note.
       useAssetsStore.getState().invalidate(saved.id)
-    } catch {
-      setSaveStatus('Error saving')
-      hasPendingChanges.current = true
+    } catch (e) {
+      // A 409 here means an assistant run owns the note; the banner already says so,
+      // and the pending edits are dropped rather than replayed over the run's work.
+      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
+        ?.response?.data?.detail?.code
+      if (code === 'note_locked') {
+        setSaveStatus('The assistant is writing — your changes were not saved')
+        hasPendingChanges.current = false
+      } else {
+        setSaveStatus('Error saving')
+        hasPendingChanges.current = true
+      }
     } finally {
       isSaving.current = false
     }
@@ -947,7 +929,7 @@ export default function EditorView() {
     tts.play(text)
   }
 
-  const startVideoJob = useVideoJobsStore((s) => s.start)
+  const startVideoJob = useActivityStore((s) => s.startVideo)
 
   /**
    * Open the render dialog, rasterising any Mermaid diagrams first.
@@ -1009,7 +991,7 @@ export default function EditorView() {
     return syncedEditorKey.current === noteIdToMatch
   }, [editor, loaded])
 
-  const insertRenderedVideo = useCallback((job: VideoRenderJob) => {
+  const insertRenderedVideo = useCallback((job: ActivityJob) => {
     if (!job.result_url || !editor) return false
     if (!editorHoldsNote(createdNoteId.current || latestNoteId.current)) return false
     const already = editor.document.some(
@@ -1027,7 +1009,32 @@ export default function EditorView() {
   // Reconcile finished renders with the open editor. Runs for every completed
   // job on this note, whether it finished while the user watched or while the
   // tab was closed and the server attached it on their behalf.
-  const videoJobs = useVideoJobsStore((s) => s.jobs)
+  const activityJobs = useActivityStore((s) => s.jobs)
+  const cancelActivity = useActivityStore((s) => s.cancel)
+
+  /** The assistant run rewriting this note, if any.
+   *
+   * While one is working the document is held read-only: the run writes note.content
+   * on the server, and an editor that kept accepting keystrokes would overwrite that
+   * on its next autosave. Derived from the job rather than a flag on the note, so it
+   * clears the moment the run ends, is cancelled, or simply stops reporting progress
+   * — there is no lock left behind to get stuck. */
+  const noteLock = useMemo(
+    () => jobsLockingNote(activityJobs, createdNoteId.current || latestNoteId.current)[0],
+    [activityJobs, note],
+  )
+
+  useEffect(() => { lockedRef.current = !!noteLock }, [noteLock])
+
+  // When the run lets go, take its work: the server rewrote the note underneath us.
+  const wasLocked = useRef(false)
+  useEffect(() => {
+    if (noteLock) { wasLocked.current = true; return }
+    if (!wasLocked.current) return
+    wasLocked.current = false
+    void refreshOpenNote()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteLock])
   const reconciledVideos = useRef<Set<string>>(new Set())
   useEffect(() => {
     const openNoteId = createdNoteId.current || latestNoteId.current
@@ -1036,9 +1043,10 @@ export default function EditorView() {
     // otherwise be inserted into the empty document and saved over the note.
     // Once hydration completes this effect re-runs and picks the job up.
     if (!editorHoldsNote(openNoteId)) return
-    for (const job of Object.values(videoJobs)) {
+    for (const job of Object.values(activityJobs)) {
+      if (job.kind !== 'video') continue
       if (job.status !== 'done' || !job.result_url) continue
-      if (job.note_id !== openNoteId || !job.auto_insert) continue
+      if (job.note_id !== openNoteId || !job.meta?.auto_insert) continue
       if (reconciledVideos.current.has(job.id)) continue
       reconciledVideos.current.add(job.id)
       if (insertRenderedVideo(job)) {
@@ -1049,7 +1057,33 @@ export default function EditorView() {
     // `note` is a dependency because it is what re-hydration changes: a history
     // restore or an AI edit clears syncedEditorKey and reloads the document, and
     // this has to re-evaluate once the editor is holding real content again.
-  }, [videoJobs, note, editorHoldsNote, insertRenderedVideo])
+  }, [activityJobs, note, editorHoldsNote, insertRenderedVideo])
+
+  // Reconcile a finished transcript with the open editor, the same way a finished
+  // render is reconciled: the server has already put it in the stored note, and an
+  // editor holding its own document would overwrite that on the next autosave.
+  const reconciledTranscripts = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const openNoteId = createdNoteId.current || latestNoteId.current
+    if (!editorHoldsNote(openNoteId) || !editor) return
+    for (const job of Object.values(activityJobs)) {
+      if (job.kind !== 'transcription' || job.status !== 'done' || !job.result_url) continue
+      if (job.note_id !== openNoteId) continue
+      if (reconciledTranscripts.current.has(job.id)) continue
+      reconciledTranscripts.current.add(job.id)
+
+      const url = job.result_url
+      if (editor.document.some((b) => (b.props as { url?: string } | undefined)?.url === url)) continue
+      insertBlocksAtCursor([{
+        id: `transcript-${job.id}`,
+        type: 'file',
+        props: { url, name: `Transcript — ${job.meta?.source_filename ?? 'recording'}` },
+      } as unknown as PartialBlock])
+      showToast('Transcript added to this note')
+      void doSave(true)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityJobs, note, editorHoldsNote, insertBlocksAtCursor])
 
   async function handleExportAudio() {
     const text = speechText()
@@ -1546,7 +1580,7 @@ export default function EditorView() {
           >
             <FolderInput className="w-4 h-4" />
           </button>
-          <VideoJobIndicator
+          <ActivityIndicator
             onInsert={(job) => {
               if (insertRenderedVideo(job)) { showToast('Video inserted'); void doSave(true) }
               else showToast('That video is already in this note')
@@ -1784,11 +1818,37 @@ export default function EditorView() {
               </div>
             ) : (
               <EditorErrorBoundary>
+                {noteLock && (
+                  // Says what is happening, and offers the way out. Stopping a run
+                  // leaves whatever it already applied in place — the pre-run snapshot
+                  // in version history is the undo point.
+                  <div className="mb-3 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950 no-print">
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin text-blue-500" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-blue-900 dark:text-blue-200">
+                        The assistant is writing this note
+                      </div>
+                      <div className="text-xs text-blue-700 dark:text-blue-300 truncate">
+                        {noteLock.stage || 'Working'}
+                        {noteLock.detail ? ` · ${noteLock.detail}` : ''}
+                        {` · ${noteLock.progress}% · editing is paused until it finishes`}
+                      </div>
+                    </div>
+                    <button
+                      className="btn-ghost shrink-0 px-2 py-1 text-xs"
+                      onClick={() => void cancelActivity(noteLock)}
+                      title="Stop the assistant and unlock this note"
+                    >
+                      Stop &amp; unlock
+                    </button>
+                  </div>
+                )}
                 <EditorNoteContext.Provider value={noteId ? { id: noteId, title } : null}>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
                   <div ref={annotationContainerRef} className="relative">
                     <BlockNoteView
                       editor={editor}
+                      editable={!noteLock}
                       onChange={scheduleAutosave}
                       theme={editorTheme}
                       slashMenu={false}

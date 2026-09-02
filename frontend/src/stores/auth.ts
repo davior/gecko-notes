@@ -3,6 +3,7 @@ import { authApi, isTwoFactorRequired, type User, type LoginResult, type LoginRe
 import { useSettingsStore } from '@/stores/settings'
 import { useNotesStore } from '@/stores/notes'
 import { useAssetsStore } from '@/stores/assets'
+import { useActivityStore } from '@/stores/activity'
 
 interface AuthState {
   user: User | null
@@ -112,6 +113,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     useSettingsStore.getState().reset()
     useNotesStore.getState().reset()
     useAssetsStore.getState().reset()
+    useActivityStore.getState().reset()
   },
 
   async updateProfile(data) {

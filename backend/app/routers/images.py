@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -77,16 +77,23 @@ class ImageGenerateResponse(BaseModel):
     currency: Optional[str] = None
 
 
-@router.post("/generate", response_model=ImageGenerateResponse)
-async def generate_image(
-    payload: ImageGenerateRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    session: Session = Depends(get_session),
-):
-    user_id = _get_user_id(request)
+async def generate_image_for_user(
+    session: Session,
+    user_id: str,
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    image_size: Optional[str] = None,
+    on_file: Optional[Callable[[Path], None]] = None,
+) -> ImageGenerateResponse:
+    """Generate one image and save it into the user's media dir.
 
-    prompt = (payload.prompt or "").strip()
+    Split out of the endpoint so the assistant's `generate_image` plan action can call
+    it directly from a worker thread rather than spawning a nested job. `on_file` is
+    how the caller schedules thumbnailing: a request defers it to BackgroundTasks, a
+    worker that is already off the request path just does it.
+    """
+    prompt = (prompt or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail={"code": "empty_prompt", "message": "A prompt is required"})
 
@@ -98,14 +105,14 @@ async def generate_image(
         )
 
     cfg = load_fal_config(session, user_id)
-    model = (payload.model or cfg["default_model"]).strip()
+    model = (model or cfg["default_model"]).strip()
     model = FAL_MODEL_ID_RENAMES.get(model, model)
     if model not in allowed_fal_models(session, cfg):
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_model", "message": f"Model '{model}' is not in the configured model list"},
         )
-    image_size = payload.image_size or cfg["image_size"] or DEFAULT_IMAGE_SIZE
+    image_size = image_size or cfg["image_size"] or DEFAULT_IMAGE_SIZE
     if image_size not in FAL_IMAGE_SIZES:
         raise HTTPException(
             status_code=400,
@@ -158,7 +165,8 @@ async def generate_image(
     with open(file_path, "wb") as f:
         f.write(data)
 
-    background_tasks.add_task(generate_thumbnail, Path(file_path))
+    if on_file:
+        on_file(Path(file_path))
 
     # 3) Attribute the actual cost: fal returns the request id and billed quantity as
     #    response headers; multiplied by the endpoint's cached unit price this gives the
@@ -181,4 +189,21 @@ async def generate_image(
         height=height,
         cost=cost,
         currency=currency,
+    )
+
+
+@router.post("/generate", response_model=ImageGenerateResponse)
+async def generate_image(
+    payload: ImageGenerateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+):
+    return await generate_image_for_user(
+        session,
+        _get_user_id(request),
+        payload.prompt,
+        model=payload.model,
+        image_size=payload.image_size,
+        on_file=lambda path: background_tasks.add_task(generate_thumbnail, path),
     )

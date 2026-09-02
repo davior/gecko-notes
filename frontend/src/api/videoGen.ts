@@ -199,19 +199,9 @@ export const videoGenApi = {
     return client.post('/video/jobs', { note_id: noteId, options, quality }).then((r) => r.data)
   },
 
-  getJob(jobId: string): Promise<{ data: VideoRenderJob }> {
-    return client.get(`/video/jobs/${jobId}`).then((r) => r.data)
-  },
-
-  /** Jobs still queued or rendering — used on mount to pick a render back up
-   *  after a page reload. */
-  listActive(): Promise<{ data: VideoRenderJob[] }> {
-    return client.get('/video/jobs', { params: { active: 1 } }).then((r) => r.data)
-  },
-
-  cancelJob(jobId: string): Promise<{ data: VideoRenderJob }> {
-    return client.delete(`/video/jobs/${jobId}`).then((r) => r.data)
-  },
+  // Reading and cancelling a render go through `api/activity` now, which covers
+  // every kind of background job at once. The endpoints behind them still exist —
+  // this module is just no longer the client for that half.
 
   /** Segment the note without rendering, so the dialog can show how long the
    *  video will be and how much narration it needs before anything is paid for. */

@@ -569,6 +569,25 @@ def update_note(note_id: str, payload: NoteUpdate, request: Request, session: Se
     if not note or note.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Note not found"})
 
+    # An assistant run rewrites the document itself, so while one is working on this
+    # note nothing else may write it. The open editor already goes read-only, but a
+    # stale tab or a second device would otherwise clobber the run's work on its next
+    # autosave. Only content writes are refused — pinning, moving and sharing are
+    # separate endpoints and never race the body.
+    if payload.content is not None:
+        from app.jobs.registry import note_lock_holder
+
+        holder = note_lock_holder(session, user_id, note_id)
+        if holder is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "note_locked",
+                    "message": "The assistant is working on this note — your changes were not saved.",
+                    "job_id": holder.id,
+                },
+            )
+
     # For optional fields like parent_note_id and folder_id, check if explicitly set
     # in the payload rather than checking if not None, so that clearing them (null)
     # is possible. Other fields use is not None check as before.

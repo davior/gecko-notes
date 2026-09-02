@@ -644,6 +644,25 @@ def _run_migrations():
         except Exception:
             logger.exception("Note asset backfill failed; the Assets tab will fill in as notes are saved")
 
+        # Transcription moved onto the shared job runner, which attaches the finished
+        # transcript to its note itself rather than relying on the browser to still be
+        # open. That needs the note (and where in it the transcript goes) on the row,
+        # plus the progress fields every other job kind reports.
+        for column in (
+            "note_id TEXT",
+            "note_title TEXT NOT NULL DEFAULT ''",
+            "after_block_id TEXT",
+            "model TEXT NOT NULL DEFAULT ''",
+            "stage TEXT NOT NULL DEFAULT ''",
+            "progress INTEGER NOT NULL DEFAULT 0",
+            "detail TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(text(f"ALTER TABLE transcriptionjob ADD COLUMN {column}"))
+                conn.commit()
+            except Exception:
+                pass
+
 
 def _seed_after_migrations():
     from app.seed import seed_global_themes

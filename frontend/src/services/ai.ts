@@ -50,8 +50,35 @@ export interface NoteMetadata {
   summary: string
 }
 
+/** One deferred body to write: which plan action it belongs to, and the turns that
+ *  ask for it. */
+export interface GenerationStepRequest {
+  index: number
+  turns: ConversationTurn[]
+}
+
+/** Everything a server-side worker needs to write the deferred bodies of a plan.
+ *
+ * The request bodies are assembled HERE, in the browser, and shipped with the job —
+ * the worker only appends each step's messages to `base_body`. That keeps prompt
+ * assembly (and the cache_control breakpoints whose placement decides whether the
+ * prompt cache hits) in one place rather than duplicated in Python for three
+ * protocols. `base_body` holds everything shared across steps, so the bulky prefix
+ * is stored once however many bodies a plan defers. */
+export interface GenerationRequest {
+  protocol: 'anthropic' | 'openai' | 'ollama'
+  provider_id: string
+  model: string
+  max_tokens: number
+  base_body: Record<string, unknown>
+  steps: { index: number; messages: { role: string; content: unknown }[] }[]
+}
+
 export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
+  /** Build the request bodies for a run's deferred bodies, to be generated on the
+   *  server. See GenerationRequest. */
+  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest
   // Cache-optimised chat turn used by the AI Conversation panel. See ConversationRequest.
   completeConversation(req: ConversationRequest): Promise<string>
   // Streaming variant of completeConversation: invokes onDelta with each text chunk as
@@ -411,6 +438,23 @@ class AnthropicProvider implements AIService {
     return body
   }
 
+  // The cached prefix is the body WITHOUT followups; each step contributes only the
+  // two turns that come after it — exactly what generatePlanContent used to append
+  // per call, so every step still reads the same cached prefix.
+  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
+    return {
+      protocol: 'anthropic',
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      base_body: this.buildConversationBody({ ...req, followups: undefined }),
+      steps: steps.map((s) => ({
+        index: s.index,
+        messages: s.turns.map((t) => ({ role: t.role, content: t.content })),
+      })),
+    }
+  }
+
   // Turn a reassembled Anthropic message dict into the plan text, appending the
   // truncation notice when the model hit its output cap.
   private finalizeConversation(data: AnthropicMessageData): string {
@@ -528,6 +572,33 @@ class OpenAIProvider implements AIService {
     return response.data?.choices?.[0]?.finish_reason === 'length' ? full + TRUNCATION_NOTICE : full
   }
 
+  // These providers flatten the whole conversation into one prompt, so the step's
+  // turns cannot simply be appended as messages — they live inside the prompt text.
+  // What IS shared is the system block, so that is the base and each step ships its
+  // own user message.
+  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
+    const { options } = flattenConversation({ ...req, followups: [] })
+    return {
+      protocol: 'openai',
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      base_body: {
+        provider_id: this.config.id,
+        model: this.config.model,
+        max_tokens: this.config.maxTokens,
+        messages: options.systemPrompt ? [{ role: 'system', content: options.systemPrompt }] : [],
+      },
+      steps: steps.map((s) => {
+        const flattened = flattenConversation({ ...req, followups: s.turns })
+        return {
+          index: s.index,
+          messages: buildChatMessages(flattened.prompt, flattened.options).filter((m) => m.role !== 'system'),
+        }
+      }),
+    }
+  }
+
   async completeConversation(req: ConversationRequest): Promise<string> {
     const { prompt, options } = flattenConversation(req)
     return this.complete(prompt, options)
@@ -625,6 +696,31 @@ class OllamaProvider implements AIService {
     const text = response.data?.message?.content ?? ''
     const full = prefill ? prefill + text : text
     return response.data?.done_reason === 'length' ? full + TRUNCATION_NOTICE : full
+  }
+
+  // Ollama flattens the conversation the same way the OpenAI path does, so the
+  // system block is the shared part and each step ships its own user message.
+  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
+    const { options } = flattenConversation({ ...req, followups: [] })
+    return {
+      protocol: 'ollama',
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      base_body: {
+        provider_id: this.config.id,
+        model: this.config.model,
+        max_tokens: this.config.maxTokens,
+        messages: options.systemPrompt ? [{ role: 'system', content: options.systemPrompt }] : [],
+      },
+      steps: steps.map((s) => {
+        const flattened = flattenConversation({ ...req, followups: s.turns })
+        return {
+          index: s.index,
+          messages: buildChatMessages(flattened.prompt, flattened.options).filter((m) => m.role !== 'system'),
+        }
+      }),
+    }
   }
 
   async completeConversation(req: ConversationRequest): Promise<string> {

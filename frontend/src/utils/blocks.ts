@@ -1,4 +1,17 @@
 /**
+ * A minimal structural view of the BlockNote editor.
+ *
+ * The AI panel needs one to turn the open document into Markdown for the model's
+ * context. That is the only direction still done in the browser — Markdown back into
+ * blocks now happens server-side, so a plan can be applied without an editor at all
+ * (app/blocks/markdown_blocks.py). Declared as a method rather than an arrow property
+ * so the real editor's more specifically typed parameters stay assignable.
+ */
+export interface MarkdownEditor {
+  blocksToMarkdownLossy(blocks?: unknown[]): string
+}
+
+/**
  * Shared BlockNote block utilities for extracting plain text and file URLs.
  * Used by both EditorView (live editor.document) and AIConversationPanel
  * (parsed JSON from fetched notes).

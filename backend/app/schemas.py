@@ -721,6 +721,32 @@ class VideoEstimateRead(BaseModel):
     warnings: List[str] = []
 
 
+class ActivityJobRead(BaseModel):
+    """One running (or recently finished) background job, whatever kind it is.
+
+    Generalises VideoRenderJobRead so the header can show everything the app is
+    working on in one list, and poll for it in one request. Kind-specific extras
+    that only one consumer cares about — whether a finished render auto-inserts,
+    say — ride in `meta` rather than growing this shape per kind.
+    """
+    id: str
+    kind: str            # "video" | "assistant" | "transcription" | "image" | "import"
+    status: str          # queued | processing | done | error | cancelled
+    stage: str = ""
+    progress: int = 0
+    detail: str = ""
+    title: str = ""      # what the dropdown row reads
+    # The note this job is working on, if any — the click-through target, and
+    # (from Phase 3) what the editor locks against.
+    note_id: Optional[str] = None
+    note_title: str = ""
+    locks_note: bool = False
+    result_url: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    meta: Dict[str, Any] = {}
+
+
 # Auth schemas
 class UserCreate(BaseModel):
     username: str
