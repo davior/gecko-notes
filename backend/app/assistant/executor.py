@@ -982,10 +982,11 @@ class PlanExecutor:
 def build_result_summary(results: Sequence[ActionResult]) -> str:
     """The Markdown the chat shows when a run finishes.
 
-    Mirrors `buildResultSummary` (AIConversationPanel.tsx:1133) so a run reads the
-    same whether it was applied in the browser or here.
+    Deliberately *not* including the plan's `respond` prose, even though it is in
+    `results`. The browser puts that answer in the chat the moment the run starts
+    rather than making the user wait minutes for it, so repeating it here would show
+    it twice. The rows below are what only the finished run can report.
     """
-    respond = [r.message for r in results if r.kind == "respond" and r.message]
     rows = []
     for result in results:
         if result.kind == "respond":
@@ -994,13 +995,7 @@ def build_result_summary(results: Sequence[ActionResult]) -> str:
         pill = f" [{result.note_title}](/notes/{result.note_id})" if result.ok and result.note_id and result.note_title else ""
         rows.append(f"| {icon} | {result.message}{pill} |")
 
-    parts: List[str] = []
-    if respond:
-        parts.append("\n\n".join(respond))
-    if rows:
-        parts.append("\n".join(["| | |", "|:---:|:---|", *rows]))
-
-    text = "\n\n".join(parts)
+    text = "\n".join(["| | |", "|:---:|:---|", *rows]) if rows else ""
     failures = sum(1 for r in results if r.kind != "respond" and not r.ok)
     if failures:
         text += f'\n\n_({failures} action{"" if failures == 1 else "s"} could not be completed.)_'

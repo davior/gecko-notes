@@ -694,7 +694,11 @@ export default function AIConversationPanel({
     [activityJobs, currentSessionId],
   )
 
-  const runInFlight = executing || activeRun !== undefined
+  // Only the moment the run is being handed over, not its whole duration. A run
+  // holds the *note* read-only; the conversation stays open, because a purely
+  // conversational turn never creates a run at all, and a second plan against the
+  // same note is refused server-side (409 already_running).
+  const runInFlight = executing
 
   // When a run lands, the summary it wrote is in the stored session, not in this
   // component's state — reload the transcript rather than trying to reproduce it, and
@@ -1234,16 +1238,41 @@ export default function AIConversationPanel({
         session_id: currentSessionId ?? null,
       })
 
+      // A plan can answer the user as well as edit their notes. That answer is
+      // already written — it is sitting in the plan's `respond` actions — so it goes
+      // into the chat now rather than waiting for the run to finish, which can take
+      // minutes. `cancelPlan` has always preserved it for the same reason: running
+      // the mutations should no more discard the reply than cancelling them does.
+      // The worker's summary deliberately does not repeat it.
+      const reply = plan.actions
+        .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
+        .filter(Boolean)
+        .join('\n\n')
+
       // Persist this now, before the worker finishes: it appends its own summary to the
       // same session, and the transcript is reloaded when the run ends.
-      const started = [...baseMessages, assistantMsg(RUN_STARTED_NOTICE)]
+      const started = [
+        ...baseMessages,
+        assistantMsg([reply, RUN_STARTED_NOTICE].filter(Boolean).join('\n\n')),
+      ]
       setConversation(started)
       await persistCurrentSession(started)
 
       useActivityStore.getState().track(job)
     } catch (e) {
-      setError(errorMessage(e, 'Failed to start the plan'))
-      setErrorDetails(formatErrorDetails(e))
+      // A second plan against a note that is already being written is an ordinary
+      // thing to attempt, not a failure — say so in the chat rather than in red.
+      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
+        ?.response?.data?.detail?.code
+      if (code === 'already_running') {
+        setConversation([
+          ...baseMessages,
+          assistantMsg('_This note already has a plan running. Wait for it to finish, or stop it from the header, then try again._'),
+        ])
+      } else {
+        setError(errorMessage(e, 'Failed to start the plan'))
+        setErrorDetails(formatErrorDetails(e))
+      }
     } finally {
       setExecuting(false)
       setPendingPlan(null)
@@ -2254,6 +2283,26 @@ export default function AIConversationPanel({
       {/* Input */}
       {aiService && (
         <div className="shrink-0 border-t border-gray-100 dark:border-gray-700">
+          {activeRun && (
+            // A run belonging to this conversation, still working. Shown here rather
+            // than in the plan modal (which closes the moment the run starts) so it
+            // stays visible while the conversation carries on around it.
+            <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+              <Spinner />
+              <span className="truncate">
+                {activeRun.stage || 'Working'}
+                {activeRun.detail ? ` · ${activeRun.detail}` : ''}
+                {` · ${activeRun.progress}%`}
+              </span>
+              <button
+                className="btn-ghost ml-auto shrink-0 px-1.5 py-0.5 text-xs"
+                onClick={() => void useActivityStore.getState().cancel(activeRun)}
+                title="Stop this run"
+              >
+                Stop
+              </button>
+            </div>
+          )}
           {/* Context scope controls */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1.5 pb-1 text-xs text-gray-500 dark:text-gray-400">
             {isList ? (
@@ -2526,18 +2575,6 @@ export default function AIConversationPanel({
               <p className="px-4 pb-2 text-xs text-amber-600 dark:text-amber-400">
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
               </p>
-            )}
-            {activeRun && (
-              // Progress for a run that is now the server's. Unlike the old in-panel
-              // counter this survives leaving the note and coming back.
-              <div className="flex items-center gap-2 px-4 pb-2 text-xs text-gray-500 dark:text-gray-400">
-                <Spinner />
-                <span>
-                  {activeRun.stage || 'Working'}
-                  {activeRun.detail ? ` · ${activeRun.detail}` : ''}
-                  {` · ${activeRun.progress}%`}
-                </span>
-              </div>
             )}
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
