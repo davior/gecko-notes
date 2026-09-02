@@ -90,7 +90,9 @@ def generate_bodies(
                 else:
                     written[index] = body
                 done += 1
-        on_progress(done, total)
+                # Per body rather than per batch: with several in flight the bar
+                # should move as each one lands.
+                on_progress(done, total)
 
     runnable = {
         **plan,

@@ -145,7 +145,8 @@ Additional optional settings (see `.env.example` for the full list):
 | `VIDEO_JOB_RETENTION_DAYS` | Delete render artefacts older than this, unless the video was added to a note (default `14`; `0` keeps everything) |
 | `ASSISTANT_MAX_CONCURRENCY` | How many AI-assistant plans may run at once (default `2`) |
 | `TRANSCRIBE_MAX_CONCURRENCY` | How many recordings may be transcribed at once (default `1`) |
-| `JOB_STALE_MINUTES` | End a background job whose progress has not moved for this long, releasing any note it held (default `15`) |
+| `JOB_HEARTBEAT_SECONDS` | How often a running job reports that it is still alive (default `30`) |
+| `JOB_STALE_MINUTES` | End a background job that has not reported in for this long, releasing any note it held (default `40`) |
 | `COMPOSE_FILE` | Set to `docker-compose.yml:docker-compose.prod.yml` to always include the reverse-proxy overlay |
 | `APP_BASE_URL` | Public origin used to build links in emails (e.g. `https://notes.example.com`) |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP server host and port (default port `587`) |
