@@ -492,12 +492,23 @@ def test_the_summary_is_a_table_of_rows_with_note_pills():
     assert "_(1 action could not be completed.)_" in summary
 
 
-def test_respond_text_sits_above_the_table():
+def test_the_summary_does_not_repeat_the_reply_the_browser_already_showed():
+    """A plan can answer the user as well as edit their notes. That answer goes into
+    the chat when the run *starts* — waiting minutes for it is the whole thing we are
+    avoiding — so repeating it here would show it twice."""
     summary = build_result_summary([
         ActionResult(ok=True, message="Here is what I found.", kind="respond"),
         ActionResult(ok=True, message="Renamed note."),
     ])
-    assert summary.index("Here is what I found.") < summary.index("| ✅ |")
+    assert "Here is what I found." not in summary
+    assert "| ✅ | Renamed note. |" in summary
+
+
+def test_a_respond_only_run_summarises_to_nothing():
+    # There is no table to draw and the reply is already in the chat.
+    assert build_result_summary([
+        ActionResult(ok=True, message="Just answering.", kind="respond"),
+    ]) == ""
 
 
 def test_a_clean_run_says_nothing_about_failures():

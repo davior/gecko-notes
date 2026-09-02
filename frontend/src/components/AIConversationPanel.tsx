@@ -167,6 +167,11 @@ interface PendingPlan {
   // a byte-identical cached prefix — same history + request the planning call used.
   history: ConversationTurn[]
   userRequest: string
+  // Captured here rather than read from state when the run starts: on the first
+  // message of a conversation the session is created during this same handler, and
+  // `currentSessionId` has not re-rendered yet. `persistCurrentSession` takes an
+  // explicit id for exactly this reason.
+  sessionId: string | null
 }
 
 interface AIConversationPanelProps {
@@ -694,7 +699,11 @@ export default function AIConversationPanel({
     [activityJobs, currentSessionId],
   )
 
-  const runInFlight = executing || activeRun !== undefined
+  // Only the moment the run is being handed over, not its whole duration. A run
+  // holds the *note* read-only; the conversation stays open, because a purely
+  // conversational turn never creates a run at all, and a second plan against the
+  // same note is refused server-side (409 already_running).
+  const runInFlight = executing
 
   // When a run lands, the summary it wrote is in the stored session, not in this
   // component's state — reload the transcript rather than trying to reproduce it, and
@@ -1184,7 +1193,11 @@ export default function AIConversationPanel({
     baseMessages: ConversationMessage[],
     history: ConversationTurn[],
     userRequest: string,
+    sessionId?: string | null,
   ) {
+    // Never fall back to reading it from state here: the plan-mode-off path runs
+    // inside the same handler that created the session, where state is still stale.
+    const sid = sessionId ?? currentSessionId ?? null
     setExecuting(true)
     try {
       // Flush unsaved edits first, so amend/append build on the latest content and the
@@ -1231,19 +1244,44 @@ export default function AIConversationPanel({
           valid_recipe_ids: ctx.recipes.map((r) => r.id),
         },
         note_id: noteId ?? null,
-        session_id: currentSessionId ?? null,
+        session_id: sid,
       })
+
+      // A plan can answer the user as well as edit their notes. That answer is
+      // already written — it is sitting in the plan's `respond` actions — so it goes
+      // into the chat now rather than waiting for the run to finish, which can take
+      // minutes. `cancelPlan` has always preserved it for the same reason: running
+      // the mutations should no more discard the reply than cancelling them does.
+      // The worker's summary deliberately does not repeat it.
+      const reply = plan.actions
+        .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
+        .filter(Boolean)
+        .join('\n\n')
 
       // Persist this now, before the worker finishes: it appends its own summary to the
       // same session, and the transcript is reloaded when the run ends.
-      const started = [...baseMessages, assistantMsg(RUN_STARTED_NOTICE)]
+      const started = [
+        ...baseMessages,
+        assistantMsg([reply, RUN_STARTED_NOTICE].filter(Boolean).join('\n\n')),
+      ]
       setConversation(started)
-      await persistCurrentSession(started)
+      await persistCurrentSession(started, sid)
 
       useActivityStore.getState().track(job)
     } catch (e) {
-      setError(errorMessage(e, 'Failed to start the plan'))
-      setErrorDetails(formatErrorDetails(e))
+      // A second plan against a note that is already being written is an ordinary
+      // thing to attempt, not a failure — say so in the chat rather than in red.
+      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
+        ?.response?.data?.detail?.code
+      if (code === 'already_running') {
+        setConversation([
+          ...baseMessages,
+          assistantMsg('_This note already has a plan running. Wait for it to finish, or stop it from the header, then try again._'),
+        ])
+      } else {
+        setError(errorMessage(e, 'Failed to start the plan'))
+        setErrorDetails(formatErrorDetails(e))
+      }
     } finally {
       setExecuting(false)
       setPendingPlan(null)
@@ -1507,14 +1545,14 @@ export default function AIConversationPanel({
       } else if (voiceActiveRef.current) {
         // Voice mode: read the plan back and wait for a spoken confirmation before
         // running it, regardless of the panel's Plan-mode setting.
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
         const readback = describePlanForVoice(plan, ctx.labelMap)
         setVoiceConfirmText(readback)
         voice.speak(readback)
       } else if (planMode) {
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim() })
+        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
       } else {
-        await runPlan(plan, ctx, withUser, history, userContent.trim())
+        await runPlan(plan, ctx, withUser, history, userContent.trim(), sessionId)
       }
     } catch (e: unknown) {
       // A user-initiated Stop aborts the fetch — treat it as a soft cancel: keep the
@@ -1727,7 +1765,7 @@ export default function AIConversationPanel({
       if (decision === 'yes') {
         const pp = pendingPlanRef.current
         setVoiceConfirmText(null)
-        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
         voice.speak('Done.')
       } else if (decision === 'no') {
         setVoiceConfirmText(null)
@@ -1941,7 +1979,7 @@ export default function AIConversationPanel({
             if (!pp) return
             setVoiceConfirmText(null)
             void (async () => {
-              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest)
+              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
               voice.speak('Done.')
             })()
           }}
@@ -2254,6 +2292,26 @@ export default function AIConversationPanel({
       {/* Input */}
       {aiService && (
         <div className="shrink-0 border-t border-gray-100 dark:border-gray-700">
+          {activeRun && (
+            // A run belonging to this conversation, still working. Shown here rather
+            // than in the plan modal (which closes the moment the run starts) so it
+            // stays visible while the conversation carries on around it.
+            <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+              <Spinner />
+              <span className="truncate">
+                {activeRun.stage || 'Working'}
+                {activeRun.detail ? ` · ${activeRun.detail}` : ''}
+                {` · ${activeRun.progress}%`}
+              </span>
+              <button
+                className="btn-ghost ml-auto shrink-0 px-1.5 py-0.5 text-xs"
+                onClick={() => void useActivityStore.getState().cancel(activeRun)}
+                title="Stop this run"
+              >
+                Stop
+              </button>
+            </div>
+          )}
           {/* Context scope controls */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1.5 pb-1 text-xs text-gray-500 dark:text-gray-400">
             {isList ? (
@@ -2527,18 +2585,6 @@ export default function AIConversationPanel({
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
               </p>
             )}
-            {activeRun && (
-              // Progress for a run that is now the server's. Unlike the old in-panel
-              // counter this survives leaving the note and coming back.
-              <div className="flex items-center gap-2 px-4 pb-2 text-xs text-gray-500 dark:text-gray-400">
-                <Spinner />
-                <span>
-                  {activeRun.stage || 'Working'}
-                  {activeRun.detail ? ` · ${activeRun.detail}` : ''}
-                  {` · ${activeRun.progress}%`}
-                </span>
-              </div>
-            )}
             <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-700">
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
@@ -2546,7 +2592,7 @@ export default function AIConversationPanel({
                 onClick={() => {
                   // Respond steps are always kept (auto-accepted); mutation steps follow their checkbox.
                   const filtered = { actions: pendingPlan.plan.actions.filter((a, i) => a.type === 'respond' || selectedSteps[i]) }
-                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest)
+                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest, pendingPlan.sessionId)
                 }}
               >
                 {runInFlight ? <><Spinner /> Running…</> : 'Approve & run'}
