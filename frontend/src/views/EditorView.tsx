@@ -566,6 +566,15 @@ export default function EditorView() {
 
   async function doSave(force = false) {
     if (!editor || isSaving.current) return note
+
+    // A run owns this note's content while it works, and this is the point where a
+    // write actually happens — guarding only `scheduleAutosave` is not enough,
+    // because a save queued before the lock engaged still fires afterwards. The
+    // server refuses it too, but only while the run is still live: a fast run is
+    // already finished by the time an 800ms debounce fires, so there is no 409 left
+    // to save us and the stale document lands on top of the run's work.
+    if (lockedRef.current) return note
+
     if (!force && !hasPendingChanges.current) return note
 
     // Never write a document the editor is not actually holding. `editor` exists
@@ -1024,7 +1033,15 @@ export default function EditorView() {
     [activityJobs, note],
   )
 
-  useEffect(() => { lockedRef.current = !!noteLock }, [noteLock])
+  useEffect(() => {
+    lockedRef.current = !!noteLock
+    if (!noteLock) return
+    // Anything still queued was composed before the run started — `onBeforeExecute`
+    // already flushed what mattered — so it can only land on top of the run's
+    // writes. Drop it rather than let it fire when the lock lifts.
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
+    hasPendingChanges.current = false
+  }, [noteLock])
 
   // When the run lets go, take its work: the server rewrote the note underneath us.
   const wasLocked = useRef(false)
