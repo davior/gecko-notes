@@ -91,6 +91,10 @@ def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
         touched = json.loads(job.touched_note_ids or "[]") or []
     except (ValueError, TypeError):
         touched = []
+    try:
+        meta_ctx = json.loads(job.turn_ctx or "{}") or {}
+    except (ValueError, TypeError):
+        meta_ctx = {}
 
     return ActivityJobRead(
         id=job.id,
@@ -102,19 +106,29 @@ def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
         title=job.note_title or "Assistant",
         note_id=job.note_id,
         note_title=job.note_title or "",
-        # Unlike a render, a run rewrites the document itself — so the editor holds
-        # every note it may touch read-only while it works. Two things end that: the
-        # run finishing, and its heartbeat stopping (which releases the note
-        # immediately rather than waiting for the sweeper, because a lock nobody can
-        # clear is worse than no lock).
+        # Unlike a render, a turn rewrites the document itself — so the editor holds
+        # every note it may touch read-only while it works. Three things end that: the
+        # turn finishing, its heartbeat stopping (which releases the note immediately
+        # rather than waiting for the sweeper, because a lock nobody can clear is worse
+        # than no lock), and — the reason `awaiting_approval` sits outside
+        # ACTIVE_STATUSES — a plan pausing to ask the user whether to go ahead. It is
+        # holding nothing while it waits, so it should not hold the note either.
         locks_note=job.status in ACTIVE_STATUSES and not is_stale(job),
         error_message=job.error_message,
         created_at=job.created_at,
         meta={
             "session_id": job.session_id,
-            # Every note this run may write, not just the one it is anchored to: a
+            # Every note this turn may write, not just the one it is anchored to: a
             # plan can edit several, and each of them locks.
             "touched_note_ids": touched,
+            # Which half of the turn this is. The panel reads it to know whether to
+            # poll for the streaming reply, open the review modal, or stay out of the
+            # way; the indicator reads it for the row's wording.
+            "phase": job.phase or "running",
+            # A find_notes round happened server-side, so the list view is told what
+            # it turned up when the turn comes back rather than mid-loop.
+            "found_note_ids": meta_ctx.get("found_note_ids") or [],
+            "search_label": meta_ctx.get("search_label") or "",
         },
     )
 

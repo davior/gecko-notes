@@ -44,14 +44,28 @@ def request_for(user_id):
 
 def payload(**overrides):
     body = dict(
-        plan={"actions": [{"type": "rename_note", "noteId": "note-1", "title": "New"}]},
-        prompt_ctx={},
+        prompt_ctx={"protocol": "anthropic", "provider_id": "p1", "model": "m",
+                    "base_body": {"messages": [{"role": "user", "content": "go"}]}},
         exec_ctx={"current_note_id": "note-1", "valid_note_ids": ["note-1"]},
+        turn_ctx={"plan_mode": True},
         note_id="note-1",
         session_id=None,
     )
     body.update(overrides)
-    return assistant.AssistantRunRequest(**body)
+    return assistant.AssistantTurnRequest(**body)
+
+
+def parked(session, monkeypatch, plan, **overrides):
+    """A turn that has planned and is waiting for a decision."""
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+    created = assistant.create_run(payload(**overrides), request_for(USER), session)
+    row = session.get(AssistantRunJob, created.data.id)
+    row.status = assistant.AWAITING
+    row.phase = "awaiting_approval"
+    row.plan = json.dumps(plan)
+    session.add(row)
+    session.commit()
+    return row
 
 
 # ─── assembling a step's request ─────────────────────────────────────────────
@@ -156,10 +170,10 @@ def test_an_action_that_carries_no_body_never_generates():
     assert action_needs_generation({"type": "rename_note", "spec": "x", "content": ""}) is False
 
 
-# ─── starting a run ──────────────────────────────────────────────────────────
+# ─── starting a turn ─────────────────────────────────────────────────────────
 
 
-def test_creating_a_run_queues_it_and_reports_it_as_activity(session, monkeypatch):
+def test_creating_a_turn_queues_it_and_reports_it_as_activity(session, monkeypatch):
     queued = []
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: queued.append(job_id))
 
@@ -168,76 +182,43 @@ def test_creating_a_run_queues_it_and_reports_it_as_activity(session, monkeypatc
     assert result.data.kind == "assistant"
     assert result.data.status == "queued"
     assert result.data.note_id == "note-1"
+    assert result.data.meta["phase"] == "planning"
     assert queued == [result.data.id]
 
 
-def test_a_run_locks_its_note(session, monkeypatch):
+def test_a_turn_locks_its_note_from_the_moment_it_is_asked_for(session, monkeypatch):
+    # The whole point of the change: the note is held from the request, not from the
+    # approval, because the plan is computed against the note's text at this instant.
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     result = assistant.create_run(payload(), request_for(USER), session)
-    # Unlike a render, a run rewrites the document, so the editor holds it read-only.
+
     assert result.data.locks_note is True
+    assert result.data.meta["touched_note_ids"] == ["note-1"]
 
 
-def test_the_notes_a_run_may_write_are_derived_from_the_plan(session, monkeypatch):
+def test_a_turn_with_nothing_to_send_is_refused(session):
+    with pytest.raises(HTTPException) as raised:
+        assistant.create_run(payload(prompt_ctx={}), request_for(USER), session)
+    assert raised.value.status_code == 400
+    assert raised.value.detail["code"] == "no_request"
+
+
+def test_a_turn_without_a_note_is_allowed(session, monkeypatch):
+    """The list view's global session has no note, and its turns still belong in the
+    indicator."""
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
-    now = datetime.utcnow()
-    session.add(Note(id="note-2", title="Second", content="[]", category_id=CATEGORY,
-                     tags="[]", created_at=now, modified_at=now, user_id=USER))
-    session.commit()
-
-    result = assistant.create_run(payload(
-        plan={"actions": [
-            {"type": "append_note", "noteId": "note-1", "content": "x"},
-            {"type": "append_note", "noteId": "note-2", "content": "y"},
-        ]},
-        exec_ctx={"current_note_id": "note-1", "valid_note_ids": ["note-1", "note-2"]},
-    ), request_for(USER), session)
-
-    assert set(result.data.meta["touched_note_ids"]) == {"note-1", "note-2"}
-
-
-def test_a_note_the_plan_names_but_context_does_not_allow_is_not_locked(session, monkeypatch):
-    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
-    result = assistant.create_run(payload(
-        plan={"actions": [{"type": "append_note", "noteId": "not-allowed", "content": "x"}]},
-        exec_ctx={"current_note_id": None, "valid_note_ids": ["note-1", "note-2"]},
-        note_id=None,
-    ), request_for(USER), session)
+    result = assistant.create_run(payload(note_id=None), request_for(USER), session)
+    assert result.data.note_id is None
     assert result.data.meta["touched_note_ids"] == []
 
 
-def test_a_run_without_a_note_is_allowed(session, monkeypatch):
-    """The list view's global session has no note, and its runs still belong in the
-    indicator."""
-    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
-    result = assistant.create_run(
-        payload(note_id=None, plan={"actions": [{"type": "create_note", "title": "T", "content": "B"}]}),
-        request_for(USER), session,
-    )
-    assert result.data.note_id is None
-
-
-def test_an_empty_plan_is_refused(session):
-    with pytest.raises(HTTPException) as raised:
-        assistant.create_run(payload(plan={"actions": []}), request_for(USER), session)
-    assert raised.value.status_code == 400
-    assert raised.value.detail["code"] == "empty_plan"
-
-
-def test_an_oversized_plan_is_refused(session):
-    big = {"actions": [{"type": "rename_note", "noteId": "note-1", "title": "x"}] * 51}
-    with pytest.raises(HTTPException) as raised:
-        assistant.create_run(payload(plan=big), request_for(USER), session)
-    assert raised.value.detail["code"] == "plan_too_large"
-
-
-def test_a_run_on_another_users_note_is_refused(session):
+def test_a_turn_on_another_users_note_is_refused(session):
     with pytest.raises(HTTPException) as raised:
         assistant.create_run(payload(), request_for(OTHER), session)
     assert raised.value.status_code == 404
 
 
-def test_only_one_run_at_a_time_per_note(session, monkeypatch):
+def test_only_one_turn_at_a_time_per_note(session, monkeypatch):
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     assistant.create_run(payload(), request_for(USER), session)
 
@@ -247,7 +228,18 @@ def test_only_one_run_at_a_time_per_note(session, monkeypatch):
     assert raised.value.detail["code"] == "already_running"
 
 
-def test_a_finished_run_does_not_block_the_next_one(session, monkeypatch):
+def test_only_one_turn_at_a_time_per_conversation(session, monkeypatch):
+    # A turn from the list view has no note, so the note check alone let a whole class
+    # of second turns through.
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+    assistant.create_run(payload(note_id=None, session_id="s1"), request_for(USER), session)
+
+    with pytest.raises(HTTPException) as raised:
+        assistant.create_run(payload(note_id=None, session_id="s1"), request_for(USER), session)
+    assert raised.value.detail["code"] == "already_running"
+
+
+def test_a_finished_turn_does_not_block_the_next_one(session, monkeypatch):
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     first = assistant.create_run(payload(), request_for(USER), session)
     row = session.get(AssistantRunJob, first.data.id)
@@ -258,10 +250,144 @@ def test_a_finished_run_does_not_block_the_next_one(session, monkeypatch):
     assert assistant.create_run(payload(), request_for(USER), session).data.status == "queued"
 
 
-# ─── reading runs back ───────────────────────────────────────────────────────
+def test_a_parked_plan_does_not_block_a_new_turn(session, monkeypatch):
+    # It is holding nothing while it waits, and the user may well ask for something
+    # else rather than approve it.
+    parked(session, monkeypatch, {"actions": [{"type": "respond", "text": "hi"}]})
+    assert assistant.create_run(payload(), request_for(USER), session).data.status == "queued"
 
 
-def test_listing_active_runs(session, monkeypatch):
+# ─── waiting for a decision ──────────────────────────────────────────────────
+
+
+def test_a_parked_plan_holds_no_note(session, monkeypatch):
+    # awaiting_approval sits outside ACTIVE_STATUSES precisely so that everything
+    # derived from "active" lets go while a person is deciding.
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ]})
+    read = KINDS["assistant"].to_activity(row)
+
+    assert read.locks_note is False
+    assert read.meta["phase"] == "awaiting_approval"
+
+
+def test_approving_re_locks_the_note_and_requeues_the_same_row(session, monkeypatch):
+    queued = []
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: queued.append(job_id))
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+
+    assert result.data.id == row.id, "one turn stays one row"
+    assert result.data.status == "queued"
+    assert result.data.locks_note is True
+    assert result.data.meta["touched_note_ids"] == ["note-1"]
+    assert queued == [row.id]
+
+
+def test_approving_runs_only_the_ticked_steps(session, monkeypatch):
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "respond", "text": "Here you go."},
+        {"type": "append_note", "noteId": "note-1", "content": "keep"},
+        {"type": "rename_note", "noteId": "note-1", "title": "drop"},
+    ]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    assistant.approve_run(
+        row.id, assistant.ApproveRequest(action_indices=[1]), request_for(USER), session
+    )
+
+    kept = json.loads(session.get(AssistantRunJob, row.id).plan)["actions"]
+    # The reply is not a step the user is choosing between, so it survives the filter.
+    assert [a["type"] for a in kept] == ["respond", "append_note"]
+
+
+def test_approving_nothing_but_the_reply_is_refused(session, monkeypatch):
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "respond", "text": "Here you go."},
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    with pytest.raises(HTTPException) as raised:
+        assistant.approve_run(
+            row.id, assistant.ApproveRequest(action_indices=[]), request_for(USER), session
+        )
+    assert raised.value.detail["code"] == "empty_plan"
+
+
+def test_a_turn_that_is_not_waiting_cannot_be_approved(session, monkeypatch):
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+    created = assistant.create_run(payload(), request_for(USER), session)
+
+    with pytest.raises(HTTPException) as raised:
+        assistant.approve_run(
+            created.data.id, assistant.ApproveRequest(), request_for(USER), session
+        )
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == "not_awaiting"
+
+
+def test_the_notes_an_approved_plan_may_write_are_derived_from_it(session, monkeypatch):
+    now = datetime.utcnow()
+    session.add(Note(id="note-2", title="Second", content="[]", category_id=CATEGORY,
+                     tags="[]", created_at=now, modified_at=now, user_id=USER))
+    session.commit()
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+        {"type": "append_note", "noteId": "note-2", "content": "y"},
+    ]}, exec_ctx={"current_note_id": "note-1", "valid_note_ids": ["note-1", "note-2"]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+    assert set(result.data.meta["touched_note_ids"]) == {"note-1", "note-2"}
+
+
+def test_a_note_the_plan_names_but_context_does_not_allow_is_not_locked(session, monkeypatch):
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "not-allowed", "content": "x"},
+    ]}, exec_ctx={"current_note_id": None, "valid_note_ids": ["note-1", "note-2"]}, note_id=None)
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+    assert result.data.meta["touched_note_ids"] == []
+
+
+def test_an_oversized_plan_is_refused_at_approval(session, monkeypatch):
+    row = parked(session, monkeypatch, {
+        "actions": [{"type": "rename_note", "noteId": "note-1", "title": "x"}] * 51
+    })
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    with pytest.raises(HTTPException) as raised:
+        assistant.approve_run(row.id, assistant.ApproveRequest(), request_for(USER), session)
+    assert raised.value.detail["code"] == "plan_too_large"
+
+
+def test_declining_a_parked_plan_drops_it(session, monkeypatch):
+    # cancel_activity only knows how to stop something that is running, and a parked
+    # plan is not.
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ]})
+
+    result = assistant.cancel_run(row.id, request_for(USER), session)
+    assert result.data.status == "cancelled"
+
+
+# ─── reading turns back ──────────────────────────────────────────────────────
+
+
+def test_listing_active_turns(session, monkeypatch):
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     created = assistant.create_run(payload(), request_for(USER), session)
 
@@ -270,16 +396,56 @@ def test_listing_active_runs(session, monkeypatch):
     assert assistant.list_runs(request_for(OTHER), active=1, session=session).data == []
 
 
-def test_another_users_run_is_not_readable(session, monkeypatch):
+def test_a_parked_plan_is_found_by_its_own_listing_not_the_active_one(session, monkeypatch):
+    # A reload loses the store, and /api/activity?active=1 deliberately does not list
+    # something that is holding nothing — so the panel asks for these separately.
+    row = parked(session, monkeypatch, {"actions": [{"type": "respond", "text": "hi"}]})
+
+    assert assistant.list_runs(request_for(USER), active=1, session=session).data == []
+    awaiting = assistant.list_runs(request_for(USER), awaiting=1, session=session)
+    assert [j.id for j in awaiting.data] == [row.id]
+
+
+def test_the_plan_comes_back_with_what_the_review_modal_needs(session, monkeypatch):
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ]})
+    row.turn_ctx = json.dumps({"label_map": {"note-1": "A note"}, "found_note_ids": ["note-9"]})
+    session.add(row)
+    session.commit()
+
+    data = assistant.get_plan(row.id, request_for(USER), session).data
+    assert data["plan"]["actions"][0]["noteId"] == "note-1"
+    assert data["label_map"] == {"note-1": "A note"}
+    assert data["found_note_ids"] == ["note-9"]
+
+
+def test_the_preview_reports_the_reply_so_far(session, monkeypatch):
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+    created = assistant.create_run(payload(), request_for(USER), session)
+    row = session.get(AssistantRunJob, created.data.id)
+    row.preview = "I'll start by..."
+    row.stage = "Planning"
+    session.add(row)
+    session.commit()
+
+    data = assistant.get_preview(created.data.id, request_for(USER), session).data
+    assert data.text == "I'll start by..."
+    assert data.phase == "planning"
+    assert data.stage == "Planning"
+
+
+def test_another_users_turn_is_not_readable(session, monkeypatch):
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     created = assistant.create_run(payload(), request_for(USER), session)
 
-    with pytest.raises(HTTPException) as raised:
-        assistant.get_run(created.data.id, request_for(OTHER), session)
-    assert raised.value.status_code == 404
+    for call in (assistant.get_run, assistant.get_preview, assistant.get_plan):
+        with pytest.raises(HTTPException) as raised:
+            call(created.data.id, request_for(OTHER), session)
+        assert raised.value.status_code == 404
 
 
-def test_cancelling_a_run_releases_its_note_immediately(session, monkeypatch):
+def test_cancelling_a_turn_releases_its_note_immediately(session, monkeypatch):
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     monkeypatch.setattr(KINDS["assistant"], "cancel", lambda job_id: None)
     created = assistant.create_run(payload(), request_for(USER), session)

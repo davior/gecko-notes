@@ -307,30 +307,52 @@ class VideoRenderJob(SQLModel, table=True):
 
 
 class AssistantRunJob(SQLModel, table=True):
-    """One approved AI-assistant plan, being written and applied on the server.
+    """One whole assistant turn, running on the server.
 
-    Follows VideoRenderJob's shape. Everything after the user presses Approve — the
-    per-step body generation and then the edits themselves — runs here instead of in
-    the browser, because a plan that writes an essay takes minutes and the panel that
-    used to do it is unmounted the moment the user leaves the note.
+    Follows VideoRenderJob's shape. It began as everything *after* Approve — the
+    per-step body generation and the edits — because a plan that writes an essay takes
+    minutes and the panel that used to do it is unmounted the moment the user leaves
+    the note. Planning turned out to be the longer half and the one that could not
+    survive leaving at all, so the row now covers the turn end to end:
 
-    The prompts are not rebuilt here: `prompt_ctx` carries the request body the
-    browser already assembled (cache breakpoints and all) plus each step's follow-up
-    messages, so the worker appends and sends rather than re-deriving.
+        planning ──▶ awaiting_approval ──▶ running ──▶ done
+                     (plan mode off skips it and runs straight on)
+
+    One row rather than two, because that is what the user is doing: asking for
+    something once. It keeps the turn to a single line in the activity indicator, a
+    single thing to cancel, and — when plan mode is off — a single unbroken stretch
+    with the note held read-only throughout.
+
+    `awaiting_approval` deliberately sits outside ACTIVE_STATUSES. Everything derived
+    from "active" then does the right thing for a plan waiting on a person: the note
+    unlocks, the heartbeat stops, the stale sweeper ignores it, and a restart does not
+    requeue it.
+
+    The prompts are not rebuilt here: `prompt_ctx` carries the request body the browser
+    assembled (cache breakpoints and all), and the worker only ever appends to it.
     """
     id: str = Field(primary_key=True)
     user_id: str = Field(index=True)
     # Null for a run started from the list view's global session, which has no note.
     note_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = None       # AISession to write the summary into
-    status: str = Field(default="queued")  # "queued"|"processing"|"done"|"error"|"cancelled"
-    stage: str = Field(default="")         # "Writing" | "Applying"
+    # "queued"|"processing"|"awaiting_approval"|"done"|"error"|"cancelled"
+    status: str = Field(default="queued")
+    phase: str = Field(default="running")  # "planning"|"awaiting_approval"|"running"
+    stage: str = Field(default="")         # "Planning" | "Writing" | "Applying"
     progress: int = Field(default=0)       # 0-100
     detail: str = Field(default="")        # e.g. "step 3 of 7"
     note_title: str = Field(default="")    # snapshot, for the indicator row
-    plan: str = Field(default='{"actions":[]}')   # the approved Plan, JSON as text
-    prompt_ctx: str = Field(default="{}")  # base_body + per-step follow-ups
+    plan: str = Field(default='{"actions":[]}')   # the Plan, once there is one
+    prompt_ctx: str = Field(default="{}")  # base_body + provider routing
     exec_ctx: str = Field(default="{}")    # PlanExecContext minus the live editor
+    # Planning-time context the browser can supply but a worker cannot derive: the
+    # label map, whether plan mode is on, how this provider searches, voice mode.
+    turn_ctx: str = Field(default="{}")
+    # The reply as it arrives, so the chat can show the model thinking rather than
+    # going silent for the minutes a long planning call takes.
+    preview: str = Field(default="")
+    plan_raw: str = Field(default="")      # what the model actually said, for diagnosis
     # Every note this run may write, so the editor knows which documents to hold
     # read-only while it is in flight.
     touched_note_ids: str = Field(default="[]")
