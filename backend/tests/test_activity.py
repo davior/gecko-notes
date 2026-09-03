@@ -165,6 +165,22 @@ def test_a_job_with_no_result_yet_has_no_result_url(session):
     assert registry.get_job(session, USER, "video", job.id).result_url is None
 
 
+def test_created_at_serialises_with_an_explicit_utc_offset(session):
+    """The header shows each job's age, and that reading depends on this.
+
+    Job rows stamp `created_at` with `datetime.utcnow()`, and SQLite hands it back
+    without tzinfo. Serialised bare, `new Date(...)` in the browser reads it as *local*
+    time, so a job started seconds ago renders as hours old — wrong by exactly the
+    viewer's UTC offset, and invisible to anyone testing in UTC. `UTCDatetime` tags it.
+    """
+    job = make_render(session)
+    read = registry.get_job(session, USER, "video", job.id)
+
+    encoded = json.loads(read.model_dump_json())["created_at"]
+    assert encoded.endswith("+00:00"), encoded
+    assert datetime.fromisoformat(encoded).utcoffset() == timedelta(0)
+
+
 # ─── reading one job ─────────────────────────────────────────────────────────
 
 

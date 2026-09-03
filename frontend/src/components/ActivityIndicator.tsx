@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -8,7 +8,7 @@ import {
 import { useActivityStore, jobKey } from '@/stores/activity'
 import { isActive, type ActivityJob, type ActivityKind } from '@/api/activity'
 import { useDropdown } from '@/hooks/useDropdown'
-import { formatBytes } from '@/utils/format'
+import { formatBytes, formatTimeAgo } from '@/utils/format'
 
 interface Props {
   /** Offered on a finished render so the open note can embed it. */
@@ -29,6 +29,16 @@ const KIND_NOUN: Record<ActivityKind, string> = {
   transcription: 'Transcript',
   image: 'Image',
   import: 'Import',
+}
+
+// How often the open dropdown re-renders to advance its relative ages. Half a
+// minute: the shortest thing an age can say is "1m ago", so anything faster redraws
+// without changing a word.
+const AGE_TICK_MS = 30_000
+
+/** Sort key for "newest first"; a job with no timestamp sorts last. */
+function startedAt(job: ActivityJob): number {
+  return job.created_at ? new Date(job.created_at).getTime() : 0
 }
 
 function label(job: ActivityJob): string {
@@ -56,7 +66,24 @@ export default function ActivityIndicator({ onInsert }: Props) {
 
   useEffect(() => { void resume() }, [resume])
 
-  const list = Object.values(jobs)
+  // Keep the relative ages moving while the dropdown is open. A running job already
+  // re-renders on the store's 2s poll, but polling stops once nothing is active, so a
+  // finished job's age would otherwise sit at "just now" until something else happened
+  // to re-render. Gated on `open` because a closed dropdown shows no ages to age.
+  const [, setAgeTick] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    const timer = setInterval(() => setAgeTick((n) => n + 1), AGE_TICK_MS)
+    return () => clearInterval(timer)
+  }, [open])
+
+  // Newest first. `jobs` is a record keyed `kind:id`, so Object.values yields it in
+  // first-seen order — which puts work you just started at the *bottom*. That was
+  // invisible until the rows started saying how old they are.
+  const list = useMemo(
+    () => Object.values(jobs).sort((a, b) => startedAt(b) - startedAt(a)),
+    [jobs],
+  )
   if (list.length === 0) return null
 
   const running = list.filter(isActive)
@@ -105,6 +132,12 @@ export default function ActivityIndicator({ onInsert }: Props) {
               const subtitleUrl = job.meta?.subtitle_url as string | undefined
               const sizeBytes = job.meta?.size_bytes as number | undefined
               const duration = job.meta?.duration_seconds as number | undefined
+              const age = formatTimeAgo(job.created_at)
+              // The exact local time, for hovering — the age alone can't answer
+              // "which of these two runs was first" once both read "2h ago".
+              const startedTitle = job.created_at
+                ? `Started ${new Date(job.created_at).toLocaleString()}`
+                : undefined
 
               return (
                 <div key={key} className="px-3 py-2.5 flex items-start gap-2.5">
@@ -126,6 +159,14 @@ export default function ActivityIndicator({ onInsert }: Props) {
                       {active && (
                         <span className="text-xs text-gray-400 tabular-nums shrink-0">
                           {job.progress}%
+                        </span>
+                      )}
+                      {age && (
+                        <span
+                          className="ml-auto text-xs text-gray-400 dark:text-gray-500 shrink-0"
+                          title={startedTitle}
+                        >
+                          {age}
                         </span>
                       )}
                     </div>

@@ -743,7 +743,7 @@ class ActivityJobRead(BaseModel):
     locks_note: bool = False
     result_url: Optional[str] = None
     error_message: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: Optional[UTCDatetime] = None
     meta: Dict[str, Any] = {}
 
 
