@@ -73,17 +73,20 @@ def transition_colour(style: str) -> str:
 # Ken Burns smoothness.
 #
 # `zoompan` truncates its crop origin to whole pixels of whatever frame it is
-# handed. A slow drift moves that origin well under a pixel per frame, so it
-# stalls on some frames and jumps on others — the picture steps instead of
-# gliding, and a longer shot steps worse because the same travel is spread over
-# more frames. Two things fix it, both of them about giving the motion more
-# pixels to be precise in:
+# handed, so the drift can only ever move in whole pixels of that frame. Two
+# sizes decide how coarse that is:
 #
 #   read   the picture is scaled well above the output frame before zoompan
-#          sees it, so a third-of-a-pixel step becomes a two-or-three pixel one
-#          where the truncation actually happens;
+#          sees it, so one truncated pixel of movement lands as a third of an
+#          output pixel rather than a whole one;
 #   write  zoompan renders above the output size and is scaled back down, which
 #          halves whatever step is left and averages it away.
+#
+# The read size is also the drift's entire travel budget, and that is the part
+# that actually decides whether a sweep looks smooth: it can cross `read minus
+# crop` pixels and no more, so a shot longer than that many frames cannot
+# advance every frame. `kenburns_sweep` is where that is enforced — the sizes
+# here only set how many pixels it has to spend.
 #
 # Both are bounded by a pixel budget rather than a width, so a 9:16 frame gets
 # the same treatment as a 16:9 one instead of an enormous portrait buffer.
@@ -96,27 +99,18 @@ KENBURNS_READ_MAX_SCALE = 8.0
 KENBURNS_WRITE_PIXELS = 3840 * 2160
 KENBURNS_WRITE_MAX_SCALE = 2.0
 
-# Below this the drift is not slow, it is invisible: the picture holds still for
-# several frames between each one-pixel move, and no amount of precision changes
-# that. A 12% travel crosses it at about 25 seconds; an 8-minute section — one
-# image carried across a heading and all its subsections — would need to spread
-# the same travel across sixteen times the frames, well past where a single
-# sweep could still be seen moving. Past this point `kenburns_chain` doesn't
-# hold the picture still: it repeats the sweep back and forth, A to B then B to
-# A, in legs this long, so a long shot still visibly drifts instead of crawling
-# once at a speed nobody would notice. Expressed as a rate rather than a shot
-# length so it follows the travel the user actually chose.
-KENBURNS_MIN_TRAVEL_PX_PER_FRAME = 0.15
-
-
-def kenburns_leg_frames(amount: float, width: int) -> int:
-    """Longest a single A-to-B sweep may run and still be seen moving.
-
-    Past this many frames `kenburns_chain` cycles the sweep — A to B, then B
-    to A — in legs this long, rather than crawl once across a shot at a speed
-    under KENBURNS_MIN_TRAVEL_PX_PER_FRAME.
-    """
-    return max(1, int(amount * width / 2 / KENBURNS_MIN_TRAVEL_PX_PER_FRAME))
+# Shortest a rubber-band leg may run before the drift reads as a wobble rather
+# than a sweep. A leg lasts one frame per pixel of travel, so at the default 12%
+# a 1080p sweep runs about thirteen seconds and nothing near this floor; only a
+# very small `amount` — a 2% drift has about seventy pixels to spend — falls
+# under it, and those shots hold each pixel for a few frames instead of
+# reversing every couple of seconds. See `kenburns_sweep`.
+#
+# Four seconds rather than something longer because a reversal is much cheaper
+# to watch than a stepped cadence: past a few seconds a turn reads as a slow
+# drift changing its mind, while a hold reads as the picture ticking. Raising
+# this trades the first for the second.
+KENBURNS_MIN_LEG_SECONDS = 4.0
 
 
 def _budgeted_scale(width: int, height: int, budget: int, ceiling: float) -> float:

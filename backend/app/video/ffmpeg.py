@@ -19,9 +19,9 @@ import subprocess
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.video.options import (
-    DIP_TRANSITIONS, XFADE_NAMES, MusicSpec, RenderOptions,
-    encoder_tier, frame_size, is_crossfade, kenburns_geometry,
-    kenburns_leg_frames, transition_colour,
+    DIP_TRANSITIONS, KENBURNS_MIN_LEG_SECONDS, XFADE_NAMES, MusicSpec,
+    RenderOptions, encoder_tier, frame_size, is_crossfade, kenburns_geometry,
+    transition_colour,
 )
 
 logger = logging.getLogger(__name__)
@@ -258,7 +258,7 @@ def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Option
 
     Every qualifying shot gets its drift regardless of how long it runs — a shot
     long enough that one sweep across it would be too slow to see gets the drift
-    cycled by `kenburns_chain` instead of dropped.
+    cycled by `kenburns_sweep` instead of dropped.
     """
     effect = options.ken_burns.effect
     if effect == "none":
@@ -276,6 +276,63 @@ def kenburns_effect_for(kind: str, index: int, options: RenderOptions) -> Option
     return effect
 
 
+def kenburns_sweep(travel: int, frames: int, fps: int) -> Tuple[str, str]:
+    """(rising, falling) crop-origin expressions, in whole read pixels.
+
+    `travel` is the headroom zoompan will clamp the origin against, counted in
+    the very pixels it truncates to, and `frames` is the length of the shot.
+    Both expressions run between 0 and `travel`, one upwards and one down, and
+    every effect is built out of that pair.
+
+    The invariant this exists to hold: **the truncated origin has to land on a
+    different pixel from one frame to the next.** A pan holds its zoom, so the
+    crop is the same size on every frame — an origin that rounds to the value it
+    had last frame makes zoompan emit a picture identical to the one before it,
+    and at less than a pixel a frame that happens on half of them. Those
+    duplicates are the stutter. They are also not evenly spread: which frames
+    repeat is decided by the fractional part of the rate, so the freezes cluster
+    and thin out on a slow beat against the frame rate — a 16-24 second section
+    at the default 12% drift beat about every two seconds, which is what "it
+    pauses every so often" was.
+
+    So the rate is never allowed below a pixel a frame:
+
+    fast enough   one sweep across the whole travel, `travel*on/frames`, which
+                  advances one pixel or two on every frame and repeats none;
+    too slow      the sweep rubber-bands, A to B to A, across `travel` frames —
+                  exactly a pixel a frame, the slowest this can go, and the only
+                  perfectly even rate available;
+    slower still  when even that leg would be over in a few seconds — only a
+                  very small `amount` has that little travel — reversing that
+                  often would read as a wobble, so the sweep holds each pixel
+                  for a fixed number of frames instead. It still steps, but on a
+                  cadence that never beats, and it crosses nearly all of the
+                  travel without reversing at all.
+
+    No expression here contains a comma or a colon, which is what keeps the
+    filtergraph free of any escaping: `on mod period` is written out as `on -
+    period*floor(on/period)` and the triangle's peak with `abs`, because
+    ffmpeg's own `mod()` and `min()` take comma-separated arguments.
+    """
+    travel, frames = max(1, travel), max(1, frames)
+    if frames <= travel:
+        return f"{travel}*on/{frames}", f"{travel}*(1-on/{frames})"
+
+    if travel >= KENBURNS_MIN_LEG_SECONDS * max(1, fps):
+        # A triangle of period 2*travel, counted in pixels because each frame is
+        # worth exactly one: 0 at on=0, `travel` at on=travel, back to 0 at
+        # on=2*travel, repeating.
+        period = 2 * travel
+        phase = f"(on-{period}*floor(on/{period}))"
+        return f"({travel}-abs({phase}-{travel}))", f"abs({phase}-{travel})"
+
+    hold = -(-frames // travel)          # ceil: frames spent on each pixel
+    used = min(travel, frames // hold)
+    lead = (travel - used) // 2          # centre the short sweep in its headroom
+    tick = f"floor(on/{hold})"
+    return (f"{lead}+{tick}" if lead else tick), f"{lead + used}-{tick}"
+
+
 def kenburns_chain(
     src: str, out: str, *,
     width: int, height: int, fps: int, duration: float,
@@ -285,65 +342,69 @@ def kenburns_chain(
 
     `width`/`height` are the output frame; the caller must have fitted the source
     at `kenburns_geometry`'s read size, which is what makes this smooth. zoompan
-    truncates its crop origin to whole pixels of the frame it is given, and a
-    slow drift moves that origin by a fraction of an output pixel per frame — so
+    truncates its crop origin to whole pixels of the frame it is given, so
     reading a much larger picture, and writing one larger than the frame before
-    scaling down, are what turn a visible step into a glide.
+    scaling down, are what turn a whole-pixel step into a third of one.
 
-    Two other details carry it. The travel is written against `on/N` rather than
-    ffmpeg's usual incremental `zoom+step`, so it is linear and identical at any
-    fps or resolution instead of drifting with the frame rate. And `zoompan`
-    restarts its ramp every `d` output frames while `-loop 1` feeds frames
-    forever, so `d` is set a couple of frames beyond the shot and the caller's
-    `-t` cuts before the ramp can begin again.
+    Everything below is therefore worked out in those same whole read pixels
+    rather than in fractions of the frame: the crop zoompan will take, the
+    headroom left over, and the sweep across it. `kenburns_sweep` holds the rule
+    that keeps it gliding — never less than one of those pixels per frame.
 
-    A shot longer than `kenburns_leg_frames` would spread the same travel over
-    so many frames that the sweep crawls below the perceptible floor — so past
-    that length the progress no longer runs A to B once across the whole shot;
-    it cycles A to B to A in legs of that length instead, a rubber band, which
-    holds the same speed regardless of how long the shot runs.
+    A zoom drives the crop's *width* along that sweep rather than the zoom
+    factor, and `z` is written as the ratio that produces it. Ramping `z`
+    linearly instead would accelerate the picture across the shot (the crop is
+    `iw/z`, not `z`), and would leave the width free to round to the same value
+    twice running, which on a zoom is the same duplicate frame a pan gets. The
+    half pixel in the divisor puts `iw/z` at the middle of the intended width
+    rather than on its boundary, so the truncation can't be tipped either way by
+    the last bit of the division.
 
-    No expression here — including the cycling one — contains a comma or a
-    colon, which is what keeps the filtergraph free of any escaping: `on mod
-    period` and the triangle wave's peak are written out with `floor` and `abs`
-    rather than ffmpeg's own `mod` and `min`, both of which take a
-    comma-separated argument list.
+    `zoompan` restarts its ramp every `d` output frames while `-loop 1` feeds
+    frames forever, so `d` is set a couple of frames beyond the shot and the
+    caller's `-t` cuts before the ramp can begin again.
     """
-    read_width, _read_height, write_width, write_height = kenburns_geometry(width, height)
+    read_width, read_height, write_width, write_height = kenburns_geometry(width, height)
     frames = max(1, int(math.ceil(max(0.1, duration) * max(1, fps))))
     # What is read is the only headroom the zoom has; travelling past it would
     # start magnifying pixels, which is the softness this arrangement avoids.
     span = max(0.01, min(amount, read_width / max(1, width) - 1.0))
+    # Rounded to the text ffmpeg will parse and read back, so the crop worked
+    # out here is the crop ffmpeg computes, to the pixel.
+    zoom_text = f"{1.0 + span:.4f}"
+    zoom = float(zoom_text)
 
-    leg = kenburns_leg_frames(amount, width)
-    if frames <= leg:
-        progress = f"on/{frames}"
-    else:
-        # A triangle wave of period 2*leg: 0 at on=0, 1 at on=leg, back to 0 at
-        # on=2*leg, repeating. `on mod period` is `on - period*floor(on/period)`
-        # rather than ffmpeg's own `mod(on,period)`, and the peak is
-        # `1-abs(...)` rather than `min(...)`, because both of those take a
-        # comma — see the no-escaping note above.
-        period = 2 * leg
-        progress = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
+    # Exactly what zoompan will do: crop int(iw/zoom) x int(ih/zoom), and clamp
+    # the origin to whatever is left of the frame.
+    crop_width = max(1, int(read_width / zoom))
+    crop_height = max(1, int(read_height / zoom))
+    vertical = effect in ("pan_up", "pan_down")
+    travel = max(1, (read_height - crop_height) if vertical
+                 else (read_width - crop_width))
+    rise, fall = kenburns_sweep(travel, frames, fps)
 
     if effect == "zoom_out":
-        z = f"{1.0 + span:.4f}-{span:.4f}*{progress}"
+        # Opens out from the tightest crop and lands on the picture 1:1.
+        z = f"{read_width}/({crop_width}+0.5+{rise})"
     elif effect.startswith("pan"):
-        z = f"{1.0 + span:.4f}"
+        z = zoom_text
     else:  # zoom_in and anything unrecognised
-        z = f"1+{span:.4f}*{progress}"
+        z = f"{read_width}/({read_width}+0.5-{rise})"
 
-    # Centre the frame by default; a pan sweeps one axis end to end instead.
-    x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    # A pan sweeps one axis end to end and pins the other dead centre — as a
+    # number, not an expression, so nothing on it can move at all. A zoom has no
+    # axis to sweep and stays centred on both, which it can only do against the
+    # crop it is about to take.
     if effect == "pan_left":
-        x = f"(iw-iw/zoom)*(1-{progress})"
+        x, y = fall, str((read_height - crop_height) // 2)
     elif effect == "pan_right":
-        x = f"(iw-iw/zoom)*{progress}"
+        x, y = rise, str((read_height - crop_height) // 2)
     elif effect == "pan_up":
-        y = f"(ih-ih/zoom)*(1-{progress})"
+        x, y = str((read_width - crop_width) // 2), fall
     elif effect == "pan_down":
-        y = f"(ih-ih/zoom)*{progress}"
+        x, y = str((read_width - crop_width) // 2), rise
+    else:
+        x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
 
     chain = (f"[{src}]zoompan=z={z}:x={x}:y={y}:"
              f"d={frames + 2}:s={write_width}x{write_height}:fps={fps}")
