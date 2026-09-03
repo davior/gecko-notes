@@ -6,6 +6,7 @@ is stubbed rather than probed, since it's a property of the host, not the code.
 """
 
 import json
+import math
 import os
 import tempfile
 
@@ -17,8 +18,8 @@ from app.video.narration import (
     shift_cues, split_for_subtitles, strip_emoji, write_srt,
 )
 from app.video.options import (
-    MusicSpec, RenderOptions, encoder_tier, frame_size, kenburns_geometry,
-    kenburns_leg_frames,
+    KENBURNS_MIN_LEG_SECONDS, MusicSpec, RenderOptions, encoder_tier, frame_size,
+    kenburns_geometry,
 )
 from app.video.renderer import build_timeline, estimate
 from app.video.segmenter import Shot
@@ -533,21 +534,108 @@ def test_a_drifting_still_reads_far_above_the_frame_and_writes_above_it_too():
 FRAME_SIZES_TO_CHECK = ((854, 480), (1280, 720), (1920, 1080), (3840, 2160),
                         (1080, 1920), (2160, 3840))
 
+EVERY_EFFECT = ("zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down")
 
-def _pixels_per_frame(width, height, *, seconds, amount=0.12, fps=30):
-    """How far the crop origin travels per frame, in the pixels zoompan rounds
-    to, along the axis the eye actually follows."""
+
+def _zoompan_rects(width, height, *, seconds, effect, amount=0.12, fps=30):
+    """Replay a drift the way vf_zoompan does, one crop rectangle per frame.
+
+    zoompan evaluates z, x and y once per output frame and then works entirely
+    in whole pixels of the frame it was handed: `w = int(iw/zoom)`, likewise for
+    h, and the origin truncated and clamped into whatever is left. Two frames
+    with the same rectangle are two identical pictures, which is the whole
+    subject of the tests below — so the arithmetic is reproduced here rather
+    than taken on trust.
+    """
+    chain = F.kenburns_chain("in", "out", width=width, height=height, fps=fps,
+                             duration=seconds, effect=effect, amount=amount)
+    body = chain[chain.index("zoompan=") + len("zoompan="):].split(",")[0]
+    exprs = {name: compile(value, "<zoompan>", "eval")
+             for name, value in (part.split("=", 1) for part in body.split(":"))
+             if name in ("z", "x", "y")}
     read_w, read_h, _w, _h = kenburns_geometry(width, height)
-    return amount * max(read_w, read_h) / 2 / (seconds * fps)
+    scope = {"__builtins__": {}, "floor": math.floor, "abs": abs,
+             "iw": read_w, "ih": read_h}
+
+    rects = []
+    for on in range(int(math.ceil(seconds * fps))):
+        at = {**scope, "on": on}
+        at["zoom"] = min(10.0, max(1.0, eval(exprs["z"], at)))
+        w, h = int(read_w / at["zoom"]), int(read_h / at["zoom"])
+        rects.append((
+            w, h,
+            min(max(0, int(eval(exprs["x"], at))), read_w - w),
+            min(max(0, int(eval(exprs["y"], at))), read_h - h),
+        ))
+    return rects
 
 
-def test_a_normal_shot_drifts_by_more_than_a_pixel_a_frame():
-    """The failure this guards is visible, not theoretical: below about a pixel
-    a frame the origin truncates to the same value twice running and the picture
-    stalls, then jumps. Before the supersample, 1080p sat at 1.28 and 720p at
-    0.85 — which is exactly what "chunky" looked like."""
-    for width, height in FRAME_SIZES_TO_CHECK:
-        assert _pixels_per_frame(width, height, seconds=6.0) > 1.5, (width, height)
+@pytest.mark.parametrize("effect", EVERY_EFFECT)
+@pytest.mark.parametrize("seconds", (2.5, 4.0, 15.0, 24.0, 60.0, 502.678))
+def test_no_drift_ever_repeats_a_frame(effect, seconds):
+    """The failure this whole arrangement exists to prevent, stated exactly.
+
+    zoompan truncates the crop to whole pixels, so a drift that moves less than
+    one of them in a frame lands on the rectangle it already had — and a pan,
+    whose crop never changes size, then emits a byte-identical picture. The
+    drift stops dead, then jumps.
+
+    At 1080p and the default 12% this used to freeze one frame in eight of a
+    15-second section and every other frame of a 30-second one. Worse, which
+    frames froze was decided by the fractional part of the rate, so they
+    clustered and thinned on a slow beat against the frame rate — around two
+    seconds for a section of 16 to 24 seconds, which is what the drift
+    "pausing every so often" actually was.
+    """
+    rects = _zoompan_rects(1920, 1080, seconds=seconds, effect=effect)
+    frozen = [i for i in range(1, len(rects)) if rects[i] == rects[i - 1]]
+    assert not frozen, f"{len(frozen)} frozen frames, first at frame {frozen[0]}"
+
+
+@pytest.mark.parametrize("effect", EVERY_EFFECT)
+@pytest.mark.parametrize("size", FRAME_SIZES_TO_CHECK)
+def test_no_frame_size_repeats_a_frame_either(effect, size):
+    """Every aspect and resolution reads at the same pixel budget, so none of
+    them has more headroom to spend than any other."""
+    rects = _zoompan_rects(*size, seconds=20.0, effect=effect)
+    assert all(rects[i] != rects[i - 1] for i in range(1, len(rects)))
+
+
+def test_a_drift_slow_enough_to_cycle_moves_exactly_one_pixel_a_frame():
+    """Never repeating is half of it; the other half is moving by the *same*
+    amount each time. A fractional rate rounds to one pixel on some frames and
+    two on others, and the pattern of which is which beats slowly against the
+    frame rate — so even without a single frozen frame the drift would visibly
+    surge and ease. A pixel a frame is the one rate with no fractional part to
+    beat, which is why the sweep rubber-bands at it rather than going slower."""
+    rects = _zoompan_rects(1920, 1080, seconds=24.0, effect="pan_up")
+    steps = {abs(rects[i][3] - rects[i - 1][3]) for i in range(1, len(rects))}
+    assert steps == {1}
+
+
+def test_a_shot_short_enough_to_sweep_once_is_allowed_to_move_faster():
+    """Above a pixel a frame the rounding can only ever be one pixel or two,
+    never none, so the full sweep is spent rather than rationed."""
+    rects = _zoompan_rects(1920, 1080, seconds=4.0, effect="pan_up")
+    steps = {abs(rects[i][3] - rects[i - 1][3]) for i in range(1, len(rects))}
+    assert min(steps) >= 1 and max(steps) <= 4
+
+
+@pytest.mark.parametrize("effect", EVERY_EFFECT)
+def test_a_drift_still_spends_the_travel_it_was_asked_for(effect):
+    """Never stalling would be easy if the drift simply moved less, so this
+    pins the other end: each effect still crosses essentially all of the
+    headroom the chosen zoom leaves it."""
+    read_w, read_h, _w, _h = kenburns_geometry(1920, 1080)
+    rects = _zoompan_rects(1920, 1080, seconds=15.0, effect=effect)
+    if effect in ("pan_up", "pan_down"):
+        room, axis = read_h - int(read_h / 1.12), 3
+    elif effect.startswith("pan"):
+        room, axis = read_w - int(read_w / 1.12), 2
+    else:
+        room, axis = read_w - int(read_w / 1.12), 0
+    spent = max(r[axis] for r in rects) - min(r[axis] for r in rects)
+    assert spent >= room * 0.98, f"{spent} of {room}"
 
 
 def test_a_long_slow_drift_is_carried_by_the_downscale_not_by_reading_bigger():
@@ -576,28 +664,41 @@ def test_a_portrait_frame_is_budgeted_by_pixels_not_by_width():
 
 
 def test_ken_burns_travel_is_written_against_the_frame_count_not_a_step():
-    """An incremental `zoom+step` drifts with the frame rate; `on/N` does not."""
+    """An incremental `zoom+step` drifts with the frame rate; `on/N` does not.
+
+    A zoom drives the crop's *width* along that sweep — 6530 read pixels down
+    to 5830 — rather than ramping the zoom factor, so the picture crosses the
+    frame at one speed instead of accelerating, and the width is guaranteed to
+    round to a new value every frame. The half pixel keeps `iw/z` off the
+    boundary the truncation would otherwise sit on.
+    """
     graph = _graph(_shot(_kb(), duration=6.0))          # 6s at 30fps = 180 frames
-    assert "z=1+0.1200*on/180" in graph
+    assert "z=6530/(6530+0.5-700*on/180)" in graph
     # Two frames past the shot, so `-t` cuts before zoompan restarts its ramp.
     assert "d=182" in graph
 
 
 def test_zoom_out_starts_wide_and_closes_in_on_one():
+    """The same sweep read the other way: it opens from the tightest crop and
+    lands on the picture at 1:1."""
     graph = _graph(_shot(_kb("zoom_out"), duration=6.0))
-    assert "z=1.1200-0.1200*on/180" in graph
+    assert "z=6530/(5830+0.5+700*on/180)" in graph
 
 
-@pytest.mark.parametrize("effect,axis", [
-    ("pan_right", "x=(iw-iw/zoom)*on/180"),
-    ("pan_left", "x=(iw-iw/zoom)*(1-on/180)"),
-    ("pan_down", "y=(ih-ih/zoom)*on/180"),
-    ("pan_up", "y=(ih-ih/zoom)*(1-on/180)"),
+@pytest.mark.parametrize("effect,swept,pinned", [
+    ("pan_right", "x=700*on/180", "y=197"),
+    ("pan_left", "x=700*(1-on/180)", "y=197"),
+    ("pan_down", "y=394*on/180", "x=350"),
+    ("pan_up", "y=394*(1-on/180)", "x=350"),
 ])
-def test_a_pan_holds_the_zoom_and_sweeps_one_axis(effect, axis):
+def test_a_pan_holds_the_zoom_and_sweeps_one_axis(effect, swept, pinned):
+    """The swept axis is written in the whole read pixels zoompan truncates to,
+    and the axis that isn't swept is a number rather than an expression — an
+    expression there could round its way onto a different pixel and drift the
+    picture sideways through a vertical pan."""
     graph = _graph(_shot(_kb(effect), duration=6.0))
     assert "z=1.1200:" in graph
-    assert axis in graph
+    assert swept in graph and pinned in graph
 
 
 def test_no_ken_burns_expression_needs_escaping():
@@ -613,25 +714,41 @@ def test_no_ken_burns_expression_needs_escaping():
 
 
 def test_a_cycling_zoom_in_and_out_use_the_same_wave():
-    """Past kenburns_leg_frames a single sweep would crawl, so the travel
-    rubber-bands A to B to A instead — the same triangle wave drives both
-    directions, only the sign each one applies it with differs."""
-    leg = kenburns_leg_frames(0.12, 1920)
-    period = 2 * leg
-    wave = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
-    assert f"z=1+0.1200*{wave}" in _graph(_shot(_kb("zoom_in"), duration=200.0))
-    assert f"z=1.1200-0.1200*{wave}" in _graph(_shot(_kb("zoom_out"), duration=200.0))
+    """A shot too long to cross its travel at a pixel a frame rubber-bands A to
+    B to A instead of crawling — the same triangle drives both directions, only
+    the sign each applies it with differs. It is counted in pixels rather than
+    as a fraction because each frame is worth exactly one of them."""
+    wave = "(700-abs((on-1400*floor(on/1400))-700))"
+    assert f"z=6530/(6530+0.5-{wave})" in _graph(_shot(_kb("zoom_in"), duration=200.0))
+    assert f"z=6530/(5830+0.5+{wave})" in _graph(_shot(_kb("zoom_out"), duration=200.0))
 
 
 def test_a_cycling_pan_still_only_sweeps_one_axis_and_holds_the_zoom():
-    leg = kenburns_leg_frames(0.12, 1920)
-    period = 2 * leg
-    wave = f"(1-abs((on-{period}*floor(on/{period}))/{leg}-1))"
     right = _graph(_shot(_kb("pan_right"), duration=200.0))
     left = _graph(_shot(_kb("pan_left"), duration=200.0))
     assert "z=1.1200:" in right and "z=1.1200:" in left
-    assert f"x=(iw-iw/zoom)*{wave}" in right
-    assert f"x=(iw-iw/zoom)*(1-{wave})" in left
+    assert "x=(700-abs((on-1400*floor(on/1400))-700))" in right
+    # The falling half is the same triangle mirrored, which is just the abs.
+    assert "x=abs((on-1400*floor(on/1400))-700)" in left
+
+
+def test_a_travel_too_small_to_rubber_band_holds_each_pixel_instead():
+    """A 2% drift has about seventy read pixels to spend, so a leg at a pixel a
+    frame would be over in two and a half seconds and the picture would visibly
+    wobble. Under KENBURNS_MIN_LEG_SECONDS the sweep holds each pixel for a
+    fixed number of frames and never reverses at all. It still steps — nothing
+    can move less than a pixel — but on a cadence that doesn't beat, and it
+    crosses 64 of the 68 pixels it centres itself in."""
+    graph = _graph(_shot(_kb("pan_up", amount=0.02), duration=15.0))
+    assert "y=68-floor(on/7)" in graph
+
+
+def test_the_hold_cadence_is_the_same_every_time_it_steps():
+    """The point of holding rather than rounding a fractional rate: the gaps
+    between moves are all equal, so there is no slow beat in them."""
+    rects = _zoompan_rects(1920, 1080, seconds=15.0, effect="pan_up", amount=0.02)
+    moves = [i for i in range(1, len(rects)) if rects[i] != rects[i - 1]]
+    assert len({b - a for a, b in zip(moves, moves[1:])}) == 1
 
 
 def test_no_ken_burns_expression_needs_escaping_when_cycling():
@@ -646,12 +763,12 @@ def test_no_ken_burns_expression_needs_escaping_when_cycling():
 
 
 def test_the_zoom_never_travels_further_than_what_was_read():
-    """Past that the zoom magnifies pixels rather than revealing them."""
+    """Past that the zoom magnifies pixels rather than revealing them, so a
+    wildly over-asked amount closes on the output width and stops there."""
     read_w, _h, _ww, _wh = kenburns_geometry(3840, 2160)
-    headroom = read_w / 3840 - 1.0
     chain = F.kenburns_chain("in", "out", width=3840, height=2160, fps=30,
                              duration=4.0, effect="zoom_in", amount=5.0)
-    assert f"z=1+{headroom:.4f}*on/120" in chain
+    assert f"z={read_w}/({read_w}+0.5-{read_w - 3840}*on/120)" in chain
 
 
 def test_a_video_background_is_never_given_ken_burns():
@@ -1006,31 +1123,49 @@ def test_a_non_zero_exit_is_still_reported_as_before(monkeypatch):
 # ── Ken Burns cycles instead of stalling on a shot too long for one sweep ───
 
 def test_a_normal_length_shot_fits_inside_one_leg():
-    """A 6s shot at 12% travel is nowhere near long enough to need cycling."""
-    assert kenburns_leg_frames(0.12, 1920) > 6 * 30
+    """A 6s shot at 12% travel is nowhere near long enough to need cycling: a
+    leg runs one frame per pixel of travel, and 1080p has 394 of them."""
+    rise, _fall = F.kenburns_sweep(394, 6 * 30, 30)
+    assert rise == "394*on/180"
 
 
 def test_the_exact_shot_that_used_to_go_still_now_needs_many_legs():
-    """502.678s at 12% travel on a 1920-wide (1080p) frame — the shot that used
-    to render eight minutes of a static image because one sweep across it
-    would crawl under a hundredth of a pixel a frame. It still can't sweep
-    once across its own length, but it can sweep the leg below, many times."""
-    leg = kenburns_leg_frames(0.12, 1920)
-    assert leg > 0
-    assert int(502.678 * 30) > leg
+    """502.678s at 12% travel on a 1080p frame — the shot that used to render
+    eight minutes of a static image because one sweep across it would crawl
+    under a hundredth of a pixel a frame. It still can't sweep once across its
+    own length, so it sweeps a leg it can, many times."""
+    rise, _fall = F.kenburns_sweep(394, int(502.678 * 30), 30)
+    assert "floor(on/788)" in rise          # a triangle, not a single ramp
 
 
 def test_raising_travel_lengthens_the_leg():
-    """Travel is the discoverable lever: turning it up should let a sweep run
-    longer before it needs to start cycling."""
-    assert kenburns_leg_frames(0.40, 1920) > kenburns_leg_frames(0.12, 1920)
+    """Travel is the discoverable lever: turning it up gives the sweep more
+    pixels, and a leg spends one of them a frame, so it runs longer before it
+    has to start cycling."""
+    read_w, read_h, _w, _h = kenburns_geometry(1920, 1080)
+    legs = [read_h - int(read_h / (1 + amount)) for amount in (0.12, 0.40)]
+    assert legs[1] > legs[0]
+    # And the longer one still sweeps a shot the shorter one would have cycled.
+    assert "floor" in F.kenburns_sweep(legs[0], legs[0] + 1, 30)[0]
+    assert "floor" not in F.kenburns_sweep(legs[1], legs[0] + 1, 30)[0]
 
 
-def test_a_degenerate_amount_or_width_still_returns_a_positive_leg():
-    """A period of zero would divide by zero building the wave, so the leg is
-    floored at one frame no matter how small amount or width is."""
-    assert kenburns_leg_frames(0.0, 1920) == 1
-    assert kenburns_leg_frames(0.12, 0) == 1
+def test_a_degenerate_travel_or_length_still_builds_a_usable_sweep():
+    """A zero period would divide by zero building the wave, and a zero frame
+    count would divide by zero building the ramp, so both are floored at one."""
+    for rise, fall in (F.kenburns_sweep(0, 180, 30), F.kenburns_sweep(394, 0, 30)):
+        assert rise and fall
+        for expression in (rise, fall):
+            assert "/0" not in expression and "," not in expression
+
+
+def test_the_leg_floor_is_what_picks_the_hold_over_the_rubber_band():
+    """Either side of KENBURNS_MIN_LEG_SECONDS, at the same shot length: a
+    travel that can sustain a long enough leg rubber-bands, and one that can't
+    holds each pixel instead of reversing every second or two."""
+    floor_px = int(KENBURNS_MIN_LEG_SECONDS * 30)
+    assert "abs" in F.kenburns_sweep(floor_px, 3000, 30)[0]           # cycles
+    assert "floor(on/" in F.kenburns_sweep(floor_px - 1, 3000, 30)[0]  # holds
 
 
 def test_kenburns_effect_for_no_longer_depends_on_shot_length():
@@ -1048,14 +1183,12 @@ def test_a_long_shot_cycles_instead_of_stalling():
     rubber-band cycle: A to B, then B to A, repeating in legs short enough to
     stay visible, instead of one sweep too slow to see or no motion at all."""
     options = RenderOptions(ken_burns={"effect": "zoom_in"})
-    leg = kenburns_leg_frames(0.12, 1920)
-    period = 2 * leg
     argv = F.build_shot_command(
         kind="still", background="bg.png", audio="n.wav", duration=502.678,
         output="s.mp4", options=options, preview=False, index=0,
     )
     graph = _graph(argv)
-    assert f"z=1+0.1200*(1-abs((on-{period}*floor(on/{period}))/{leg}-1))" in graph
+    assert "z=6530/(6530+0.5-(700-abs((on-1400*floor(on/1400))-700)))" in graph
     # It pays the same supersample cost as any other drifting shot now — Ken
     # Burns is no longer refused, so the expense the old gate avoided is back
     # by design.
