@@ -62,8 +62,13 @@ class PromptContext:
         return body
 
 
-class _WorkerRequest:
-    """Just enough of a Request for the proxy handlers, which read only the user id."""
+class WorkerRequest:
+    """Just enough of a Request for a handler called off the request path.
+
+    The proxy handlers read only the user id, and so do the note and search handlers
+    the retrieval loop reaches for — so this is how a worker calls an endpoint's own
+    function instead of reimplementing the query behind it.
+    """
 
     def __init__(self, user_id: str) -> None:
         self.state = SimpleNamespace(user_id=user_id)
@@ -128,7 +133,7 @@ async def _send(session: Session, user_id: str, ctx: PromptContext, body: Dict[s
     )
 
     payload = {**body, "provider_id": ctx.provider_id, "model": ctx.model}
-    request = _WorkerRequest(user_id)
+    request = WorkerRequest(user_id)
 
     if ctx.protocol == "anthropic":
         payload.setdefault("max_tokens", ctx.max_tokens)

@@ -35,6 +35,30 @@ await esbuild.build({
   logLevel: "warning",
 });
 
-const { parsePlan } = await import(pathToFileURL(outfile).href);
+const { parsePlan, defaultActionLabel, actionNeedsGeneration, buildPlanSummary, buildContentStepInstruction } =
+  await import(pathToFileURL(outfile).href);
+
+// The ids the labels resolve. Shared by every sample so the corpus stays about the
+// actions rather than about bookkeeping; anything not in here has to render as the
+// bare id, which is itself worth pinning.
+const LABELS = new Map(Object.entries({
+  n1: "First note",
+  n2: "Second note",
+  n3: "Third note",
+  f1: "Research",
+  c1: "Ideas",
+  r1: "Summarise",
+}));
+
 const corpus = JSON.parse(readFileSync(process.argv[2], "utf8"));
-console.log(JSON.stringify(corpus.map((sample) => parsePlan(sample.raw)), null, 2));
+const out = corpus.map((sample) => {
+  const plan = parsePlan(sample.raw);
+  return {
+    plan,
+    labels: plan.actions.map((a) => defaultActionLabel(a, LABELS)),
+    summary: buildPlanSummary(plan),
+    steps: plan.actions.flatMap((a, i) =>
+      actionNeedsGeneration(a) ? [buildContentStepInstruction(a, i, LABELS)] : []),
+  };
+});
+console.log(JSON.stringify(out, null, 2));

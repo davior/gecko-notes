@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Tuple
 from sqlmodel import Session
 
 from app.assistant.executor import ActionResult, Cancelled
+from app.assistant.plan_prompt import action_needs_generation
 from app.assistant.provider import PromptContext, call_provider_text
 from app.database import engine
 from app.jobs.runner import readable_error
@@ -47,7 +48,7 @@ def generate_bodies(
     over a real note.
     """
     actions = plan.get("actions") or []
-    targets = [i for i, action in enumerate(actions) if _needs_generation(action)]
+    targets = [i for i, action in enumerate(actions) if action_needs_generation(action)]
     if not targets:
         return plan, []
 
@@ -103,19 +104,6 @@ def generate_bodies(
         ],
     }
     return runnable, failures
-
-
-# Content-bearing action types, matching actionNeedsGeneration in aiPlan.ts.
-_GENERATED_TYPES = frozenset({
-    "create_note", "edit_note", "edit_section", "append_note", "create_child_note",
-})
-
-
-def _needs_generation(action: Dict[str, Any]) -> bool:
-    """A step defers its body when it has a spec and no content."""
-    if action.get("type") not in _GENERATED_TYPES:
-        return False
-    return bool((action.get("spec") or "").strip()) and not (action.get("content") or "").strip()
 
 
 __all__ = ["generate_bodies", "GEN_CONCURRENCY", "Cancelled"]

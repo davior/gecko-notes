@@ -14,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.assistant.generate import _needs_generation
+from app.assistant.plan_prompt import action_needs_generation
 from app.assistant.provider import TRUNCATION_NOTICE, PromptContext, extract_text
 from app.jobs.registry import KINDS
 from app.models import AssistantRunJob, Category, Note
@@ -145,15 +145,15 @@ def test_an_empty_or_malformed_reply_reads_as_empty_rather_than_raising():
 
 
 def test_a_content_action_with_a_spec_and_no_content_needs_generating():
-    assert _needs_generation({"type": "edit_note", "spec": "write it", "content": ""}) is True
+    assert action_needs_generation({"type": "edit_note", "spec": "write it", "content": ""}) is True
 
 
 def test_content_already_written_is_left_alone():
-    assert _needs_generation({"type": "edit_note", "spec": "write it", "content": "done"}) is False
+    assert action_needs_generation({"type": "edit_note", "spec": "write it", "content": "done"}) is False
 
 
 def test_an_action_that_carries_no_body_never_generates():
-    assert _needs_generation({"type": "rename_note", "spec": "x", "content": ""}) is False
+    assert action_needs_generation({"type": "rename_note", "spec": "x", "content": ""}) is False
 
 
 # ─── starting a run ──────────────────────────────────────────────────────────

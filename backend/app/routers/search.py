@@ -58,19 +58,40 @@ async def run_web_search(
     which the assistant surfaces to the model as a failed-search note rather than
     pretending the web is unreachable in principle.
     """
-    user_id = _get_user_id(request)
+    return await search_web_for_user(
+        session, _get_user_id(request), payload.query, payload.count
+    )
+
+
+async def search_web_for_user(
+    session: Session,
+    user_id: str,
+    query: str,
+    count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """One search, as this user, in the shape the assistant reads back.
+
+    Split out of the endpoint so the assistant worker can search directly — planning
+    runs on the server now, and a `web_search` action resolved mid-turn has no browser
+    to post through. Going through here rather than reaching for `search_web` keeps
+    both callers on the same backend, the same credentials and the same usage
+    accounting; the endpoint's rate limit stays on the endpoint, where the traffic it
+    is guarding against arrives.
+    """
     config = load_web_search_config(session, user_id)
 
     try:
         results = await search_web(
             provider=config["provider"],
-            query=payload.query,
+            query=query,
             api_key=config["api_key"],
             base_url=config["base_url"],
-            count=payload.count,
+            count=count,
         )
     except SearchError as e:
         raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("web search failed")
         raise HTTPException(
@@ -87,6 +108,6 @@ async def run_web_search(
     return {
         "provider": provider,
         "provider_label": PROVIDERS[provider].label,
-        "query": payload.query.strip(),
+        "query": query.strip(),
         "results": [r.as_dict() for r in results],
     }
