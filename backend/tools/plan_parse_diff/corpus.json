@@ -1,0 +1,252 @@
+[
+  {
+    "name": "plain envelope",
+    "why": "the contract the instructions ask for",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"Hello there.\"}]}"
+  },
+  {
+    "name": "mixed plan",
+    "why": "a reply alongside mutations — the common shape for a real edit",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"I'll rewrite the intro.\"},{\"type\":\"edit_section\",\"noteId\":\"n1\",\"section\":\"Intro\",\"content\":\"New intro.\"}]}"
+  },
+  {
+    "name": "bare action object",
+    "why": "models sometimes drop the envelope and emit one action",
+    "raw": "{\"type\":\"respond\",\"text\":\"Just answering.\"}"
+  },
+  {
+    "name": "json fence",
+    "why": "a model that ignores 'no code fences'",
+    "raw": "Here is the plan:\n```json\n{\"actions\":[{\"type\":\"rename_note\",\"noteId\":\"n1\",\"title\":\"New\"}]}\n```"
+  },
+  {
+    "name": "bare fence",
+    "why": "same, without the language tag",
+    "raw": "```\n{\"actions\":[{\"type\":\"respond\",\"text\":\"Fenced.\"}]}\n```"
+  },
+  {
+    "name": "prose either side",
+    "why": "prose outside the envelope is the real answer and must survive",
+    "raw": "Short answer: yes.\n\n{\"actions\":[{\"type\":\"append_note\",\"noteId\":\"n1\",\"content\":\"x\"}]}\n\nLet me know if that works."
+  },
+  {
+    "name": "stray brace in prose first",
+    "why": "a naive first-brace scan would hijack on the inline example and lose the plan",
+    "raw": "Use the set {a, b} as your key.\n{\"actions\":[{\"type\":\"respond\",\"text\":\"Done.\"}]}"
+  },
+  {
+    "name": "two fences, plan in the second",
+    "why": "an illustrative snippet before the real plan",
+    "raw": "Example input:\n```\nnot json\n```\n```json\n{\"actions\":[{\"type\":\"respond\",\"text\":\"Second.\"}]}\n```"
+  },
+  {
+    "name": "blank run collapsing",
+    "why": "outside prose keeps paragraphs but not four blank lines",
+    "raw": "Line one.\n\n\n\nLine two.\n{\"actions\":[{\"type\":\"respond\",\"text\":\"r\"}]}"
+  },
+  {
+    "name": "unescaped quote in content",
+    "why": "the malformation the repair pass exists for: straight quotes inside a note body",
+    "raw": "{\"actions\":[{\"type\":\"create_note\",\"title\":\"T\",\"content\":\"He said \"hello\" loudly.\"}]}"
+  },
+  {
+    "name": "unescaped quote before a comma",
+    "why": "the ambiguous case — a quoted phrase followed by a comma, still inside prose",
+    "raw": "{\"actions\":[{\"type\":\"create_note\",\"title\":\"T\",\"content\":\"She wrote \"one\", then left.\"}]}"
+  },
+  {
+    "name": "unescaped quote in an array element",
+    "why": "in an array a comma really does close the element, unlike in an object",
+    "raw": "{\"actions\":[{\"type\":\"set_tags\",\"noteId\":\"n1\",\"tags\":[\"a \"b\" c\",\"d\"],\"mode\":\"add\"}]}"
+  },
+  {
+    "name": "unescaped quote at the very end of a value",
+    "why": "closing quote followed by } — unambiguously a terminator",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"ends with \"a quote\"\"}]}"
+  },
+  {
+    "name": "escaped quotes are left alone",
+    "why": "a plan that already parses must never be touched by the repair pass",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"He said \\\"hi\\\".\"}]}"
+  },
+  {
+    "name": "braces inside a string value",
+    "why": "brace matching has to ignore structure inside string literals",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"the set {a, b} and }{ too\"}]}"
+  },
+  {
+    "name": "actions tag wrapping an array",
+    "why": "DeepSeek's usual shape",
+    "raw": "<actions>[{\"type\":\"respond\",\"text\":\"Tagged.\"}]</actions>"
+  },
+  {
+    "name": "actions tag wrapping an envelope",
+    "why": "the same wrapper around a full envelope",
+    "raw": "<actions>{\"actions\":[{\"type\":\"respond\",\"text\":\"Enveloped.\"}]}</actions>"
+  },
+  {
+    "name": "empty actions tag after prose",
+    "why": "a conversational reply with an empty container appended — the prose is the answer",
+    "raw": "I'll look into that.\n<actions>\n</actions>"
+  },
+  {
+    "name": "self-closing actions tag",
+    "why": "the void form of the same container",
+    "raw": "Nothing to do here.\n<actions/>"
+  },
+  {
+    "name": "orphan actions opener",
+    "why": "a reply truncated mid-block, or one still streaming",
+    "raw": "Working on it.\n<actions>"
+  },
+  {
+    "name": "attributes on the actions tag",
+    "why": "the tag is not always bare",
+    "raw": "<actions version=\"1\">[{\"type\":\"respond\",\"text\":\"Attributed.\"}]</actions>"
+  },
+  {
+    "name": "function_calls markup",
+    "why": "a model told it has a tool whose provider wired up none — the web-search bug",
+    "raw": "Let me search.\n<function_calls>\n<invoke name=\"web_search\">\n<parameter name=\"query\">x</parameter>\n</invoke>\n</function_calls>"
+  },
+  {
+    "name": "tool_calls markup around a real plan",
+    "why": "the markup is dropped, the plan behind it is kept",
+    "raw": "<tool_calls><invoke name=\"x\"></invoke></tool_calls>\n{\"actions\":[{\"type\":\"respond\",\"text\":\"Kept.\"}]}"
+  },
+  {
+    "name": "orphan tool_calls opener",
+    "why": "truncated mid-call while streaming",
+    "raw": "Thinking.\n<function_calls>"
+  },
+  {
+    "name": "empty string",
+    "why": "nothing at all came back",
+    "raw": ""
+  },
+  {
+    "name": "whitespace only",
+    "why": "same, with the model having emitted only a newline",
+    "raw": "   \n\t  "
+  },
+  {
+    "name": "prose with no JSON",
+    "why": "the whole message is the reply and must never be dropped",
+    "raw": "I don't think that's something I can help with, but here's what I'd try instead."
+  },
+  {
+    "name": "unrepairable JSON",
+    "why": "a mangled envelope falls back to showing the reply verbatim",
+    "raw": "{\"actions\": [ {\"type\": "
+  },
+  {
+    "name": "NaN in the JSON",
+    "why": "JavaScript's JSON.parse rejects it; Python's accepts it by default",
+    "raw": "{\"actions\":[{\"type\":\"web_search\",\"query\":\"x\",\"maxResults\":NaN}]}"
+  },
+  {
+    "name": "trailing comma",
+    "why": "rejected by both parsers, so it degrades to prose",
+    "raw": "{\"actions\":[{\"type\":\"respond\",\"text\":\"a\"},]}"
+  },
+  {
+    "name": "envelope with only invalid actions, prose around it",
+    "why": "show the prose, never the literal JSON",
+    "raw": "Here you go.\n{\"actions\":[{\"type\":\"find_notes\"}]}\nHope that helps."
+  },
+  {
+    "name": "envelope with only invalid actions and no prose",
+    "why": "nothing to show but the generic apology",
+    "raw": "{\"actions\":[{\"type\":\"find_notes\"},{\"type\":\"nonsense\"}]}"
+  },
+  {
+    "name": "actions is not an array",
+    "why": "an envelope whose actions key is the wrong type",
+    "raw": "{\"actions\":{\"type\":\"respond\",\"text\":\"x\"}}"
+  },
+  {
+    "name": "non-object entries in the actions array",
+    "why": "junk entries are dropped, not fatal",
+    "raw": "{\"actions\":[\"nope\",null,42,{\"type\":\"respond\",\"text\":\"survivor\"}]}"
+  },
+  {
+    "name": "unknown action type",
+    "why": "a type we have no handler for is dropped",
+    "raw": "{\"actions\":[{\"type\":\"teleport_note\",\"noteId\":\"n1\"},{\"type\":\"respond\",\"text\":\"ok\"}]}"
+  },
+  {
+    "name": "over the action cap",
+    "why": "a runaway model is truncated and told so",
+    "raw": "{\"actions\": [{\"type\": \"respond\", \"text\": \"m0\"}, {\"type\": \"respond\", \"text\": \"m1\"}, {\"type\": \"respond\", \"text\": \"m2\"}, {\"type\": \"respond\", \"text\": \"m3\"}, {\"type\": \"respond\", \"text\": \"m4\"}, {\"type\": \"respond\", \"text\": \"m5\"}, {\"type\": \"respond\", \"text\": \"m6\"}, {\"type\": \"respond\", \"text\": \"m7\"}, {\"type\": \"respond\", \"text\": \"m8\"}, {\"type\": \"respond\", \"text\": \"m9\"}, {\"type\": \"respond\", \"text\": \"m10\"}, {\"type\": \"respond\", \"text\": \"m11\"}, {\"type\": \"respond\", \"text\": \"m12\"}, {\"type\": \"respond\", \"text\": \"m13\"}, {\"type\": \"respond\", \"text\": \"m14\"}, {\"type\": \"respond\", \"text\": \"m15\"}, {\"type\": \"respond\", \"text\": \"m16\"}, {\"type\": \"respond\", \"text\": \"m17\"}, {\"type\": \"respond\", \"text\": \"m18\"}, {\"type\": \"respond\", \"text\": \"m19\"}, {\"type\": \"respond\", \"text\": \"m20\"}, {\"type\": \"respond\", \"text\": \"m21\"}, {\"type\": \"respond\", \"text\": \"m22\"}, {\"type\": \"respond\", \"text\": \"m23\"}, {\"type\": \"respond\", \"text\": \"m24\"}, {\"type\": \"respond\", \"text\": \"m25\"}, {\"type\": \"respond\", \"text\": \"m26\"}, {\"type\": \"respond\", \"text\": \"m27\"}, {\"type\": \"respond\", \"text\": \"m28\"}, {\"type\": \"respond\", \"text\": \"m29\"}, {\"type\": \"respond\", \"text\": \"m30\"}, {\"type\": \"respond\", \"text\": \"m31\"}, {\"type\": \"respond\", \"text\": \"m32\"}, {\"type\": \"respond\", \"text\": \"m33\"}, {\"type\": \"respond\", \"text\": \"m34\"}, {\"type\": \"respond\", \"text\": \"m35\"}, {\"type\": \"respond\", \"text\": \"m36\"}, {\"type\": \"respond\", \"text\": \"m37\"}, {\"type\": \"respond\", \"text\": \"m38\"}, {\"type\": \"respond\", \"text\": \"m39\"}, {\"type\": \"respond\", \"text\": \"m40\"}, {\"type\": \"respond\", \"text\": \"m41\"}, {\"type\": \"respond\", \"text\": \"m42\"}, {\"type\": \"respond\", \"text\": \"m43\"}, {\"type\": \"respond\", \"text\": \"m44\"}, {\"type\": \"respond\", \"text\": \"m45\"}, {\"type\": \"respond\", \"text\": \"m46\"}, {\"type\": \"respond\", \"text\": \"m47\"}, {\"type\": \"respond\", \"text\": \"m48\"}, {\"type\": \"respond\", \"text\": \"m49\"}, {\"type\": \"respond\", \"text\": \"m50\"}, {\"type\": \"respond\", \"text\": \"m51\"}, {\"type\": \"respond\", \"text\": \"m52\"}, {\"type\": \"respond\", \"text\": \"m53\"}, {\"type\": \"respond\", \"text\": \"m54\"}]}"
+  },
+  {
+    "name": "exactly at the action cap",
+    "why": "50 actions is not truncated",
+    "raw": "{\"actions\": [{\"type\": \"respond\", \"text\": \"m0\"}, {\"type\": \"respond\", \"text\": \"m1\"}, {\"type\": \"respond\", \"text\": \"m2\"}, {\"type\": \"respond\", \"text\": \"m3\"}, {\"type\": \"respond\", \"text\": \"m4\"}, {\"type\": \"respond\", \"text\": \"m5\"}, {\"type\": \"respond\", \"text\": \"m6\"}, {\"type\": \"respond\", \"text\": \"m7\"}, {\"type\": \"respond\", \"text\": \"m8\"}, {\"type\": \"respond\", \"text\": \"m9\"}, {\"type\": \"respond\", \"text\": \"m10\"}, {\"type\": \"respond\", \"text\": \"m11\"}, {\"type\": \"respond\", \"text\": \"m12\"}, {\"type\": \"respond\", \"text\": \"m13\"}, {\"type\": \"respond\", \"text\": \"m14\"}, {\"type\": \"respond\", \"text\": \"m15\"}, {\"type\": \"respond\", \"text\": \"m16\"}, {\"type\": \"respond\", \"text\": \"m17\"}, {\"type\": \"respond\", \"text\": \"m18\"}, {\"type\": \"respond\", \"text\": \"m19\"}, {\"type\": \"respond\", \"text\": \"m20\"}, {\"type\": \"respond\", \"text\": \"m21\"}, {\"type\": \"respond\", \"text\": \"m22\"}, {\"type\": \"respond\", \"text\": \"m23\"}, {\"type\": \"respond\", \"text\": \"m24\"}, {\"type\": \"respond\", \"text\": \"m25\"}, {\"type\": \"respond\", \"text\": \"m26\"}, {\"type\": \"respond\", \"text\": \"m27\"}, {\"type\": \"respond\", \"text\": \"m28\"}, {\"type\": \"respond\", \"text\": \"m29\"}, {\"type\": \"respond\", \"text\": \"m30\"}, {\"type\": \"respond\", \"text\": \"m31\"}, {\"type\": \"respond\", \"text\": \"m32\"}, {\"type\": \"respond\", \"text\": \"m33\"}, {\"type\": \"respond\", \"text\": \"m34\"}, {\"type\": \"respond\", \"text\": \"m35\"}, {\"type\": \"respond\", \"text\": \"m36\"}, {\"type\": \"respond\", \"text\": \"m37\"}, {\"type\": \"respond\", \"text\": \"m38\"}, {\"type\": \"respond\", \"text\": \"m39\"}, {\"type\": \"respond\", \"text\": \"m40\"}, {\"type\": \"respond\", \"text\": \"m41\"}, {\"type\": \"respond\", \"text\": \"m42\"}, {\"type\": \"respond\", \"text\": \"m43\"}, {\"type\": \"respond\", \"text\": \"m44\"}, {\"type\": \"respond\", \"text\": \"m45\"}, {\"type\": \"respond\", \"text\": \"m46\"}, {\"type\": \"respond\", \"text\": \"m47\"}, {\"type\": \"respond\", \"text\": \"m48\"}, {\"type\": \"respond\", \"text\": \"m49\"}]}"
+  },
+  {
+    "name": "maxResults variants",
+    "why": "quoted numbers, over-cap, zero, negative and junk all normalise the same way",
+    "raw": "{\"actions\": [{\"type\": \"web_search\", \"query\": \"a\", \"maxResults\": \"5\"}, {\"type\": \"web_search\", \"query\": \"b\", \"maxResults\": 500}, {\"type\": \"web_search\", \"query\": \"c\", \"maxResults\": 0}, {\"type\": \"web_search\", \"query\": \"d\", \"maxResults\": -3}, {\"type\": \"web_search\", \"query\": \"e\", \"maxResults\": \"abc\"}, {\"type\": \"web_search\", \"query\": \"f\", \"maxResults\": 2.5}, {\"type\": \"web_search\", \"query\": \"g\", \"maxResults\": 0.4}, {\"type\": \"web_search\", \"query\": \"h\", \"maxResults\": true}, {\"type\": \"web_search\", \"query\": \"i\", \"maxResults\": null}, {\"type\": \"web_search\", \"query\": \"  j  \"}, {\"type\": \"web_search\", \"query\": \"   \"}]}"
+  },
+  {
+    "name": "set_tags with non-string tags",
+    "why": "String() disagrees with str() on booleans, null and whole floats",
+    "raw": "{\"actions\": [{\"type\": \"set_tags\", \"noteId\": \"n1\", \"tags\": [\"a\", 1, 2.0, 2.5, true, false, null], \"mode\": \"add\"}, {\"type\": \"set_tags\", \"noteId\": \"n2\", \"tags\": [], \"mode\": \"replace\"}, {\"type\": \"set_tags\", \"noteId\": \"n3\", \"tags\": \"not-a-list\"}, {\"type\": \"set_tags\", \"noteId\": \"n4\", \"tags\": [\"x\"], \"mode\": \"bogus\"}]}"
+  },
+  {
+    "name": "find_notes folder scoping",
+    "why": "absent, explicit null and a real id are three different scopes",
+    "raw": "{\"actions\": [{\"type\": \"find_notes\", \"query\": \"q\"}, {\"type\": \"find_notes\", \"folderId\": null}, {\"type\": \"find_notes\", \"folderId\": \"f1\", \"recursive\": true}, {\"type\": \"find_notes\", \"query\": \"q\", \"folderId\": \"f1\", \"recursive\": \"yes\"}, {\"type\": \"find_notes\"}, {\"type\": \"find_notes\", \"query\": \"\"}]}"
+  },
+  {
+    "name": "move_note folder variants",
+    "why": "a missing or non-string folder means the root",
+    "raw": "{\"actions\": [{\"type\": \"move_note\", \"noteId\": \"n1\", \"folderId\": \"f1\"}, {\"type\": \"move_note\", \"noteId\": \"n2\", \"folderId\": null}, {\"type\": \"move_note\", \"noteId\": \"n3\"}, {\"type\": \"move_note\", \"noteId\": \"n4\", \"folderId\": 7}]}"
+  },
+  {
+    "name": "edit_note modes",
+    "why": "anything but an explicit replace amends",
+    "raw": "{\"actions\": [{\"type\": \"edit_note\", \"noteId\": \"n1\", \"mode\": \"replace\", \"content\": \"c\"}, {\"type\": \"edit_note\", \"noteId\": \"n2\", \"mode\": \"amend\", \"content\": \"c\"}, {\"type\": \"edit_note\", \"noteId\": \"n3\", \"content\": \"c\"}, {\"type\": \"edit_note\", \"noteId\": \"n4\", \"mode\": \"REPLACE\", \"content\": \"c\"}, {\"type\": \"edit_note\", \"noteId\": \"\", \"content\": \"c\"}]}"
+  },
+  {
+    "name": "titles: empty allowed, missing rejected",
+    "why": "create_note checks strictly for undefined, so an empty title is legal",
+    "raw": "{\"actions\": [{\"type\": \"create_note\", \"title\": \"\", \"content\": \"c\"}, {\"type\": \"create_note\", \"content\": \"c\"}, {\"type\": \"create_note\", \"title\": \"t\"}, {\"type\": \"respond\", \"text\": \"\"}, {\"type\": \"respond\"}]}"
+  },
+  {
+    "name": "trailers: description, ref and spec",
+    "why": "each is carried only when non-empty",
+    "raw": "{\"actions\": [{\"type\": \"create_note\", \"title\": \"t\", \"spec\": \"write 500 words\", \"ref\": \"r1\", \"description\": \"d\"}, {\"type\": \"create_note\", \"title\": \"t\", \"spec\": \"\", \"ref\": \"\", \"description\": \"\"}, {\"type\": \"create_note\", \"title\": \"t\", \"spec\": 5, \"ref\": null}]}"
+  },
+  {
+    "name": "add_reference optional section",
+    "why": "insertAfterSection is absent rather than null when unset",
+    "raw": "{\"actions\": [{\"type\": \"add_reference\", \"noteId\": \"n1\", \"referenceNoteId\": \"n2\", \"referenceTitle\": \"T\"}, {\"type\": \"add_reference\", \"noteId\": \"n1\", \"referenceNoteId\": \"n2\", \"referenceTitle\": \"\", \"insertAfterSection\": \"S\"}, {\"type\": \"add_reference\", \"noteId\": \"n1\", \"referenceNoteId\": \"n2\"}]}"
+  },
+  {
+    "name": "diagram and image sources must not be blank",
+    "why": "whitespace-only source or prompt is not a usable action",
+    "raw": "{\"actions\": [{\"type\": \"create_diagram\", \"noteId\": \"n1\", \"source\": \"graph TD;A-->B\"}, {\"type\": \"create_diagram\", \"noteId\": \"n1\", \"source\": \"   \"}, {\"type\": \"edit_diagram\", \"noteId\": \"n1\", \"diagramId\": \"d1\", \"source\": \"x\"}, {\"type\": \"edit_diagram\", \"noteId\": \"n1\", \"source\": \"x\"}, {\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \"a cat\", \"section\": \"S\", \"alt\": \"A\"}, {\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \" \"}]}"
+  },
+  {
+    "name": "recipes",
+    "why": "create needs a name and a non-blank prompt; update needs only an id",
+    "raw": "{\"actions\": [{\"type\": \"create_recipe\", \"name\": \"N\", \"prompt\": \"P\", \"tags\": [\"a\", 2]}, {\"type\": \"create_recipe\", \"name\": \"N\", \"prompt\": \"  \"}, {\"type\": \"update_recipe\", \"recipeId\": \"r1\"}, {\"type\": \"update_recipe\", \"recipeId\": \"r1\", \"name\": \"N\", \"prompt\": \"P\", \"tags\": []}, {\"type\": \"update_recipe\", \"name\": \"N\"}, {\"type\": \"delete_recipe\", \"recipeId\": \"r1\"}, {\"type\": \"delete_recipe\"}]}"
+  },
+  {
+    "name": "annotations",
+    "why": "anchor text is required, body text is not",
+    "raw": "{\"actions\": [{\"type\": \"add_annotation\", \"noteId\": \"n1\", \"anchorText\": \"a\", \"text\": \"t\"}, {\"type\": \"add_annotation\", \"noteId\": \"n1\", \"anchorText\": \"a\"}, {\"type\": \"add_annotation\", \"noteId\": \"n1\", \"anchorText\": \"\"}, {\"type\": \"edit_annotation\", \"noteId\": \"n1\", \"annotationId\": \"a1\"}, {\"type\": \"delete_annotation\", \"noteId\": \"n1\", \"annotationId\": \"a1\"}, {\"type\": \"delete_annotation\", \"noteId\": \"n1\"}]}"
+  },
+  {
+    "name": "nested braces in a long body",
+    "why": "brace depth counting across a realistic multi-paragraph body",
+    "raw": "{\"actions\": [{\"type\": \"create_note\", \"title\": \"T\", \"content\": \"# H\\n\\nSome code: `if (x) { y() }`\\n\\n- a\\n- b\\n\\n> quote {inner}\\n\"}]}"
+  },
+  {
+    "name": "unicode and emoji in values",
+    "why": "string indices differ between UTF-16 and code points; the slices must not",
+    "raw": "{\"actions\": [{\"type\": \"create_note\", \"title\": \"\\ud83e\\udd8e Notes\", \"content\": \"\\u00dcn\\u00efc\\u00f6d\\u00e9 \\u2014 \\ud835\\udd58\\ud835\\udd56\\ud835\\udd54\\ud835\\udd5c\\ud835\\udd60 {and} \\\"quoted\\\" \\ud83c\\udf89\"}]}"
+  }
+]
