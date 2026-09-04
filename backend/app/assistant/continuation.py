@@ -188,14 +188,36 @@ def extract_plan_text(data: Optional[Dict[str, Any]]) -> str:
     return text
 
 
-def finalize_plan_text(data: Optional[Dict[str, Any]]) -> str:
+def finalize_plan_text(protocol: str, data: Optional[Dict[str, Any]]) -> str:
     """The reply as the parser should see it, truncation notice included.
 
-    The notice lands outside the JSON envelope, so `parse_plan` surfaces it as prose
-    alongside the plan rather than swallowing it — which is what the browser did too.
+    The protocol is not optional here, and reading it out of the wrong shape is not a
+    crash — it is silence. This shipped calling `extract_plan_text` unconditionally,
+    which walks `data["content"]`; an OpenAI-compatible reply keeps its text at
+    `choices[0].message.content` and an Ollama one at `message.content`, so on either of
+    those every planning call read as empty. `parse_plan("")` then returned its
+    "(no response)" fallback, the turn looked respond-only, and it finished successfully
+    having said nothing and created nothing. Nothing errored, so nothing said so.
+
+    `provider.extract_text` reads all three shapes and is what the deferred-body path
+    uses; this cannot simply call it, because the two carry different truncation
+    notices — that one is worded for a note body, and this text lands in the chat.
     """
-    text = extract_plan_text(data)
-    return text + TRUNCATION_NOTICE if (data or {}).get("stop_reason") == "max_tokens" else text
+    if protocol == "anthropic":
+        # Only this shape can carry a plan inside a tool_use block, or split one reply
+        # across several text blocks.
+        text, truncated = extract_plan_text(data), (data or {}).get("stop_reason") == "max_tokens"
+    elif protocol == "ollama":
+        text = ((data or {}).get("message") or {}).get("content")
+        truncated = (data or {}).get("done_reason") == "length"
+    else:  # openai-compatible
+        choices = (data or {}).get("choices") or []
+        first = choices[0] if choices else {}
+        text = (first.get("message") or {}).get("content")
+        truncated = first.get("finish_reason") == "length"
+
+    text = str(text or "")
+    return text + TRUNCATION_NOTICE if truncated else text
 
 
 __all__ = [

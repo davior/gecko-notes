@@ -150,14 +150,23 @@ def _one_call(
     body = ctx.body_for({"messages": turns})
     data = call_provider(session, user_id, ctx, body, preview)
 
-    for _ in range(MAX_TURN_CONTINUATIONS):
-        if not is_stalled_turn(data):
-            break
-        check_cancelled()
-        data = call_provider(session, user_id, ctx, continuation_body(body, data), preview)
+    # Only the Messages protocol can leave a turn open this way: the stall is a
+    # `stop_reason: "tool_use"` with nothing left for a client to run.
+    if ctx.protocol == "anthropic":
+        for _ in range(MAX_TURN_CONTINUATIONS):
+            if not is_stalled_turn(data):
+                break
+            check_cancelled()
+            data = call_provider(session, user_id, ctx, continuation_body(body, data), preview)
 
     preview.flush()
-    return finalize_plan_text(data)
+    text = finalize_plan_text(ctx.protocol, data)
+    if not text.strip():
+        # Indistinguishable from a model that genuinely said nothing, and the user only
+        # sees "(no response)". Naming the protocol is what makes the next one of these
+        # findable, because reading the wrong shape is exactly how it happens.
+        logger.warning("Planning call returned no text (protocol=%s)", ctx.protocol)
+    return text
 
 
 def run_planning(

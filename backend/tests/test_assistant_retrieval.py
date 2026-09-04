@@ -371,11 +371,63 @@ def test_a_gap_where_a_tool_call_ran_becomes_a_paragraph_break():
     assert extract_plan_text(data) == "…as a new note.\n\nI have everything I need"
 
 
-def test_hitting_the_output_cap_is_said_out_loud():
-    data = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "Cut off"}]}
-    assert finalize_plan_text(data) == "Cut off" + TRUNCATION_NOTICE
 
 
-def test_an_ordinary_reply_gets_no_notice():
-    data = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done"}]}
-    assert finalize_plan_text(data) == "Done"
+# ─── reading a reply, per protocol ───────────────────────────────────────────
+#
+# This is where planning silently broke on two of the three providers: the reader walked
+# `data["content"]` whatever the protocol, so an OpenAI-compatible or Ollama reply came
+# back empty and the turn finished having said "(no response)" and done nothing. Each
+# protocol keeps its text somewhere different and signals truncation with a different
+# key AND a different value, so all six are pinned.
+
+
+@pytest.mark.parametrize("protocol,data", [
+    ("anthropic", {"content": [{"type": "text", "text": "Hello"}]}),
+    ("openai", {"choices": [{"message": {"content": "Hello"}}]}),
+    ("ollama", {"message": {"content": "Hello"}}),
+])
+def test_the_reply_is_read_out_of_each_protocols_own_shape(protocol, data):
+    assert finalize_plan_text(protocol, data) == "Hello"
+
+
+@pytest.mark.parametrize("protocol,data", [
+    ("anthropic", {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "Cut"}]}),
+    ("openai", {"choices": [{"message": {"content": "Cut"}, "finish_reason": "length"}]}),
+    ("ollama", {"message": {"content": "Cut"}, "done_reason": "length"}),
+])
+def test_each_protocol_signals_truncation_its_own_way(protocol, data):
+    assert finalize_plan_text(protocol, data) == "Cut" + TRUNCATION_NOTICE
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "openai", "ollama"])
+def test_an_ordinary_reply_gets_no_truncation_notice(protocol):
+    data = {
+        "anthropic": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Done"}]},
+        "openai": {"choices": [{"message": {"content": "Done"}, "finish_reason": "stop"}]},
+        "ollama": {"message": {"content": "Done"}, "done_reason": "stop"},
+    }[protocol]
+    assert finalize_plan_text(protocol, data) == "Done"
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "openai", "ollama"])
+@pytest.mark.parametrize("data", [None, {}, {"choices": []}, {"message": {}}])
+def test_a_missing_reply_reads_as_empty_rather_than_raising(protocol, data):
+    assert finalize_plan_text(protocol, data) == ""
+
+
+def test_a_custom_provider_is_read_as_openai_compatible():
+    # `protocol` carries the wire format, not the vendor: anything that is not
+    # anthropic or ollama speaks the OpenAI shape.
+    data = {"choices": [{"message": {"content": "Hi"}}]}
+    assert finalize_plan_text("custom", data) == "Hi"
+
+
+def test_only_anthropic_recovers_a_plan_from_a_tool_use_block():
+    # The other two have no such block, and reaching for one would be reading a shape
+    # that cannot occur.
+    data = {"stop_reason": "tool_use", "content": [
+        {"type": "tool_use", "name": "create_note", "input": {"title": "T"}},
+    ]}
+    assert "create_note" in finalize_plan_text("anthropic", data)
+    assert finalize_plan_text("openai", data) == ""

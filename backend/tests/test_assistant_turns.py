@@ -52,7 +52,7 @@ def session(engine, monkeypatch):
 
 
 def make_turn(session, *, plan_mode=True, voice=False, note_id="note-1", exec_ctx=None,
-              web_search_mode="none"):
+              web_search_mode="none", protocol="anthropic"):
     now = datetime.utcnow()
     job = AssistantRunJob(
         id="turn-1",
@@ -63,7 +63,7 @@ def make_turn(session, *, plan_mode=True, voice=False, note_id="note-1", exec_ct
         status="processing",
         phase="planning",
         prompt_ctx=json.dumps({
-            "protocol": "anthropic", "provider_id": "p1", "model": "m",
+            "protocol": protocol, "provider_id": "p1", "model": "m",
             "base_body": {"messages": [{"role": "user", "content": "go"}]},
         }),
         exec_ctx=json.dumps(exec_ctx or {"current_note_id": note_id,
@@ -79,9 +79,18 @@ def make_turn(session, *, plan_mode=True, voice=False, note_id="note-1", exec_ct
     return job
 
 
-def reply(text):
-    """One provider reply carrying `text`."""
-    return {"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}
+def reply(text, protocol="anthropic"):
+    """One provider reply carrying `text`, in that protocol's own shape.
+
+    The three are genuinely different objects, not stylistic variants — which is the
+    whole point of parametrising over them.
+    """
+    if protocol == "anthropic":
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}
+    if protocol == "ollama":
+        return {"message": {"role": "assistant", "content": text}, "done_reason": "stop"}
+    return {"choices": [{"message": {"role": "assistant", "content": text},
+                         "finish_reason": "stop"}]}
 
 
 def envelope(*actions):
@@ -104,6 +113,9 @@ def stub_provider(monkeypatch, *replies):
 
     monkeypatch.setattr(planner, "call_provider", fake)
     return sent
+
+
+PROTOCOLS = ["anthropic", "openai", "ollama"]
 
 
 def plan_turn(session, **kwargs):
@@ -483,3 +495,48 @@ def test_an_approved_turn_skips_planning_and_goes_straight_to_work(session, engi
 
     assert calls == [], "the plan was already made"
     assert [a["type"] for a in applied[0]["actions"]] == ["append_note"]
+
+
+# ─── every protocol ──────────────────────────────────────────────────────────
+#
+# The turn was only ever exercised over the Anthropic shape, and reading the reply is
+# the one part of planning that differs per protocol. It shipped reading `data["content"]`
+# unconditionally, so on an OpenAI-compatible or Ollama provider every planning call came
+# back empty: "(no response)" in the chat, turn finished, nothing created, no error.
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_a_plan_is_read_out_of_every_protocol(session, monkeypatch, protocol):
+    make_turn(session, plan_mode=True, protocol=protocol)
+    stub_provider(monkeypatch, reply(envelope(
+        {"type": "create_note", "title": "Analysis", "content": "Body."},
+    ), protocol))
+
+    result = plan_turn(session)
+
+    row = turn(session)
+    assert result.run_now is False
+    assert row.status == "awaiting_approval", f"{protocol} planning produced no plan"
+    assert [a["type"] for a in json.loads(row.plan)["actions"]] == ["create_note"]
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_a_plain_answer_survives_every_protocol(session, monkeypatch, protocol):
+    make_turn(session, plan_mode=True, protocol=protocol)
+    stub_provider(monkeypatch, reply(envelope(
+        {"type": "respond", "text": "Geckos climb."},
+    ), protocol))
+
+    plan_turn(session)
+
+    assert [m["content"] for m in messages_of(session)] == ["Geckos climb."]
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_plan_mode_off_runs_on_from_every_protocol(session, monkeypatch, protocol):
+    make_turn(session, plan_mode=False, protocol=protocol)
+    stub_provider(monkeypatch, reply(envelope(
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+    ), protocol))
+
+    assert plan_turn(session).run_now is True
