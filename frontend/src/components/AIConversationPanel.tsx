@@ -20,16 +20,15 @@ import AssetsPanel from '@/components/AssetsPanel'
 import RecipePickerDropdown from '@/components/RecipePickerDropdown'
 import { settingsApi } from '@/api/settings'
 import { configApi } from '@/api/config'
-import { searchApi } from '@/api/search'
-import { notesApi, type NoteListItem, type ListNotesParams } from '@/api/notes'
+import { notesApi, type NoteListItem } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { assistantApi } from '@/api/assistant'
+import type { ActivityJob } from '@/api/activity'
 import { errorMessage } from '@/utils/aiErrors'
-import { isActive } from '@/api/activity'
+import { isActive, isAwaitingApproval, isSettled } from '@/api/activity'
 import { useActivityStore } from '@/stores/activity'
-import type { GenerationRequest } from '@/services/ai'
 import type { Recipe } from '@/api/recipes'
 import { renderRecipePrompt, getCurrentSelectionText } from '@/utils/recipeVariables'
 import { matchRecipeVoiceCommand } from '@/utils/recipeVoiceCommand'
@@ -37,15 +36,9 @@ import { extractPlainText, extractLinkedFileUrls, extractBlockTexts, type Markdo
 import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
 import {
-  parsePlan,
   normalizeActionTags,
   buildPlanReferenceBlock,
-  buildPlanSummary,
-  buildContentStepInstruction,
-  actionNeedsGeneration,
   formatNoteMeta,
-  formatWebSearchResults,
-  webSearchContinuation,
   PLAN_INSTRUCTIONS,
   VOICE_REPLY_INSTRUCTIONS,
   NATIVE_WEB_SEARCH_INSTRUCTIONS,
@@ -65,12 +58,6 @@ export interface ConversationMessage {
   content: string
   timestamp: string
 }
-
-// Shown as soon as a run is handed to the server. The point of the whole change is
-// that the user can act on this and leave.
-const RUN_STARTED_NOTICE =
-  '_Working on it. You can close this note or the tab — the results will appear here, ' +
-  'and in the note, when it finishes._'
 
 type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
 
@@ -131,13 +118,9 @@ function liveExtractText(buf: string): string {
 
 // How many per-document generation calls to run at once (see Phase 2 plan).
 
-// Max retrieval rounds per request — find_notes over the note library and web_search
-// over the web share one budget (bounds an agentic search loop, whichever it searches).
-const MAX_RETRIEVAL_ROUNDS = 4
-
-// Web searches run in a single round. Each is a live API call the user waits on, so a
-// plan asking for a dozen angles at once is trimmed to the first few.
-const MAX_WEB_SEARCHES_PER_ROUND = 3
+// How often the panel asks what the model has said so far. The worker writes the
+// reply onto its job row about once a second, so asking faster only costs requests.
+const PREVIEW_POLL_MS = 1000
 
 // Everything needed to generate and execute a plan for the current context, split by
 // prompt-cache stability: `instructions` + `referenceBlock` form the cacheable prefix,
@@ -160,19 +143,16 @@ interface PlanContext {
   annotationIds: Set<string>
 }
 
+/** A plan the server has parked, waiting for the user to decide.
+ *
+ * Far less than it used to carry. The context, the history and the request all live on
+ * the job now — approving is a single call naming which steps to keep — so what is
+ * left is only what the modal draws with. */
 interface PendingPlan {
+  runId: string
   plan: Plan
-  ctx: PlanContext
-  baseMessages: ConversationMessage[]
-  // Captured at planning time so the per-document generation calls (run on confirm) rebuild
-  // a byte-identical cached prefix — same history + request the planning call used.
-  history: ConversationTurn[]
-  userRequest: string
-  // Captured here rather than read from state when the run starts: on the first
-  // message of a conversation the session is created during this same handler, and
-  // `currentSessionId` has not re-rendered yet. `persistCurrentSession` takes an
-  // explicit id for exactly this reason.
-  sessionId: string | null
+  /** Resolves the ids the plan names to note, folder and category titles. */
+  labelMap: Map<string, string>
 }
 
 interface AIConversationPanelProps {
@@ -220,37 +200,6 @@ interface AIConversationPanelProps {
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
-}
-
-// Resolve a find_notes action's folder scope + free-text query into notesApi.list()
-// params. 'current' resolves against the folder currently being viewed
-// (ctx.currentFolderId — itself possibly null, meaning the root). When `folderId`
-// is absent, this is identical to the old unscoped behavior (global substring search).
-function findNotesParams(action: Extract<PlanAction, { type: 'find_notes' }>, ctx: PlanContext): ListNotesParams {
-  const params: ListNotesParams = { limit: 50 }
-  if (action.query) params.search = action.query
-  if (action.folderId !== undefined) {
-    const resolved = action.folderId === 'current' ? ctx.currentFolderId : action.folderId
-    params.in_folder = true
-    if (resolved !== null) params.folder_id = resolved
-    if (action.recursive) params.recursive = true
-  }
-  return params
-}
-
-// Human-readable description of a find_notes action's scope — used both in the
-// round summary sent back to the model and as the list view's "Search Results"
-// label. Always returns a non-empty string: the caller relies on this to avoid
-// tripping a "search box is empty" reset in the list view.
-function describeFindNotes(action: Extract<PlanAction, { type: 'find_notes' }>, ctx: PlanContext): string {
-  const parts: string[] = []
-  if (action.query) parts.push(`"${action.query}"`)
-  if (action.folderId !== undefined) {
-    const resolved = action.folderId === 'current' ? ctx.currentFolderId : action.folderId
-    const folderName = resolved === null ? 'the root' : (ctx.folders.find((f) => f.id === resolved)?.name ?? resolved)
-    parts.push(`folder "${folderName}"${action.recursive ? ' (recursive)' : ''}`)
-  }
-  return parts.join(' in ') || 'notes'
 }
 
 function safeStringify(v: unknown): string {
@@ -526,9 +475,8 @@ export default function AIConversationPanel({
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
   // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
+  // The reply so far, polled off the turn's job row while it is planning.
   const [streamingText, setStreamingText] = useState<string | null>(null)
-  // Phase 2 (deferred body) generation progress, shown live in the plan modal so a long
-  // multi-minute stream doesn't look frozen. null = not generating.
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -537,12 +485,6 @@ export default function AIConversationPanel({
   const isMobileRef = useRef(isMobile)
   const panelWidthRef = useRef(panelWidth)
   const panelHeightRef = useRef(panelHeight)
-  const streamBufRef = useRef('')                          // raw accumulated stream text
-  const abortRef = useRef<AbortController | null>(null)     // cancels the in-flight stream
-  const liveRafRef = useRef<number | null>(null)            // rAF handle throttling live updates
-
-  // Abort any in-flight stream on unmount so its reader/state updates don't leak.
-  useEffect(() => () => { abortRef.current?.abort() }, [])
 
   // Tracks whether the *current* dictation session has recognized any speech
   // yet, so stopping the mic without having said anything never re-sends
@@ -589,7 +531,7 @@ export default function AIConversationPanel({
   useEffect(() => { conversationRef.current = conversation })
   const voice = useVoiceMode({
     onUserTurn: (t) => voiceTurnRef.current(t),
-    onBargeIn: () => { abortRef.current?.abort() },
+    onBargeIn: () => stopTurn(),
     onError: (msg) => { setError(msg); void endVoiceSession(false) },
   })
   // Voice mode is available only when the instance flag, the user's opt-in, and a
@@ -620,7 +562,7 @@ export default function AIConversationPanel({
     if (prev === 'dictation' && dictation.mode === null && dictation.status !== 'error' && dictatedThisSessionRef.current) {
       dictatedThisSessionRef.current = false
       const { input: text, loading, aiService, conversation } = latestSendCtxRef.current
-      if (text.trim() && !loading && aiService) {
+      if (text.trim() && !loading && !planning && aiService) {
         void handleSendRef.current(text, conversation)
       }
     }
@@ -673,47 +615,126 @@ export default function AIConversationPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId])
 
-  // A run belonging to this conversation, while it is still going. Its presence locks
-  // the composer: a second turn would race a plan that is still being applied.
+  // This conversation's turn, whatever phase it is in.
   const activityJobs = useActivityStore((s) => s.jobs)
+  const mine = (job: ActivityJob) =>
+    job.kind === 'assistant' && !!currentSessionId && job.meta?.session_id === currentSessionId
   const activeRun = useMemo(
-    () => Object.values(activityJobs).find(
-      (job) => job.kind === 'assistant' && isActive(job) && job.meta?.session_id === currentSessionId,
-    ),
+    () => Object.values(activityJobs).find((job) => mine(job) && isActive(job)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [activityJobs, currentSessionId],
   )
 
-  // Only the moment the run is being handed over, not its whole duration. A run
-  // holds the *note* read-only; the conversation stays open, because a purely
-  // conversational turn never creates a run at all, and a second plan against the
-  // same note is refused server-side (409 already_running).
-  const runInFlight = executing
+  // Planning is the one phase that owns the conversation: a second question asked while
+  // the first is still being thought about would race it. Once the turn is writing or
+  // applying, the composer opens again — the *note* is what is held then, not the chat.
+  const planning = activeRun?.meta?.phase === 'planning'
+  const runInFlight = executing || planning
 
-  // When a run lands, the summary it wrote is in the stored session, not in this
-  // component's state — reload the transcript rather than trying to reproduce it, and
-  // refresh whatever it may have changed.
+  // The transcript lives on the server: the worker appends the model's reply and its
+  // result summary there, whether or not this panel was open. So it is reloaded rather
+  // than reproduced.
+  const reloadTranscript = useCallback(async () => {
+    if (!currentSessionId) return
+    try {
+      const data = await aiSessionsApi.list(noteId ?? null)
+      setSessions(data)
+      const found = data.find((s) => s.id === currentSessionId)
+      if (!found) return
+      try {
+        setConversation(JSON.parse(found.messages) as ConversationMessage[])
+      } catch { /* keep what we have */ }
+    } catch { /* offline; the next poll picks it up */ }
+  }, [currentSessionId, noteId])
+
+  // A finished turn: reload what it wrote, and refresh whatever it may have changed.
+  // Keyed on *settled* rather than "no longer active", because a turn parked for
+  // approval is neither — treating that as finished would mark it done here and then
+  // never reload the summary it writes after the user approves it.
   const settledRuns = useRef<Set<string>>(new Set())
   useEffect(() => {
     for (const job of Object.values(activityJobs)) {
-      if (job.kind !== 'assistant' || isActive(job)) continue
-      if (job.meta?.session_id !== currentSessionId || !currentSessionId) continue
+      if (!mine(job) || !isSettled(job)) continue
       if (settledRuns.current.has(job.id)) continue
       settledRuns.current.add(job.id)
 
-      void aiSessionsApi.list(noteId ?? null).then((data) => {
-        setSessions(data)
-        const mine = data.find((s) => s.id === currentSessionId)
-        if (!mine) return
-        try { setConversation(JSON.parse(mine.messages) as ConversationMessage[]) } catch { /* keep what we have */ }
-      }).catch(() => {})
-
+      void reloadTranscript()
       onNotesChanged?.()
       void onCurrentNoteEdited?.()
       void onAnnotationsChanged?.()
       void useRecipesStore.getState().loadRecipes()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activityJobs, currentSessionId, noteId])
+  }, [activityJobs, currentSessionId, noteId, reloadTranscript])
+
+  // While the model is writing, show what it has said so far. The worker puts the reply
+  // on its job row about once a second; this is the only thing that polls for it, and
+  // only while its own turn is actually planning.
+  useEffect(() => {
+    if (!activeRun || !planning) {
+      setStreamingText(null)
+      return
+    }
+    const runId = activeRun.id
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const tick = async () => {
+      try {
+        const { data } = await assistantApi.preview(runId)
+        if (!stopped) setStreamingText(liveExtractText(data.text))
+      } catch { /* a missed poll keeps the last text; try again */ }
+      if (!stopped) timer = setTimeout(() => void tick(), PREVIEW_POLL_MS)
+    }
+    void tick()
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [activeRun, planning])
+
+  // A plan the server parked for review. Fetched rather than kept in state, because the
+  // panel that asked the question may be long gone — this is what makes a plan still be
+  // waiting when you come back to the note.
+  const openedPlans = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (pendingPlan) return
+    const parked = Object.values(activityJobs).find((job) => mine(job) && isAwaitingApproval(job))
+    if (!parked || openedPlans.current.has(parked.id)) return
+    openedPlans.current.add(parked.id)
+
+    void assistantApi.plan(parked.id).then(({ data }) => {
+      const labelMap = new Map(Object.entries(data.label_map))
+      setPendingPlan({ runId: parked.id, plan: data.plan, labelMap })
+      void reloadTranscript()
+      // A find_notes resolved server-side still belongs in the list view's results.
+      if (data.found_note_ids.length) {
+        void notesApi
+          .list({ ids: data.found_note_ids.join(','), limit: 50, include_children: true })
+          .then((res) => onSearchResults?.(data.search_label || 'Search results', res.data))
+          .catch(() => {})
+      }
+      // Voice confirms out loud instead of through the modal.
+      if (voiceActiveRef.current) {
+        const readback = describePlanForVoice(data.plan, labelMap)
+        setVoiceConfirmText(readback)
+        voice.speak(readback)
+      }
+    }).catch(() => {
+      // Gone, or someone else's. Let it be re-picked-up if it reappears.
+      openedPlans.current.delete(parked.id)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityJobs, currentSessionId, pendingPlan, reloadTranscript])
+
+  // Plans left waiting from a previous visit. The activity store is lost on reload, and
+  // /api/activity?active=1 rightly does not list a turn that is holding nothing.
+  useEffect(() => {
+    void assistantApi.listAwaiting()
+      .then(({ data }) => data.forEach((job) => useActivityStore.getState().track(job)))
+      .catch(() => {})
+  }, [])
 
   // Keep the assets cache pointed at the open note, and only let the editor's autosave
   // refresh it while the tab is actually on screen (see stores/assets.ts).
@@ -1160,135 +1181,59 @@ export default function AIConversationPanel({
   // cached prefix (same instructions/reference/history/current-note + request) and appends
   // [assistant: <compact plan>, user: <step instruction>]. Runs in parallel (capped). Mutates
   // the successful actions' `content` in place; returns a runnable plan with any failed
-  // actions removed plus their failures as result rows.
   /**
-   * Hand an approved plan to the server and stop watching it.
+   * Run a plan the server parked for review.
    *
-   * Writing the deferred bodies and applying the actions used to happen right here,
-   * which is why leaving the note threw the work away: this component is unmounted by
-   * the route, and its cleanup aborts every in-flight stream. Both halves now run as a
-   * job. What stays here is prompt assembly — the browser already knows how to build a
-   * request for each provider, cache breakpoints and all, so the bodies are built now
-   * and shipped with the run rather than rebuilt server-side.
+   * The plan, the context and the conversation all live on the job already, so this is
+   * one call naming which steps survived the checkboxes. `respond` actions are kept
+   * server-side whatever was ticked — the model's reply is not a step the user is
+   * choosing between.
    */
-  async function runPlan(
-    plan: Plan,
-    ctx: PlanContext,
-    baseMessages: ConversationMessage[],
-    history: ConversationTurn[],
-    userRequest: string,
-    sessionId?: string | null,
-  ) {
-    // Never fall back to reading it from state here: the plan-mode-off path runs
-    // inside the same handler that created the session, where state is still stale.
-    const sid = sessionId ?? currentSessionId ?? null
+  async function approvePlan(actionIndices?: number[]) {
+    const pending = pendingPlanRef.current
+    if (!pending) return
     setExecuting(true)
     try {
       // Flush unsaved edits first, so amend/append build on the latest content and the
       // run isn't overwritten by a stale autosave a moment later.
       await onBeforeExecute?.()
-
-      const deferred = plan.actions
-        .map((action, index) => ({ action, index }))
-        .filter(({ action }) => actionNeedsGeneration(action))
-
-      let promptCtx: GenerationRequest | Record<string, never> = {}
-      if (deferred.length && aiService) {
-        const planSummary = buildPlanSummary(plan)
-        promptCtx = aiService.buildGenerationRequest(
-          {
-            instructions: ctx.instructions,
-            referenceBlock: ctx.referenceBlock,
-            currentNoteText: ctx.currentNoteText || undefined,
-            history,
-            userRequest,
-            enableWebSearch: false,
-          },
-          deferred.map(({ action, index }) => ({
-            index,
-            turns: [
-              { role: 'assistant', content: planSummary },
-              { role: 'user', content: buildContentStepInstruction(action, index, ctx.labelMap) },
-            ],
-          })),
-        )
-      }
-
-      const { data: job } = await assistantApi.start({
-        plan,
-        prompt_ctx: promptCtx,
-        exec_ctx: {
-          current_note_id: noteId ?? null,
-          default_category_id: defaultCategoryId ?? '',
-          current_folder_id: currentFolderId ?? null,
-          valid_note_ids: ctx.targetNotes.map((n) => n.id),
-          valid_folder_ids: ctx.folders.map((f) => f.id),
-          valid_category_ids: ctx.categories.map((c) => c.id),
-          valid_annotation_ids: [...ctx.annotationIds],
-          valid_recipe_ids: ctx.recipes.map((r) => r.id),
-        },
-        note_id: noteId ?? null,
-        session_id: sid,
-      })
-
-      // A plan can answer the user as well as edit their notes. That answer is
-      // already written — it is sitting in the plan's `respond` actions — so it goes
-      // into the chat now rather than waiting for the run to finish, which can take
-      // minutes. `cancelPlan` has always preserved it for the same reason: running
-      // the mutations should no more discard the reply than cancelling them does.
-      // The worker's summary deliberately does not repeat it.
-      const reply = plan.actions
-        .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
-        .filter(Boolean)
-        .join('\n\n')
-
-      // Persist this now, before the worker finishes: it appends its own summary to the
-      // same session, and the transcript is reloaded when the run ends.
-      const started = [
-        ...baseMessages,
-        assistantMsg([reply, RUN_STARTED_NOTICE].filter(Boolean).join('\n\n')),
-      ]
-      setConversation(started)
-      await persistCurrentSession(started, sid)
-
+      const { data: job } = await assistantApi.approve(pending.runId, actionIndices)
+      setPendingPlan(null)
       useActivityStore.getState().track(job)
     } catch (e) {
-      // A second plan against a note that is already being written is an ordinary
-      // thing to attempt, not a failure — say so in the chat rather than in red.
-      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
-        ?.response?.data?.detail?.code
-      if (code === 'already_running') {
-        setConversation([
-          ...baseMessages,
-          assistantMsg('_This note already has a plan running. Wait for it to finish, or stop it from the header, then try again._'),
-        ])
-      } else {
-        setError(errorMessage(e, 'Failed to start the plan'))
-        setErrorDetails(formatErrorDetails(e))
-      }
+      setError(errorMessage(e, 'Failed to start the plan'))
+      setErrorDetails(formatErrorDetails(e))
     } finally {
       setExecuting(false)
-      setPendingPlan(null)
     }
   }
 
-  function cancelPlan() {
-    if (!pendingPlan) return
-    // Preserve any conversational answer the plan carried (e.g. prose the model wrote
-    // alongside its mutations) so cancelling the mutations doesn't discard the reply.
-    const respondText = pendingPlan.plan.actions
-      .flatMap((a) => (a.type === 'respond' ? [a.text] : []))
-      .filter(Boolean)
-      .join('\n\n')
-    const msg = [respondText, '_Plan cancelled._'].filter(Boolean).join('\n\n')
-    const cancelled = [...pendingPlan.baseMessages, assistantMsg(msg)]
-    setConversation(cancelled)
-    void persistCurrentSession(cancelled)
+  /** Decline a parked plan. The server says so in the chat, so the transcript reload
+   *  that follows is what puts it on screen. */
+  async function cancelPlan() {
+    const pending = pendingPlanRef.current
     setPendingPlan(null)
+    if (!pending) return
+    try {
+      const { data: job } = await assistantApi.cancel(pending.runId)
+      useActivityStore.getState().track(job)
+    } catch {
+      // Already finished or gone; the transcript reload below still catches up.
+    }
+    void reloadTranscript()
   }
 
+  /**
+   * Ask for something. Everything after this happens on the server.
+   *
+   * What is left here is the half only a browser can do: reading the live editor
+   * document, the attached files, and the scope the user picked, and assembling the
+   * request body for this provider — cache breakpoints and all. Then the turn is handed
+   * over and this returns. Planning, searching, deciding and running all happen without
+   * it, which is the whole point: leaving the note no longer throws the work away.
+   */
   async function handleSend(userContent: string, priorMessages: ConversationMessage[]) {
-    if (!userContent.trim() || !aiService || loading || executing || pendingPlan) return
+    if (!userContent.trim() || !aiService || loading || planning || executing || pendingPlan) return
     setError('')
     setErrorDetails('')
 
@@ -1302,7 +1247,6 @@ export default function AIConversationPanel({
     setConversation(withUser)
     setInput('')
     setLoading(true)
-    abortRef.current = new AbortController()
 
     // Auto-create a session on the first message if one doesn't exist yet
     let sessionId = currentSessionId
@@ -1311,259 +1255,103 @@ export default function AIConversationPanel({
     }
 
     try {
-      const svc = aiService
       const userRequest = userContent.trim()
-
-      // Use frozen context if locked; otherwise build fresh from current scope.
-      const isFrozen = frozenContext !== null
-      let ctx = isFrozen ? frozenContext! : await buildPlanContext()
+      const ctx = frozenContext ?? await buildPlanContext()
 
       // Prior turns become real message turns (note-link-stripped so the model can't
       // latch onto a stale id from an old result summary). The live current-note body
       // and the new request are sent last, after the cache breakpoint.
-      let history = priorMessages
+      const history = priorMessages
         .map((m) => ({ role: m.role, content: stripNoteLinks(m.content) }))
         .filter((m) => m.content.trim().length > 0) // drop empty turns (invalid as text blocks)
 
-      // No prefill: it behaves inconsistently across providers (Anthropic continues from
-      // it; OpenAI/Ollama prepend it to a fresh full-JSON reply, yielding "{{"). The
-      // instructions ask for JSON-only and parsePlan tolerantly extracts the object, so
-      // temperature:0 alone is enough.
-      // Push live streamed text into the bubble at most once per frame (a fast token
-      // stream would otherwise re-render + re-parse Markdown per token).
-      const scheduleLive = () => {
-        if (liveRafRef.current !== null) return
-        liveRafRef.current = requestAnimationFrame(() => {
-          liveRafRef.current = null
-          setStreamingText(liveExtractText(streamBufRef.current))
-        })
-      }
-      // Put a status line in that same bubble while something other than the model is
-      // working (a web search between planning rounds). Any frame still queued from the
-      // last stream is cancelled first, or it would overwrite the status a moment later.
-      const showStatus = (text: string) => {
-        if (liveRafRef.current !== null) { cancelAnimationFrame(liveRafRef.current); liveRafRef.current = null }
-        streamBufRef.current = ''
-        setStreamingText(text)
-      }
-      // Stream when the provider supports it (all three do); fall back to the blocking
-      // call otherwise. Either way the returned string is fed to parsePlan unchanged —
-      // the live bubble is cosmetic. `ctx`/`history` are read fresh each call because the
-      // retrieval loop reassigns them between rounds.
-      const planOnce = async (): Promise<Plan> => {
-        streamBufRef.current = ''
-        setStreamingText('')
-        // Compose the planner's system instructions from the static base plus two optional
-        // blocks: the web-search guidance for however this provider searches (see
-        // webSearchMode — native tool, app-run action, or nothing) and, in voice mode, the
-        // spoken-reply guidance. Both are appended only to THIS planning call; deferred
-        // note-body generation keeps the base instructions, so saved note content stays
-        // fully formatted Markdown and is never told about a capability it isn't given.
-        // Voice guidance stays last so its "every rule above is unchanged" wording still
-        // refers to everything before it.
-        const planInstructions = [
-          ctx.instructions,
-          ...(webSearchMode === 'native' ? [NATIVE_WEB_SEARCH_INSTRUCTIONS] : []),
-          ...(webSearchMode === 'action' ? [WEB_SEARCH_ACTION_INSTRUCTIONS] : []),
-          ...(voiceActiveRef.current ? [VOICE_REPLY_INSTRUCTIONS] : []),
-        ].join('\n\n')
-        const req = {
-          instructions: planInstructions,
-          referenceBlock: ctx.referenceBlock,
-          currentNoteText: ctx.currentNoteText || undefined,
-          history,
-          userRequest,
-          attachments: ctx.attachments.length ? ctx.attachments : undefined,
-          // Only enable the native tool where it's actually wired up; otherwise the prompt
-          // above never mentions it, so the model won't fake a tool call.
-          enableWebSearch: webSearchMode === 'native',
-        }
-        const raw = svc.streamConversation
-          ? await svc.streamConversation(req, (t) => { streamBufRef.current += t; scheduleLive() }, abortRef.current?.signal)
-          : await svc.completeConversation(req)
-        return parsePlan(raw)
+      // Compose the planner's system instructions from the static base plus two optional
+      // blocks: the web-search guidance for however this provider searches (see
+      // webSearchMode — native tool, app-run action, or nothing) and, in voice mode, the
+      // spoken-reply guidance. Both belong to the planning call only; deferred note-body
+      // generation keeps the base instructions, so saved note content stays fully
+      // formatted Markdown and is never told about a capability it isn't given. Voice
+      // guidance stays last so its "every rule above is unchanged" wording still refers
+      // to everything before it.
+      const planInstructions = [
+        ctx.instructions,
+        ...(webSearchMode === 'native' ? [NATIVE_WEB_SEARCH_INSTRUCTIONS] : []),
+        ...(webSearchMode === 'action' ? [WEB_SEARCH_ACTION_INSTRUCTIONS] : []),
+        ...(voiceActiveRef.current ? [VOICE_REPLY_INSTRUCTIONS] : []),
+      ].join('\n\n')
+
+      const req: ConversationRequest = {
+        instructions: planInstructions,
+        referenceBlock: ctx.referenceBlock,
+        currentNoteText: ctx.currentNoteText || undefined,
+        history,
+        userRequest,
+        attachments: ctx.attachments.length ? ctx.attachments : undefined,
+        // Only enable the native tool where it's actually wired up; otherwise the prompt
+        // above never mentions it, so the model won't fake a tool call.
+        enableWebSearch: webSearchMode === 'native',
       }
 
-      let plan = await planOnce()
+      // Persist the question BEFORE handing the turn over. The worker appends the
+      // model's reply to this same stored transcript, and if it got there first this
+      // save would overwrite it.
+      await persistCurrentSession(withUser, sessionId)
+
+      const { data: job } = await assistantApi.start({
+        prompt_ctx: aiService.buildPlanRequest(req),
+        exec_ctx: {
+          current_note_id: noteId ?? null,
+          default_category_id: defaultCategoryId ?? '',
+          current_folder_id: currentFolderId ?? null,
+          valid_note_ids: ctx.targetNotes.map((n) => n.id),
+          valid_folder_ids: ctx.folders.map((f) => f.id),
+          valid_category_ids: ctx.categories.map((c) => c.id),
+          valid_annotation_ids: [...ctx.annotationIds],
+          valid_recipe_ids: ctx.recipes.map((r) => r.id),
+        },
+        turn_ctx: {
+          label_map: Object.fromEntries(ctx.labelMap),
+          folder_names: Object.fromEntries(ctx.folders.map((f) => [f.id, f.name])),
+          plan_mode: planMode,
+          // Voice always confirms out loud, whatever the plan-mode toggle says.
+          voice: voiceActiveRef.current,
+          web_search_mode: webSearchMode,
+          use_summaries: useSummaries,
+        },
+        note_id: noteId ?? null,
+        session_id: sessionId ?? null,
+      })
+
       setPendingFiles([])
-
-      // Retrieval steps, both resolved here rather than by planExecutor: find_notes
-      // searches the note library, web_search searches the web (only in 'action' mode —
-      // Anthropic searches inside its own model call instead). Both work the same way:
-      // run the search(es), fold what came back into the conversation, then re-plan so
-      // the model can act on it. They share one bounded round budget so a looping model
-      // can't search forever, and a single round may carry both kinds.
-      let retrievalRounds = 0
-      const isRetrieval = (a: PlanAction) =>
-        a.type === 'find_notes' || (webSearchMode === 'action' && a.type === 'web_search')
-      while (retrievalRounds < MAX_RETRIEVAL_ROUNDS && plan.actions.some(isRetrieval)) {
-        retrievalRounds++
-        const findActions = plan.actions.filter(
-          (a): a is Extract<PlanAction, { type: 'find_notes' }> => a.type === 'find_notes',
-        )
-        const webActions = (webSearchMode === 'action'
-          ? plan.actions.filter((a): a is Extract<PlanAction, { type: 'web_search' }> => a.type === 'web_search')
-          : []
-        ).slice(0, MAX_WEB_SEARCHES_PER_ROUND)
-        // One block per retrieval kind, joined into the single user turn below.
-        const summaries: string[] = []
-
-        if (findActions.length) {
-          // Search the library; dedupe hits across all find_notes actions in this round.
-          // Each action independently scopes by free-text query, folder, or both.
-          const seen = new Set<string>()
-          const foundListItems: NoteListItem[] = []
-          for (const a of findActions) {
-            try {
-              const res = await notesApi.list(findNotesParams(a, ctx))
-              for (const item of res.data) {
-                if (!seen.has(item.id)) { seen.add(item.id); foundListItems.push(item) }
-              }
-            } catch { /* skip a failed search */ }
-          }
-
-          // Reflect the search in the list view (Search Results header + populated
-          // results). The label is never empty: an explicit action.description wins,
-          // else describeFindNotes always synthesizes something (query, folder scope,
-          // or the literal "notes" fallback) — this matters because the list view uses
-          // an empty search box to reset out of its search-results display.
-          const label = findActions.map((a) => a.description || describeFindNotes(a, ctx)).join(', ') || 'Search results'
-          onSearchResults?.(label, foundListItems)
-
-          // Fetch full bodies and fold them into the context so the model can consolidate/edit them.
-          const foundNotes = foundListItems.length ? await fetchNotesById(foundListItems.slice(0, 50).map((i) => i.id)) : []
-          const foundTargets: ContextNote[] = foundNotes
-            .filter((n): n is typeof n & { id: string } => Boolean(n.id))
-            .map((n) => ({ id: n.id, title: n.title || 'Untitled', createdAt: n.createdAt, modifiedAt: n.modifiedAt }))
-          const foundRendered = foundNotes.map((n) =>
-            `## ${n.title || 'Untitled'} [id: ${n.id}]${formatNoteMeta(n.createdAt, n.modifiedAt)}\n\n${(useSummaries && n.summary) ? n.summary : n.content}`)
-
-          const mergedTargets: ContextNote[] = [...ctx.targetNotes]
-          const mergedIds = new Set(mergedTargets.map((n) => n.id))
-          for (const t of foundTargets) if (!mergedIds.has(t.id)) { mergedIds.add(t.id); mergedTargets.push(t) }
-          const mergedRefText = [ctx.referenceContextText, ...foundRendered].filter(Boolean).join('\n\n---\n\n')
-          const mergedLabelMap = new Map(ctx.labelMap)
-          mergedTargets.forEach((n) => mergedLabelMap.set(n.id, n.title || 'Untitled'))
-          ctx = {
-            ...ctx,
-            referenceContextText: mergedRefText,
-            referenceBlock: buildPlanReferenceBlock({ referenceContextText: mergedRefText, targetNotes: mergedTargets, folders: ctx.folders, categories: ctx.categories, recipes: ctx.recipes, currentFolderId: ctx.currentFolderId, currentFolderName: ctx.currentFolderName }),
-            targetNotes: mergedTargets,
-            labelMap: mergedLabelMap,
-          }
-
-          // Record the search as a turn so the model sees its own query and the results.
-          const resultLines = foundNotes.map((n) => `- ${n.id} — ${n.title || 'Untitled'}${formatNoteMeta(n.createdAt, n.modifiedAt)}`).join('\n')
-          const scopeDescriptions = findActions.map((a) => describeFindNotes(a, ctx))
-          summaries.push(foundListItems.length
-            ? `Search results for ${scopeDescriptions.join(', ')} — ${foundListItems.length} note(s), now added to your context above:\n${resultLines}\n\nContinue with the original request: reply, or emit actions targeting these note ids.`
-            : `Search for ${scopeDescriptions.join(', ')} returned no notes. Continue with the original request (e.g. tell the user nothing matched).`)
-        }
-
-        if (webActions.length) {
-          // Run the searches in sequence and hand the model the hits verbatim. A search
-          // that fails is reported as a failed search rather than dropped: told nothing,
-          // the model answers from memory as though it had searched.
-          const blocks: string[] = []
-          let anySucceeded = false
-          for (const a of webActions) {
-            showStatus(`_Searching the web for “${a.query}”…_`)
-            try {
-              const res = await searchApi.web(a.query, a.maxResults, abortRef.current?.signal)
-              blocks.push(formatWebSearchResults(res))
-              anySucceeded = true
-            } catch (e) {
-              // Stop mid-search: hand the caller the same AbortError a stopped
-              // completion throws, so it takes the soft-cancel path rather than
-              // reporting a failed search and planning another round.
-              if (abortRef.current?.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-              blocks.push(`Web search for “${a.query}” failed: ${errorMessage(e, 'the search could not be run')}`)
-            }
-          }
-          summaries.push([...blocks, webSearchContinuation(anySucceeded)].join('\n\n'))
-        }
-
-        history = [
-          ...history,
-          { role: 'assistant', content: JSON.stringify({ actions: [...findActions, ...webActions] }) },
-          { role: 'user', content: summaries.join('\n\n---\n\n') },
-        ]
-
-        plan = await planOnce()
-      }
-
-      // Drop any leftover retrieval actions — they're resolved above, never executed.
-      // A web_search also lands here when no backend is configured (the loop only runs
-      // them in 'action' mode), so this doubles as the guard for a model that asks for a
-      // search it was never offered.
-      const leftoverRetrieval = plan.actions.filter((a) => a.type === 'find_notes' || a.type === 'web_search')
-      if (leftoverRetrieval.length) {
-        plan = { actions: plan.actions.filter((a) => a.type !== 'find_notes' && a.type !== 'web_search') }
-        if (plan.actions.length === 0) {
-          plan = {
-            actions: [{
-              type: 'respond',
-              text: leftoverRetrieval.every((a) => a.type === 'find_notes')
-                ? '_(No matching notes found.)_'
-                : '_(The search didn’t turn up an answer — try rephrasing, or check Settings → AI → Assistant for web search.)_',
-            }],
-          }
-        }
-      }
-
-      const onlyRespond = plan.actions.every((a) => a.type === 'respond')
-
-      if (onlyRespond) {
-        // Respond-only results display immediately as a normal chat message — no
-        // preview — even when Plan mode is on.
-        const text =
-          plan.actions
-            .map((a) => (a.type === 'respond' ? a.text : ''))
-            .filter(Boolean)
-            .join('\n\n') || '(no response)'
-        const responded = [...withUser, assistantMsg(text)]
-        setConversation(responded)
-        void persistCurrentSession(responded, sessionId)
-        // Keep the formatted text in the chat, but speak it stripped of Markdown.
-        if (voiceActiveRef.current) voice.speak(stripMarkdownForSpeech(text))
-      } else if (voiceActiveRef.current) {
-        // Voice mode: read the plan back and wait for a spoken confirmation before
-        // running it, regardless of the panel's Plan-mode setting.
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
-        const readback = describePlanForVoice(plan, ctx.labelMap)
-        setVoiceConfirmText(readback)
-        voice.speak(readback)
-      } else if (planMode) {
-        setPendingPlan({ plan, ctx, baseMessages: withUser, history, userRequest: userContent.trim(), sessionId })
-      } else {
-        await runPlan(plan, ctx, withUser, history, userContent.trim(), sessionId)
-      }
+      useActivityStore.getState().track(job)
     } catch (e: unknown) {
-      // A user-initiated Stop aborts the fetch — treat it as a soft cancel: keep the
-      // question in the chat, drop the partial reply, and show no error.
-      if (e instanceof DOMException && e.name === 'AbortError') {
-        setConversation(withUser)
-        void persistCurrentSession(withUser, sessionId)
+      // A second turn against a note already working is an ordinary thing to attempt,
+      // not a failure — say so in the chat rather than in red.
+      const code = (e as { response?: { data?: { detail?: { code?: string } } } })
+        ?.response?.data?.detail?.code
+      if (code === 'already_running') {
+        setConversation([
+          ...withUser,
+          assistantMsg('_This note already has a turn running. Wait for it to finish, or stop it from the header, then try again._'),
+        ])
       } else {
         setError(errorMessage(e))
         setErrorDetails(formatErrorDetails(e))
-        // Keep the user's question in the chat (and persist it) even though the
-        // request failed — reverting to priorMessages would silently discard what
-        // they typed. They can retry by editing the message.
+        // Keep the user's question in the chat even though the request failed —
+        // reverting would silently discard what they typed. They can retry by editing.
         setConversation(withUser)
-        void persistCurrentSession(withUser, sessionId)
         if (voiceActiveRef.current) voice.speak('Sorry, something went wrong.')
       }
     } finally {
       setLoading(false)
-      if (liveRafRef.current !== null) { cancelAnimationFrame(liveRafRef.current); liveRafRef.current = null }
-      setStreamingText(null)
-      abortRef.current = null
     }
   }
 
-  function stopStreaming() {
-    abortRef.current?.abort()
+  /** Stop the turn. It runs on the server, so this asks the server to stop it —
+   *  there is no in-flight request here to abort any more. */
+  function stopTurn() {
+    if (!activeRun) return
+    void useActivityStore.getState().cancel(activeRun)
   }
 
   // Submit the input box, ending any in-progress dictation first. Shared by the
@@ -1747,13 +1535,12 @@ export default function AIConversationPanel({
     if (pendingPlanRef.current) {
       const decision = interpretYesNo(text)
       if (decision === 'yes') {
-        const pp = pendingPlanRef.current
         setVoiceConfirmText(null)
-        await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
+        await approvePlan()
         voice.speak('Done.')
       } else if (decision === 'no') {
         setVoiceConfirmText(null)
-        cancelPlan()
+        await cancelPlan()
         voice.speak('Okay, I cancelled that.')
       } else {
         voice.speak('Should I go ahead? Please say yes or no.')
@@ -1959,15 +1746,14 @@ export default function AIConversationPanel({
           errorMessage={voice.errorMessage}
           confirmText={voiceConfirmText}
           onConfirm={() => {
-            const pp = pendingPlanRef.current
-            if (!pp) return
+            if (!pendingPlanRef.current) return
             setVoiceConfirmText(null)
             void (async () => {
-              await runPlan(pp.plan, pp.ctx, pp.baseMessages, pp.history, pp.userRequest, pp.sessionId)
+              await approvePlan()
               voice.speak('Done.')
             })()
           }}
-          onCancel={() => { setVoiceConfirmText(null); cancelPlan(); voice.speak('Okay, I cancelled that.') }}
+          onCancel={() => { setVoiceConfirmText(null); void cancelPlan(); voice.speak('Okay, I cancelled that.') }}
           onEnd={() => void endVoiceSession(true)}
           onInterrupt={() => voice.interrupt()}
         />
@@ -2076,7 +1862,7 @@ export default function AIConversationPanel({
           </div>
         )}
 
-        {aiService && conversation.length === 0 && !loading && (
+        {aiService && conversation.length === 0 && !loading && !planning && (
           <div className="text-center py-8 text-sm text-gray-400 space-y-1">
             <Sparkles className="w-8 h-8 mx-auto text-gray-300" />
             <p>Ask about your notes — or tell me to create, edit, rename, or organise them.</p>
@@ -2223,7 +2009,7 @@ export default function AIConversationPanel({
           )
         )}
 
-        {loading && (
+        {(loading || planning) && (
           streamingText ? (
             // Live streamed reply — replaces the "Thinking…" bubble once tokens arrive.
             // Rendered with a trailing caret; the final, fully-styled message is appended
@@ -2276,10 +2062,12 @@ export default function AIConversationPanel({
       {/* Input */}
       {aiService && (
         <div className="shrink-0 border-t border-gray-100 dark:border-gray-700">
-          {activeRun && (
-            // A run belonging to this conversation, still working. Shown here rather
-            // than in the plan modal (which closes the moment the run starts) so it
-            // stays visible while the conversation carries on around it.
+          {activeRun && !planning && (
+            // The turn, once it is past planning. Shown here rather than in the plan
+            // modal (which closes the moment the run starts) so it stays visible while
+            // the conversation carries on around it. Not during planning: the thinking
+            // bubble and the composer's Stop button already say that, and three ways to
+            // stop one turn is two too many.
             <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
               <Spinner />
               <span className="truncate">
@@ -2476,7 +2264,7 @@ export default function AIConversationPanel({
                   className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
                   onClick={dictation.toggleDictation}
                   onMouseDown={(e) => e.preventDefault()}
-                  disabled={loading}
+                  disabled={loading || planning}
                   title={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
                   aria-label={dictation.status === 'recording' ? 'Stop dictation' : 'Start dictation'}
                 >
@@ -2502,12 +2290,14 @@ export default function AIConversationPanel({
                 className="flex-1 resize-none input text-sm py-1.5 max-h-28 overflow-y-auto"
                 disabled={loading || runInFlight}
               />
-              {loading ? (
-                // While a reply is streaming/planning, the send button becomes a Stop
-                // button that aborts the in-flight stream (soft cancel — see handleSend).
+              {loading || planning ? (
+                // While the model is thinking, the send button becomes a Stop button.
+                // The thinking is a job now, so this stops the job rather than aborting
+                // a request this browser is holding open.
                 <button
-                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-gray-600 hover:bg-gray-700 text-white transition-colors"
-                  onClick={stopStreaming}
+                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-gray-600 hover:bg-gray-700 text-white transition-colors disabled:opacity-40"
+                  disabled={loading}
+                  onClick={stopTurn}
                   type="button"
                   aria-label="Stop generating"
                   title="Stop generating"
@@ -2560,7 +2350,7 @@ export default function AIConversationPanel({
                     })}
                     className="mt-0.5 h-3.5 w-3.5 accent-blue-600 cursor-pointer shrink-0"
                   />
-                  <span className="leading-snug">{defaultActionLabel(action, pendingPlan.ctx.labelMap)}</span>
+                  <span className="leading-snug">{defaultActionLabel(action, pendingPlan.labelMap)}</span>
                 </li>
               ))}
             </ul>
@@ -2574,9 +2364,12 @@ export default function AIConversationPanel({
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition-colors flex items-center justify-center gap-1.5"
                 disabled={runInFlight || selectedReviewCount === 0}
                 onClick={() => {
-                  // Respond steps are always kept (auto-accepted); mutation steps follow their checkbox.
-                  const filtered = { actions: pendingPlan.plan.actions.filter((a, i) => a.type === 'respond' || selectedSteps[i]) }
-                  void runPlan(filtered, pendingPlan.ctx, pendingPlan.baseMessages, pendingPlan.history, pendingPlan.userRequest, pendingPlan.sessionId)
+                  // Only the mutation steps need naming: the server keeps every respond
+                  // action regardless, because the reply is not one of the choices.
+                  void approvePlan(
+                    pendingPlan.plan.actions.flatMap((a, i) =>
+                      a.type !== 'respond' && selectedSteps[i] ? [i] : []),
+                  )
                 }}
               >
                 {runInFlight ? <><Spinner /> Running…</> : 'Approve & run'}
@@ -2584,7 +2377,7 @@ export default function AIConversationPanel({
               <button
                 className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
                 disabled={runInFlight}
-                onClick={cancelPlan}
+                onClick={() => void cancelPlan()}
               >
                 Cancel
               </button>

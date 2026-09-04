@@ -301,6 +301,11 @@ def list_notes(
     search: Optional[str] = None,
     recursive: bool = Query(False),
     include_children: bool = Query(False),
+    # Comma-separated ids, for fetching a known set back as list items. The assistant's
+    # find_notes runs on the server now, so the panel is handed ids and still has to
+    # show them in the list view's results — and there was no other way to ask for
+    # exactly these notes.
+    ids: Optional[str] = None,
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
@@ -319,6 +324,11 @@ def list_notes(
     if category_id:
         query = query.where(Note.category_id == category_id)
         count_query = count_query.where(Note.category_id == category_id)
+
+    if ids:
+        wanted = [i for i in (ids.split(",") if ids else []) if i][:200]
+        query = query.where(Note.id.in_(wanted))
+        count_query = count_query.where(Note.id.in_(wanted))
 
     # When scoped to a folder view, only return notes directly in that folder
     # (folder_id omitted ⇒ root level). Without in_folder, return notes across

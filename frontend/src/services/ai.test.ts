@@ -11,12 +11,14 @@
 import { describe, it, expect } from 'vitest'
 import {
   continuationBody,
+  createAIService,
   extractPlanText,
   isStalledTurn,
   stalledTurnAsText,
   type AnthropicMessageData,
 } from './ai'
 import { parsePlan } from './aiPlan'
+import type { AIProvider } from '@/api/settings'
 
 const searchCall = (query: string) => ({ type: 'server_tool_use', name: 'web_search', input: { query } })
 const hits = (...results: Array<{ title: string; url: string }>) => ({
@@ -149,5 +151,120 @@ describe('extractPlanText', () => {
     expect(parsePlan(extractPlanText(finished)).actions).toEqual([
       { type: 'create_note', title: 'The Mass Delusion', content: 'Body.' },
     ])
+  })
+})
+
+// ─── the body a turn ships to the server ─────────────────────────────────────
+//
+// Planning runs on a worker now, but the request is still assembled here, because the
+// four cache_control breakpoints and their order are what decide whether the prompt
+// cache hits — and the worker only ever appends to what it is given. So the layout is
+// pinned: a turn that quietly lost a breakpoint would still work, and would silently
+// re-bill its whole prefix on every round and every deferred body.
+
+function provider(overrides: Partial<AIProvider> = {}): AIProvider {
+  return {
+    id: 'p1',
+    name: 'Test',
+    provider_type: 'anthropic',
+    api_key: '',
+    base_url: null,
+    model: 'claude-x',
+    max_tokens: 4096,
+    supports_images: true,
+    use_anthropic_api: false,
+    extra_params: null,
+    enabled: true,
+    is_active: true,
+    ...overrides,
+  }
+}
+
+const conversation = {
+  instructions: 'INSTRUCTIONS',
+  referenceBlock: 'REFERENCE',
+  history: [
+    { role: 'user' as const, content: 'earlier question' },
+    { role: 'assistant' as const, content: 'earlier answer' },
+  ],
+  currentNoteText: 'NOTE BODY',
+  userRequest: 'write me an essay',
+}
+
+/** Every path through the body that carries a cache breakpoint. */
+function breakpoints(body: Record<string, unknown>): string[] {
+  const found: string[] = []
+  const walk = (node: unknown, path: string) => {
+    if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${path}[${i}]`))
+    if (!node || typeof node !== 'object') return
+    const obj = node as Record<string, unknown>
+    if (obj.cache_control) found.push(path)
+    for (const [key, value] of Object.entries(obj)) walk(value, `${path}.${key}`)
+  }
+  walk(body.system, 'system')
+  walk(body.messages, 'messages')
+  return found
+}
+
+describe('buildPlanRequest', () => {
+  it('carries how to reach the provider alongside the body', () => {
+    const req = createAIService(provider()).buildPlanRequest(conversation)
+    expect(req.protocol).toBe('anthropic')
+    expect(req.provider_id).toBe('p1')
+    expect(req.model).toBe('claude-x')
+    expect(req.max_tokens).toBe(4096)
+  })
+
+  it('puts a breakpoint on the instructions, the reference block, the last prior turn and the note', () => {
+    // Stable → volatile. The new request comes after the note's breakpoint, so asking
+    // a second question never invalidates anything before it.
+    const { base_body } = createAIService(provider()).buildPlanRequest(conversation)
+    expect(breakpoints(base_body)).toEqual([
+      'system[0]',
+      'system[1]',
+      'messages[1].content[0]',
+      'messages[2].content[0]',
+    ])
+  })
+
+  it('sends the request after the note, in the same volatile message', () => {
+    const { base_body } = createAIService(provider()).buildPlanRequest(conversation)
+    const messages = base_body.messages as Array<{ content: Array<{ text: string }> }>
+    const last = messages[messages.length - 1]
+    expect(last.content[0].text).toContain('NOTE BODY')
+    expect(last.content[1].text).toContain('write me an essay')
+    expect(last.content[1]).not.toHaveProperty('cache_control')
+  })
+
+  it('offers the search tool only when this provider searches inside its own call', () => {
+    const off = createAIService(provider()).buildPlanRequest(conversation)
+    const on = createAIService(provider()).buildPlanRequest({ ...conversation, enableWebSearch: true })
+    expect(off.base_body).not.toHaveProperty('tools')
+    expect(on.base_body).toHaveProperty('tools')
+  })
+
+  it('ships no follow-ups — those are the server\'s to append', () => {
+    // Whatever a caller passes, the shipped body is the prefix every later call reads.
+    const { base_body } = createAIService(provider()).buildPlanRequest({
+      ...conversation,
+      followups: [{ role: 'user', content: 'should not be here' }],
+    })
+    expect(JSON.stringify(base_body)).not.toContain('should not be here')
+  })
+
+  it('flattens the conversation for providers with no breakpoints of their own', () => {
+    for (const type of ['openai', 'ollama'] as const) {
+      const { protocol, base_body } = createAIService(
+        provider({ provider_type: type }),
+      ).buildPlanRequest(conversation)
+      expect(protocol).toBe(type)
+      const messages = base_body.messages as Array<{ role: string; content: string }>
+      // A system block plus one user message holding the whole conversation — the
+      // server appends its follow-ups after that as ordinary turns.
+      expect(messages.map((m) => m.role)).toEqual(['system', 'user'])
+      expect(messages[0].content).toContain('INSTRUCTIONS')
+      expect(messages[1].content).toContain('write me an essay')
+      expect(breakpoints(base_body)).toEqual([])
+    }
   })
 })

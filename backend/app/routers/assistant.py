@@ -317,9 +317,16 @@ def cancel_run(run_id: str, request: Request, session: Session = Depends(get_ses
     job = _job_for(session, user_id, run_id)
 
     if job.status == AWAITING:
+        from app.assistant.worker import append_to_session
         from app.jobs.registry import KINDS
 
         set_fields(session, job, status="cancelled", phase="running", stage="", detail="Cancelled")
+        # The chat is still showing "Plan ready — open the note to review it". Left
+        # alone that reads as a plan still waiting, which it no longer is.
+        try:
+            append_to_session(session, job, "_Plan cancelled._")
+        except Exception:  # bookkeeping must not fail the cancel
+            pass
         return DataResponse(data=KINDS["assistant"].to_activity(job))
 
     from app.routers.activity import cancel_activity

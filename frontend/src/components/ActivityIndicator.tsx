@@ -42,6 +42,9 @@ function startedAt(job: ActivityJob): number {
 }
 
 function label(job: ActivityJob): string {
+  // An assistant turn parked mid-way is the one row a user has to act on, so it says
+  // so rather than reading as work still in progress.
+  if (job.status === 'awaiting_approval') return 'Plan ready to review'
   if (job.status === 'queued') return 'Queued'
   if (job.status === 'error') return `${KIND_NOUN[job.kind]} failed`
   if (job.status === 'cancelled') return 'Cancelled'
@@ -87,13 +90,16 @@ export default function ActivityIndicator({ onInsert }: Props) {
   if (list.length === 0) return null
 
   const running = list.filter(isActive)
+  const waiting = list.filter((job) => job.status === 'awaiting_approval')
   const failed = list.filter((job) => job.status === 'error')
   const summary =
     running.length > 0
       ? `${running.length} running`
-      : failed.length > 0
-        ? `${failed.length} failed`
-        : `${list.length} finished`
+      : waiting.length > 0
+        ? `${waiting.length} waiting for you`
+        : failed.length > 0
+          ? `${failed.length} failed`
+          : `${list.length} finished`
 
   return (
     <div ref={triggerRef} className="relative no-print">
@@ -105,13 +111,15 @@ export default function ActivityIndicator({ onInsert }: Props) {
       >
         {running.length > 0 ? (
           <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+        ) : waiting.length > 0 ? (
+          <Sparkles className="w-4 h-4 text-amber-500" />
         ) : failed.length > 0 ? (
           <AlertCircle className="w-4 h-4 text-red-500" />
         ) : (
           <Check className="w-4 h-4 text-green-600" />
         )}
         <span className="tabular-nums font-medium text-gray-600 dark:text-gray-300">
-          {running.length > 0 ? `${running[0].progress}%` : list.length}
+          {running.length > 0 ? `${running[0].progress}%` : waiting.length || list.length}
         </span>
       </button>
 
@@ -245,9 +253,11 @@ export default function ActivityIndicator({ onInsert }: Props) {
 
                   <button
                     className="btn-ghost p-1 shrink-0"
-                    onClick={() => (active ? void cancel(job) : dismiss(key))}
-                    title={active ? 'Stop this task' : 'Dismiss'}
-                    aria-label={active ? 'Stop this task' : 'Dismiss'}
+                    onClick={() => (active || job.status === 'awaiting_approval'
+                      ? void cancel(job)
+                      : dismiss(key))}
+                    title={active ? 'Stop this task' : job.status === 'awaiting_approval' ? 'Discard this plan' : 'Dismiss'}
+                    aria-label={active ? 'Stop this task' : job.status === 'awaiting_approval' ? 'Discard this plan' : 'Dismiss'}
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
