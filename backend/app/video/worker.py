@@ -130,9 +130,9 @@ def _register_exports(session: Session, job: VideoRenderJob, result, note_title:
 
     label = note_title or "note"
     artifacts = (
-        (result.video_filename, f"Video — {label}"),
-        (result.subtitle_filename, f"Subtitles — {label}"),
-        (result.thumbnail_filename, f"Thumbnail — {label}"),
+        (result.video_filename, f"{label} — Video"),
+        (result.subtitle_filename, f"{label} — Subtitles"),
+        (result.thumbnail_filename, f"{label} — Thumbnail"),
     )
     for filename, display_name in artifacts:
         if not filename:
