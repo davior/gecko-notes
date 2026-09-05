@@ -102,6 +102,9 @@ export interface ListNotesParams {
   search?: string
   recursive?: boolean
   include_children?: boolean
+  /** Comma-separated ids, for fetching a known set back. The assistant's find_notes
+   *  runs on the server, so the panel is handed ids and still has to show them. */
+  ids?: string
 }
 
 export interface ListResponse<T> {

@@ -28,3 +28,34 @@ export function formatBytes(bytes: number): string {
   const formatted = exp === 0 ? String(value) : value.toFixed(1)
   return `${formatted} ${units[exp]}`
 }
+
+/**
+ * Compact relative age, e.g. "just now", "4m ago", "2h ago", "3d ago".
+ *
+ * Compact rather than Intl.RelativeTimeFormat's "4 minutes ago" because the caller is
+ * the 320px-wide Background tasks dropdown, where this shares a line with a truncated
+ * status label and a progress percentage. Past a week an age stops being informative
+ * and a short date reads better.
+ *
+ * Elapsed time is floored, not rounded: 90 seconds is "1m ago", not "2m ago". Anything
+ * under a minute — including a timestamp slightly in the future, which clock skew
+ * between the server and the browser can produce — is "just now" rather than "0m ago".
+ *
+ * Returns '' for a missing or unparseable timestamp so callers can skip the element
+ * instead of rendering "NaNm ago".
+ */
+export function formatTimeAgo(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return ''
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return ''
+
+  const seconds = Math.floor((now - then) / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  return new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}

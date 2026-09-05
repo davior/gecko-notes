@@ -1,14 +1,19 @@
-"""The assistant run queue.
+"""The assistant turn queue.
 
-A run is: write the bodies the planner deferred, apply the plan's actions, then say
-what happened in the conversation it came from. All three used to happen in the
-browser, which is why walking away from a note lost the work — and why a run that
-stopped half-way left no record of where it stopped.
+A turn is: work out what the user asked for, write the bodies that plan deferred,
+apply its actions, and say what happened in the conversation it came from. All of it
+used to happen in the browser, which is why walking away from a note lost the work —
+and why a turn that stopped half-way left no record of where it stopped.
 
-Progress is split so the bar means something: writing bodies is the long part and
-owns 0-70, applying the actions is quick and owns 70-99, and only completion writes
-100. Cancellation is cooperative and checked at both, plus immediately before each
-note write inside the executor.
+Planning was the last part to move and the one that mattered most: for the requests
+people care about it takes longer than the run it produces, and it was the stretch a
+user could not leave. `planner.py` holds it; this file is the queue and the two phases
+that follow.
+
+Progress is split so the bar means something across the whole turn: planning owns
+0-35, writing the deferred bodies owns 35-85, applying the actions is quick and owns
+85-99, and only completion writes 100. Cancellation is cooperative and checked in all
+three, plus immediately before each note write inside the executor.
 """
 
 import json
@@ -23,6 +28,8 @@ from app.assistant.executor import (
     ActionResult, Cancelled, ExecContext, PlanExecutor, build_result_summary,
 )
 from app.assistant.generate import generate_bodies
+from app.assistant.plan_prompt import build_generation_steps
+from app.assistant.planner import PLANNING_SHARE, run_planning
 from app.assistant.provider import PromptContext
 from app.database import engine
 from app.jobs.runner import JobQueue, int_env, readable_error, set_fields as _set
@@ -32,8 +39,9 @@ logger = logging.getLogger(__name__)
 
 MAX_CONCURRENCY = int_env("ASSISTANT_MAX_CONCURRENCY", 2)
 
-# Where writing ends and applying begins, as a share of the progress bar.
-WRITING_SHARE = 70
+# Where writing ends and applying begins, as a share of the progress bar. Planning
+# owns everything below PLANNING_SHARE.
+WRITING_SHARE = 85
 
 
 def cancel(job_id: str) -> None:
@@ -58,7 +66,7 @@ def _load(raw: str, fallback: Any) -> Any:
     return value if value is not None else fallback
 
 
-def _append_to_session(session: Session, job: AssistantRunJob, text: str) -> None:
+def append_to_session(session: Session, job: AssistantRunJob, text: str) -> None:
     """Write the run's summary into the conversation it came from.
 
     Done here rather than in the browser for the same reason the video worker attaches
@@ -118,7 +126,7 @@ def _finish(
     elif error:
         summary = (summary + f"\n\n_Run failed: {error}_").strip()
     try:
-        _append_to_session(session, row, summary)
+        append_to_session(session, row, summary)
     except Exception:
         # A finished run must not be turned into a failure by bookkeeping.
         logger.exception("Could not write the summary for run %s into its session", job_id)
@@ -133,13 +141,6 @@ def _run_job(job_id: str) -> None:
             _set(session, job, status="cancelled", stage="", detail="Cancelled")
             return
 
-        _set(session, job, status="processing", stage="Writing", progress=1, detail="")
-
-        plan = _load(job.plan, {"actions": []})
-        ctx = PromptContext(_load(job.prompt_ctx, {}))
-        exec_ctx = ExecContext.from_json(job.exec_ctx, job.user_id)
-        user_id = job.user_id
-
         def check_cancelled() -> None:
             if is_cancelled(job_id):
                 raise Cancelled()
@@ -150,12 +151,49 @@ def _run_job(job_id: str) -> None:
                 if row:
                     _set(inner, row, stage=stage, progress=max(0, min(99, progress)), detail=detail)
 
+        # ── phase one: plan (0-35) ──────────────────────────────────────────
+        if job.phase == "planning":
+            _set(session, job, status="processing", stage="Planning", progress=1, detail="")
+            try:
+                decided = run_planning(
+                    session, job_id, check_cancelled=check_cancelled, report=report,
+                )
+            except Cancelled:
+                session.rollback()
+                _finish(session, job_id, "cancelled", [], detail="Cancelled")
+                return
+            except Exception as exc:
+                logger.exception("Assistant planning %s failed", job_id)
+                session.rollback()
+                _finish(session, job_id, "error", [], error=readable_error(exc)[:500])
+                return
+            # Answered outright, or parked for approval — either way this turn is done
+            # for now. Approving re-queues the same row in its running phase.
+            if not decided.run_now:
+                return
+            session.expire_all()
+            job = session.get(AssistantRunJob, job_id)
+            if not job:
+                return
+        else:
+            _set(session, job, status="processing", stage="Writing",
+                 progress=max(job.progress, PLANNING_SHARE), detail="")
+
+        plan = _load(job.plan, {"actions": []})
+        ctx = PromptContext(_load(job.prompt_ctx, {}))
+        exec_ctx = ExecContext.from_json(job.exec_ctx, job.user_id)
+        user_id = job.user_id
+
         results: List[ActionResult] = []
         try:
-            # ── phase two: write the deferred bodies (0-70) ──────────────────
+            # ── phase two: write the deferred bodies (35-85) ─────────────────
             def writing_progress(done: int, total: int) -> None:
-                report("Writing", int(done / max(1, total) * WRITING_SHARE), f"{done} of {total} written")
+                share = int(done / max(1, total) * (WRITING_SHARE - PLANNING_SHARE))
+                report("Writing", PLANNING_SHARE + share, f"{done} of {total} written")
 
+            # The per-step prompts are built here rather than shipped: they need the
+            # plan, and the plan is now produced on this side of the wire.
+            ctx.steps = build_generation_steps(plan, _load(job.turn_ctx, {}).get("label_map") or {})
             runnable, failures = generate_bodies(
                 user_id, plan, ctx,
                 check_cancelled=check_cancelled,
@@ -163,7 +201,7 @@ def _run_job(job_id: str) -> None:
             )
             results.extend(failures)
 
-            # ── apply the plan (70-99) ───────────────────────────────────────
+            # ── apply the plan (85-99) ───────────────────────────────────────
             actions = runnable.get("actions") or []
             report("Applying", WRITING_SHARE, f"0 of {len(actions)} steps")
 

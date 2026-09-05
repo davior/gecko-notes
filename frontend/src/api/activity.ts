@@ -11,7 +11,15 @@ import client from './client'
  */
 
 export type ActivityKind = 'video' | 'assistant' | 'transcription' | 'image' | 'import'
-export type ActivityStatus = 'queued' | 'processing' | 'done' | 'error' | 'cancelled'
+export type ActivityStatus =
+  | 'queued'
+  | 'processing'
+  /** An assistant turn that has planned and is waiting for the user to decide.
+   *  Deliberately not active: it holds no note and no worker while it waits. */
+  | 'awaiting_approval'
+  | 'done'
+  | 'error'
+  | 'cancelled'
 
 export interface ActivityJob {
   id: string
@@ -39,6 +47,17 @@ export interface ActivityJob {
 
 export function isActive(job: ActivityJob): boolean {
   return job.status === 'queued' || job.status === 'processing'
+}
+
+/** Finished for good. `awaiting_approval` is neither this nor active: the turn has
+ *  paused mid-way and will carry on if the user approves it. */
+export function isSettled(job: ActivityJob): boolean {
+  return job.status === 'done' || job.status === 'error' || job.status === 'cancelled'
+}
+
+/** A plan waiting for a decision. */
+export function isAwaitingApproval(job: ActivityJob): boolean {
+  return job.status === 'awaiting_approval'
 }
 
 export const activityApi = {

@@ -663,6 +663,23 @@ def _run_migrations():
             except Exception:
                 pass
 
+        # The assistant job grew from "apply an approved plan" to the whole turn, so
+        # it now carries the planning phase's own state: which phase it is in, the
+        # context only a browser can supply, the reply as it streams in, and what the
+        # model actually said. Existing rows are all finished runs, and `running` is
+        # the phase they were in.
+        for column in (
+            "phase TEXT NOT NULL DEFAULT 'running'",
+            "turn_ctx TEXT NOT NULL DEFAULT '{}'",
+            "preview TEXT NOT NULL DEFAULT ''",
+            "plan_raw TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(text(f"ALTER TABLE assistantrunjob ADD COLUMN {column}"))
+                conn.commit()
+            except Exception:
+                pass
+
 
 def _seed_after_migrations():
     from app.seed import seed_global_themes

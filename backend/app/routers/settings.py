@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 import fal_client
 import httpx
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
@@ -691,15 +691,151 @@ async def _stream_anthropic_message(
     headers: Dict[str, str],
     json_body: Dict[str, Any],
     read_timeout: float,
+    on_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Blocking wrapper over :func:`_iter_anthropic_events`: drain the stream and
-    return the reassembled message dict, so the non-streaming proxy is unchanged."""
+    return the reassembled message dict, so the non-streaming proxy is unchanged.
+
+    `on_delta` is how a worker watches a reply it is not returning to a browser. The
+    assistant's planning call takes minutes, and without it the chat sits silent for
+    the whole of it; the worker writes what it receives onto its job row so the panel
+    can poll for it. A sink that raises must not take the generation down, so it is
+    called defensively.
+    """
     message: Dict[str, Any] = {}
     async for kind, val in _iter_anthropic_events(
         url, headers=headers, json_body=json_body, read_timeout=read_timeout
     ):
         if kind == "final":
             message = val
+        elif kind == "delta" and on_delta is not None:
+            _feed(on_delta, val)
+    return message
+
+
+def _feed(on_delta: Callable[[str], None], text: str) -> None:
+    """Hand one chunk to a delta sink. A sink that fails is a preview that stops
+    updating, never a generation that dies."""
+    try:
+        on_delta(text)
+    except Exception:
+        logger.exception("A delta sink raised; dropping the chunk")
+
+
+# ─── the same, for the other two protocols ───────────────────────────────────
+#
+# The Anthropic blocking proxy has always streamed internally (see above); these two
+# posted once and waited. Extracting their stream loops out of the SSE endpoints gives
+# all three protocols one shape — ("delta", text) then ("final", <the dict the blocking
+# path returns>) — so the SSE routes and a worker watching a planning call drain the
+# same generator instead of each having its own copy of the parsing.
+
+
+async def _iter_openai_events(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    json_body: Dict[str, Any],
+    read_timeout: float,
+) -> AsyncIterator[Tuple[str, Any]]:
+    """Stream an OpenAI-compatible chat completion, reassembling the blocking shape.
+
+    `stream_options.include_usage` is what keeps usage accounting working: without it
+    a streamed completion reports no token counts at all.
+    """
+    body = {**json_body, "stream": True, "stream_options": {"include_usage": True}}
+    timeout = httpx.Timeout(read_timeout, connect=10.0, write=30.0, pool=10.0)
+
+    full = ""
+    finish_reason = None
+    usage = None
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as response:
+            if not response.is_success:
+                await response.aread()
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    evt = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                choices = evt.get("choices") or []
+                if choices:
+                    ch0 = choices[0] or {}
+                    piece = (ch0.get("delta") or {}).get("content")
+                    if piece:
+                        full += piece
+                        yield "delta", piece
+                    if ch0.get("finish_reason"):
+                        finish_reason = ch0["finish_reason"]
+                if evt.get("usage"):
+                    usage = evt["usage"]
+
+    yield "final", {
+        "choices": [{"message": {"role": "assistant", "content": full}, "finish_reason": finish_reason}],
+        "usage": usage or {},
+    }
+
+
+async def _iter_ollama_events(
+    url: str,
+    *,
+    json_body: Dict[str, Any],
+    read_timeout: float,
+) -> AsyncIterator[Tuple[str, Any]]:
+    """Stream an Ollama chat response. Ollama sends newline-delimited JSON, not SSE."""
+    body = {**json_body, "stream": True}
+    timeout = httpx.Timeout(read_timeout, connect=10.0, write=30.0, pool=10.0)
+
+    full = ""
+    done_reason = None
+    prompt_eval = 0
+    eval_count = 0
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST", url, headers={"content-type": "application/json"}, json=body
+        ) as response:
+            if not response.is_success:
+                await response.aread()
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                piece = (evt.get("message") or {}).get("content")
+                if piece:
+                    full += piece
+                    yield "delta", piece
+                if evt.get("done"):
+                    done_reason = evt.get("done_reason")
+                    prompt_eval = int(evt.get("prompt_eval_count", 0) or 0)
+                    eval_count = int(evt.get("eval_count", 0) or 0)
+
+    yield "final", {
+        "message": {"role": "assistant", "content": full},
+        "done_reason": done_reason,
+        "prompt_eval_count": prompt_eval,
+        "eval_count": eval_count,
+    }
+
+
+async def _drain(events: AsyncIterator[Tuple[str, Any]], on_delta: Optional[Callable[[str], None]]) -> Dict[str, Any]:
+    """Run a stream to completion and return its final message."""
+    message: Dict[str, Any] = {}
+    async for kind, val in events:
+        if kind == "final":
+            message = val
+        elif kind == "delta" and on_delta is not None:
+            _feed(on_delta, val)
     return message
 
 
@@ -793,7 +929,25 @@ class AnthropicProxyRequest(BaseModel):
 
 @router.post("/ai-providers/proxy/anthropic")
 async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, session: Session = Depends(get_session)):
-    user_id = _get_user_id(request)
+    return await anthropic_completion(payload, _get_user_id(request), session)
+
+
+async def anthropic_completion(
+    payload: AnthropicProxyRequest,
+    user_id: str,
+    session: Session,
+    *,
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """One Messages call, as this user.
+
+    Split out of the route so a worker can call it without inventing a Request. It
+    already resolves the provider, applies its stored extra params and records usage,
+    which is the whole reason `provider.py` goes through here rather than reaching for
+    httpx itself — a generated body is billed and attributed identically whether the
+    browser or a worker asked for it. `on_delta` lets a caller with no HTTP response to
+    stream watch the reply as it arrives.
+    """
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
@@ -830,6 +984,7 @@ async def proxy_anthropic(payload: AnthropicProxyRequest, request: Request, sess
         headers=_anthropic_headers(provider, uses_web_search=_requests_web_search(payload.tools)),
         json_body=body,
         read_timeout=120.0,
+        on_delta=on_delta,
     )
     try:
         usage = data.get("usage") or {}
@@ -881,7 +1036,23 @@ async def proxy_openai(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    user_id = _get_user_id(request)
+    return await openai_completion(payload, _get_user_id(request), session)
+
+
+async def openai_completion(
+    payload: OpenAIProxyRequest,
+    user_id: str,
+    session: Session,
+    *,
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """One chat completion, as this user. See :func:`anthropic_completion`.
+
+    Without a delta sink this posts once and waits, exactly as before. With one it
+    takes the streaming path instead, which returns the same dict — the only caller
+    that needs deltas is a worker watching a planning call, and there is no reason to
+    change how the browser's own blocking calls behave.
+    """
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
@@ -897,21 +1068,29 @@ async def proxy_openai(
     # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the provider.
     body.update(parse_extra_params(provider.extra_params))
 
-    response = await _post_upstream(
-        f"{base}/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
-            "content-type": "application/json",
-        },
-        json_body=body,
-        timeout=_BLOCKING_UPSTREAM_TIMEOUT,
-        provider_label="the OpenAI-compatible API",
-    )
+    url = f"{base}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {decrypt_api_key(provider.api_key)}",
+        "content-type": "application/json",
+    }
 
-    if not response.is_success:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    if on_delta is not None:
+        data = await _drain(
+            _iter_openai_events(url, headers=headers, json_body=body, read_timeout=120.0),
+            on_delta,
+        )
+    else:
+        response = await _post_upstream(
+            url,
+            headers=headers,
+            json_body=body,
+            timeout=_BLOCKING_UPSTREAM_TIMEOUT,
+            provider_label="the OpenAI-compatible API",
+        )
+        if not response.is_success:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        data = response.json()
 
-    data = response.json()
     try:
         usage = data.get("usage") or {}
         inp = int(usage.get("prompt_tokens", 0) or 0)
@@ -938,7 +1117,17 @@ async def proxy_ollama(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    user_id = _get_user_id(request)
+    return await ollama_completion(payload, _get_user_id(request), session)
+
+
+async def ollama_completion(
+    payload: OllamaProxyRequest,
+    user_id: str,
+    session: Session,
+    *,
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """One Ollama chat call, as this user. See :func:`anthropic_completion`."""
     provider = session.get(AIProvider, payload.provider_id)
     if not provider or provider.user_id != user_id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
@@ -960,18 +1149,24 @@ async def proxy_ollama(
     if options:
         body["options"] = options
 
-    response = await _post_upstream(
-        f"{base}/api/chat",
-        headers={"content-type": "application/json"},
-        json_body=body,
-        timeout=_BLOCKING_UPSTREAM_TIMEOUT,
-        provider_label="Ollama",
-    )
+    url = f"{base}/api/chat"
 
-    if not response.is_success:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    if on_delta is not None:
+        data = await _drain(
+            _iter_ollama_events(url, json_body=body, read_timeout=120.0), on_delta
+        )
+    else:
+        response = await _post_upstream(
+            url,
+            headers={"content-type": "application/json"},
+            json_body=body,
+            timeout=_BLOCKING_UPSTREAM_TIMEOUT,
+            provider_label="Ollama",
+        )
+        if not response.is_success:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        data = response.json()
 
-    data = response.json()
     try:
         inp = int(data.get("prompt_eval_count", 0) or 0)
         out = int(data.get("eval_count", 0) or 0)
@@ -1107,8 +1302,6 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
         "model": payload.model,
         "max_tokens": payload.max_tokens,
         "messages": payload.messages,
-        "stream": True,
-        "stream_options": {"include_usage": True},
     }
     # Per-model extra params (temperature, top_p, provider-specific knobs) stored on the provider.
     body.update(parse_extra_params(provider.extra_params))
@@ -1121,43 +1314,17 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
     provider_type = provider.provider_type  # capture before the request session closes
 
     async def gen():
-        full = ""
-        finish_reason = None
-        usage = None
-        timeout = httpx.Timeout(120.0, connect=10.0, write=30.0, pool=10.0)
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", url, headers=headers, json=body) as response:
-                    if not response.is_success:
-                        await response.aread()
-                        raise HTTPException(status_code=response.status_code, detail=response.text)
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-                        try:
-                            evt = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = evt.get("choices") or []
-                        if choices:
-                            ch0 = choices[0] or {}
-                            piece = (ch0.get("delta") or {}).get("content")
-                            if piece:
-                                full += piece
-                                yield _sse("delta", {"text": piece})
-                            if ch0.get("finish_reason"):
-                                finish_reason = ch0["finish_reason"]
-                        if evt.get("usage"):
-                            usage = evt["usage"]
-            final = {
-                "choices": [{"message": {"role": "assistant", "content": full}, "finish_reason": finish_reason}],
-                "usage": usage or {},
-            }
+            final: Dict[str, Any] = {}
+            async for kind, val in _iter_openai_events(
+                url, headers=headers, json_body=body, read_timeout=120.0
+            ):
+                if kind == "delta":
+                    yield _sse("delta", {"text": val})
+                else:
+                    final = val
             try:
-                u = usage or {}
+                u = final.get("usage") or {}
                 inp = int(u.get("prompt_tokens", 0) or 0)
                 out = int(u.get("completion_tokens", 0) or 0)
                 if not (inp or out):
@@ -1194,7 +1361,6 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
     body: Dict[str, Any] = {
         "model": payload.model,
         "messages": payload.messages,
-        "stream": True,
     }
     options: Dict[str, Any] = dict(parse_extra_params(provider.extra_params))
     if payload.max_tokens is not None:
@@ -1205,43 +1371,20 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
     model = payload.model
 
     async def gen():
-        full = ""
-        done_reason = None
-        prompt_eval = 0
-        eval_count = 0
-        timeout = httpx.Timeout(120.0, connect=10.0, write=30.0, pool=10.0)
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                # Ollama streams newline-delimited JSON (not SSE) — one object per line.
-                async with client.stream("POST", url, headers={"content-type": "application/json"}, json=body) as response:
-                    if not response.is_success:
-                        await response.aread()
-                        raise HTTPException(status_code=response.status_code, detail=response.text)
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            evt = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        piece = (evt.get("message") or {}).get("content")
-                        if piece:
-                            full += piece
-                            yield _sse("delta", {"text": piece})
-                        if evt.get("done"):
-                            done_reason = evt.get("done_reason")
-                            prompt_eval = int(evt.get("prompt_eval_count", 0) or 0)
-                            eval_count = int(evt.get("eval_count", 0) or 0)
-            final = {
-                "message": {"role": "assistant", "content": full},
-                "done_reason": done_reason,
-                "prompt_eval_count": prompt_eval,
-                "eval_count": eval_count,
-            }
+            final: Dict[str, Any] = {}
+            async for kind, val in _iter_ollama_events(url, json_body=body, read_timeout=120.0):
+                if kind == "delta":
+                    yield _sse("delta", {"text": val})
+                else:
+                    final = val
             try:
                 with Session(engine) as s:
-                    _record_ai_usage(s, user_id, "ollama", model, prompt_eval, eval_count)
+                    _record_ai_usage(
+                        s, user_id, "ollama", model,
+                        int(final.get("prompt_eval_count", 0) or 0),
+                        int(final.get("eval_count", 0) or 0),
+                    )
             except Exception:
                 pass
             yield _sse("final", final)

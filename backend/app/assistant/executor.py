@@ -111,6 +111,44 @@ class ExecContext:
         )
 
 
+def touched_note_ids(
+    plan: Dict[str, Any],
+    exec_ctx: Dict[str, Any],
+    anchor_note_id: Optional[str] = None,
+) -> List[str]:
+    """Every note a plan might write, so the editor knows what to hold read-only.
+
+    Derived from the plan's own targets rather than trusting a client-supplied list,
+    and intersected with the ids the run is allowed to touch — a note the plan names
+    but the context does not contain would be refused by the executor anyway.
+
+    Lives here rather than in the router because both callers need it now: the router
+    when a plan arrives already approved, and the worker the moment it finishes
+    planning one of its own.
+    """
+    allowed = set(exec_ctx.get("valid_note_ids") or [])
+    current = exec_ctx.get("current_note_id")
+    touched = set()
+    for action in plan.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        for key in ("noteId", "parentId"):
+            value = action.get(key)
+            if not isinstance(value, str):
+                continue
+            if value in allowed:
+                touched.add(value)
+            elif value.lower() in ("current", "this", "thisnote", "this_note") and current:
+                touched.add(current)
+            elif len(allowed) == 1:
+                # Mirrors the executor's single-note fallback.
+                touched.update(allowed)
+    if anchor_note_id:
+        touched.add(anchor_note_id)
+    return sorted(touched)
+
+
+
 # ─── block helpers ───────────────────────────────────────────────────────────
 
 

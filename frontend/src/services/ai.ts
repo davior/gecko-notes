@@ -50,35 +50,30 @@ export interface NoteMetadata {
   summary: string
 }
 
-/** One deferred body to write: which plan action it belongs to, and the turns that
- *  ask for it. */
-export interface GenerationStepRequest {
-  index: number
-  turns: ConversationTurn[]
-}
-
-/** Everything a server-side worker needs to write the deferred bodies of a plan.
+/** Everything a server-side turn needs: how to reach the provider, and the request
+ * body this browser assembled for it.
  *
- * The request bodies are assembled HERE, in the browser, and shipped with the job —
- * the worker only appends each step's messages to `base_body`. That keeps prompt
- * assembly (and the cache_control breakpoints whose placement decides whether the
- * prompt cache hits) in one place rather than duplicated in Python for three
- * protocols. `base_body` holds everything shared across steps, so the bulky prefix
- * is stored once however many bodies a plan defers. */
-export interface GenerationRequest {
+ * The body is assembled HERE and shipped with the turn — the worker only ever appends
+ * messages to it. That keeps prompt assembly (and the cache_control breakpoints whose
+ * placement decides whether the prompt cache hits) in one place rather than duplicated
+ * in Python for three protocols, and it means `base_body` is byte-identical across
+ * every call the turn makes: the planning call, each re-plan after a search, and each
+ * deferred body. The cached prefix survives all of them.
+ *
+ * The per-step follow-ups used to be built here too. They need the plan, and the plan
+ * is now made on the server, so the server builds them. */
+export interface PlanRequest {
   protocol: 'anthropic' | 'openai' | 'ollama'
   provider_id: string
   model: string
   max_tokens: number
   base_body: Record<string, unknown>
-  steps: { index: number; messages: { role: string; content: unknown }[] }[]
 }
 
 export interface AIService {
   complete(prompt: string, options?: AICompleteOptions): Promise<string>
-  /** Build the request bodies for a run's deferred bodies, to be generated on the
-   *  server. See GenerationRequest. */
-  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest
+  /** Build the request this turn ships to the server. See PlanRequest. */
+  buildPlanRequest(req: ConversationRequest): PlanRequest
   // Cache-optimised chat turn used by the AI Conversation panel. See ConversationRequest.
   completeConversation(req: ConversationRequest): Promise<string>
   // Streaming variant of completeConversation: invokes onDelta with each text chunk as
@@ -438,20 +433,16 @@ class AnthropicProvider implements AIService {
     return body
   }
 
-  // The cached prefix is the body WITHOUT followups; each step contributes only the
-  // two turns that come after it — exactly what generatePlanContent used to append
-  // per call, so every step still reads the same cached prefix.
-  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
+  // The body a turn ships is exactly the body this would have posted itself, with no
+  // followups — the server appends those, whether they are a search's results or a
+  // deferred body's two turns, and everything before them stays put.
+  buildPlanRequest(req: ConversationRequest): PlanRequest {
     return {
       protocol: 'anthropic',
       provider_id: this.config.id,
       model: this.config.model,
       max_tokens: this.config.maxTokens,
       base_body: this.buildConversationBody({ ...req, followups: undefined }),
-      steps: steps.map((s) => ({
-        index: s.index,
-        messages: s.turns.map((t) => ({ role: t.role, content: t.content })),
-      })),
     }
   }
 
@@ -572,30 +563,29 @@ class OpenAIProvider implements AIService {
     return response.data?.choices?.[0]?.finish_reason === 'length' ? full + TRUNCATION_NOTICE : full
   }
 
-  // These providers flatten the whole conversation into one prompt, so the step's
-  // turns cannot simply be appended as messages — they live inside the prompt text.
-  // What IS shared is the system block, so that is the base and each step ships its
-  // own user message.
-  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
-    const { options } = flattenConversation({ ...req, followups: [] })
+  // This provider has no message-level cache breakpoints, so the whole conversation
+  // flattens into one system block plus one user message. The server appends its
+  // follow-ups after that as ordinary turns, which is the same shape the Anthropic
+  // path ends up with.
+  private buildFlatBody(req: ConversationRequest): Record<string, unknown> {
+    const { prompt, options } = flattenConversation(req)
+    const body: Record<string, unknown> = {
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: buildChatMessages(prompt, options),
+    }
+    if (options.temperature !== undefined) body.temperature = options.temperature
+    return body
+  }
+
+  buildPlanRequest(req: ConversationRequest): PlanRequest {
     return {
       protocol: 'openai',
       provider_id: this.config.id,
       model: this.config.model,
       max_tokens: this.config.maxTokens,
-      base_body: {
-        provider_id: this.config.id,
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        messages: options.systemPrompt ? [{ role: 'system', content: options.systemPrompt }] : [],
-      },
-      steps: steps.map((s) => {
-        const flattened = flattenConversation({ ...req, followups: s.turns })
-        return {
-          index: s.index,
-          messages: buildChatMessages(flattened.prompt, flattened.options).filter((m) => m.role !== 'system'),
-        }
-      }),
+      base_body: this.buildFlatBody({ ...req, followups: undefined }),
     }
   }
 
@@ -605,14 +595,7 @@ class OpenAIProvider implements AIService {
   }
 
   async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
-    const { prompt, options } = flattenConversation(req)
-    const body: Record<string, unknown> = {
-      provider_id: this.config.id,
-      model: this.config.model,
-      max_tokens: this.config.maxTokens,
-      messages: buildChatMessages(prompt, options),
-    }
-    if (options.temperature !== undefined) body.temperature = options.temperature
+    const body = this.buildFlatBody(req)
     const data = await streamChat('/settings/ai-providers/proxy/openai/stream', body, onDelta, signal) as
       { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> }
     const text = data?.choices?.[0]?.message?.content ?? ''
@@ -698,28 +681,26 @@ class OllamaProvider implements AIService {
     return response.data?.done_reason === 'length' ? full + TRUNCATION_NOTICE : full
   }
 
-  // Ollama flattens the conversation the same way the OpenAI path does, so the
-  // system block is the shared part and each step ships its own user message.
-  buildGenerationRequest(req: ConversationRequest, steps: GenerationStepRequest[]): GenerationRequest {
-    const { options } = flattenConversation({ ...req, followups: [] })
+  // Ollama flattens the conversation the same way the OpenAI path does.
+  private buildFlatBody(req: ConversationRequest): Record<string, unknown> {
+    const { prompt, options } = flattenConversation(req)
+    const body: Record<string, unknown> = {
+      provider_id: this.config.id,
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: buildChatMessages(prompt, options),
+    }
+    if (options.temperature !== undefined) body.temperature = options.temperature
+    return body
+  }
+
+  buildPlanRequest(req: ConversationRequest): PlanRequest {
     return {
       protocol: 'ollama',
       provider_id: this.config.id,
       model: this.config.model,
       max_tokens: this.config.maxTokens,
-      base_body: {
-        provider_id: this.config.id,
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        messages: options.systemPrompt ? [{ role: 'system', content: options.systemPrompt }] : [],
-      },
-      steps: steps.map((s) => {
-        const flattened = flattenConversation({ ...req, followups: s.turns })
-        return {
-          index: s.index,
-          messages: buildChatMessages(flattened.prompt, flattened.options).filter((m) => m.role !== 'system'),
-        }
-      }),
+      base_body: this.buildFlatBody({ ...req, followups: undefined }),
     }
   }
 
@@ -729,14 +710,7 @@ class OllamaProvider implements AIService {
   }
 
   async streamConversation(req: ConversationRequest, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
-    const { prompt, options } = flattenConversation(req)
-    const body: Record<string, unknown> = {
-      provider_id: this.config.id,
-      model: this.config.model,
-      max_tokens: this.config.maxTokens,
-      messages: buildChatMessages(prompt, options),
-    }
-    if (options.temperature !== undefined) body.temperature = options.temperature
+    const body: Record<string, unknown> = this.buildFlatBody(req)
     const data = await streamChat('/settings/ai-providers/proxy/ollama/stream', body, onDelta, signal) as
       { message?: { content?: string }; done_reason?: string }
     const text = data?.message?.content ?? ''

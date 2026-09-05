@@ -25,7 +25,7 @@ the stalled-turn recovery in `ai.ts` applies. What is left is joining the text.
 import copy
 import logging
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlmodel import Session
 
@@ -62,8 +62,13 @@ class PromptContext:
         return body
 
 
-class _WorkerRequest:
-    """Just enough of a Request for the proxy handlers, which read only the user id."""
+class WorkerRequest:
+    """Just enough of a Request for a handler called off the request path.
+
+    The proxy handlers read only the user id, and so do the note and search handlers
+    the retrieval loop reaches for — so this is how a worker calls an endpoint's own
+    function instead of reimplementing the query behind it.
+    """
 
     def __init__(self, user_id: str) -> None:
         self.state = SimpleNamespace(user_id=user_id)
@@ -116,39 +121,68 @@ def _anthropic_text(data: Dict[str, Any]) -> str:
 # ─── making the call ─────────────────────────────────────────────────────────
 
 
-async def _send(session: Session, user_id: str, ctx: PromptContext, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Hand one already-built body to the proxy handler for its protocol."""
+async def _send(
+    session: Session,
+    user_id: str,
+    ctx: PromptContext,
+    body: Dict[str, Any],
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """Hand one already-built body to the completion function for its protocol.
+
+    These are the same functions the proxy endpoints call — split out of them so a
+    worker needs no Request — so a generated body is resolved, parameterised, billed
+    and attributed identically whether the browser or a worker asked for it.
+    """
     from app.routers.settings import (
         AnthropicProxyRequest,
         OllamaProxyRequest,
         OpenAIProxyRequest,
-        proxy_anthropic,
-        proxy_ollama,
-        proxy_openai,
+        anthropic_completion,
+        ollama_completion,
+        openai_completion,
     )
 
     payload = {**body, "provider_id": ctx.provider_id, "model": ctx.model}
-    request = _WorkerRequest(user_id)
+    payload.setdefault("max_tokens", ctx.max_tokens)
 
     if ctx.protocol == "anthropic":
-        payload.setdefault("max_tokens", ctx.max_tokens)
-        return await proxy_anthropic(AnthropicProxyRequest(**payload), request, session)
+        return await anthropic_completion(
+            AnthropicProxyRequest(**payload), user_id, session, on_delta=on_delta
+        )
     if ctx.protocol == "ollama":
-        payload.setdefault("max_tokens", ctx.max_tokens)
-        return await proxy_ollama(OllamaProxyRequest(**payload), request, session)
-    payload.setdefault("max_tokens", ctx.max_tokens)
-    return await proxy_openai(OpenAIProxyRequest(**payload), request, session)
+        return await ollama_completion(
+            OllamaProxyRequest(**payload), user_id, session, on_delta=on_delta
+        )
+    return await openai_completion(
+        OpenAIProxyRequest(**payload), user_id, session, on_delta=on_delta
+    )
+
+
+def call_provider(
+    session: Session,
+    user_id: str,
+    ctx: PromptContext,
+    body: Dict[str, Any],
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """One call, returning the provider's reply dict. Synchronous — worker thread.
+
+    Follows `_tts_caller`'s bridge pattern (video/worker.py): the upstream helpers are
+    async, and `asyncio.run` is how a worker thread reaches them.
+
+    Planning wants the whole dict rather than the text: `stop_reason` decides whether
+    the turn stalled and needs finishing, and a plan can arrive inside a `tool_use`
+    block rather than as text at all.
+    """
+    import asyncio
+
+    return asyncio.run(_send(session, user_id, ctx, body, on_delta))
 
 
 def call_provider_text(
     session: Session, user_id: str, ctx: PromptContext, step: Dict[str, Any]
 ) -> str:
-    """Generate one step's body. Synchronous — this runs on a worker thread.
-
-    Follows `_tts_caller`'s bridge pattern (video/worker.py): the upstream helpers are
-    async, and `asyncio.run` is how a worker thread reaches them.
-    """
-    import asyncio
-
-    data = asyncio.run(_send(session, user_id, ctx, ctx.body_for(step)))
+    """Generate one step's body."""
+    data = call_provider(session, user_id, ctx, ctx.body_for(step))
     return extract_text(ctx.protocol, data)
