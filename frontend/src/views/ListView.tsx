@@ -237,6 +237,9 @@ export default function ListView() {
       if (aiService) {
         try {
           const filter = await generateNoteFilter(aiService, { query, categories })
+          // The active category pill always constrains the search, overriding any
+          // category the AI may have inferred from the query text itself.
+          if (activeCategoryId) filter.category_ids = [activeCategoryId]
           const result = await notesApi.smartSearch(filter)
           setDeepResults(result.data)
           return
@@ -585,11 +588,17 @@ export default function ListView() {
   }
 
   const inDeepMode = deepResults !== null
-  // Deep-search results are shown as-is (they may match on tags/dates/category, not
-  // just a literal substring, so re-filtering them locally would hide valid matches).
+  // Deep-search results are shown as-is aside from the active category pill — the pill
+  // is meant to keep constraining results even after a search has already run, so a
+  // click on it re-filters deepResults instantly rather than requiring a re-search.
+  // (Re-filtering on searchQuery itself would hide valid matches on tags/dates/etc.)
+  const filteredDeepResults = useMemo(() => {
+    if (deepResults === null) return null
+    return activeCategoryId ? deepResults.filter((n) => n.category_id === activeCategoryId) : deepResults
+  }, [deepResults, activeCategoryId])
   // Otherwise, the current folder's notes are filtered instantly as the user types.
   const localNotes = useMemo(() => filterLocally(notes, searchQuery), [notes, searchQuery])
-  const displayNotes = deepResults ?? localNotes
+  const displayNotes = filteredDeepResults ?? localNotes
 
   // The "Pinned" section only exists at the root, and only outside deep-search mode
   // (results there span folders, so pinning grouping doesn't apply). Inside a folder
