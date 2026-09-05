@@ -94,6 +94,17 @@ def test_a_run_serialises_as_locking_its_note(session):
     assert read.meta["touched_note_ids"] == ["note-1"]
 
 
+def test_a_run_holding_no_notes_does_not_advertise_a_lock(session):
+    # A turn that is still planning, or whose plan writes no bodies, is active but
+    # holds nothing. `jobsLockingNote` falls back to the anchor note when it cannot
+    # read a touched list, so an active turn claiming a lock it is not holding is the
+    # one case that fallback would get wrong.
+    job = make_run(session, touches=())
+    read = registry.get_job(session, USER, "assistant", job.id)
+    assert read.locks_note is False
+    assert read.meta["touched_note_ids"] == []
+
+
 def test_a_render_does_not_lock_anything(session):
     # It appends on completion rather than holding the document open.
     from app.models import VideoRenderJob

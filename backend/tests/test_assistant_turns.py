@@ -234,8 +234,26 @@ def test_plan_mode_off_runs_on_without_releasing_the_note(session, monkeypatch):
     assert KINDS["assistant"].to_activity(row).locks_note is True
 
 
-def test_the_lock_widens_to_everything_the_plan_will_write(session, monkeypatch):
-    # Until the plan existed the turn could only hold the open note.
+def test_a_turn_that_only_talks_about_a_note_never_holds_it(session, monkeypatch):
+    # The complaint that started this: asking a question about the note you are in, or
+    # asking for a brand-new note, must leave the one you are editing alone.
+    make_turn(session, plan_mode=False)
+    stub_provider(monkeypatch, reply(envelope(
+        {"type": "create_note", "title": "Geckos", "content": "They climb."},
+    )))
+
+    plan_turn(session)
+
+    row = turn(session)
+    assert json.loads(row.touched_note_ids) == []
+    assert KINDS["assistant"].to_activity(row).locks_note is False
+
+
+def test_the_lock_arrives_with_the_plan_and_covers_everything_it_will_write(
+    session, monkeypatch
+):
+    # Until the plan existed the turn held nothing at all — this is the moment the
+    # notes to hold become knowable, and all of them are held, not just the anchor.
     now = datetime.utcnow()
     session.add(Note(id="note-2", title="Second", content="[]", category_id=CATEGORY,
                      tags="[]", created_at=now, modified_at=now, user_id=USER))

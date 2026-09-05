@@ -111,42 +111,82 @@ class ExecContext:
         )
 
 
-def touched_note_ids(
-    plan: Dict[str, Any],
-    exec_ctx: Dict[str, Any],
-    anchor_note_id: Optional[str] = None,
-) -> List[str]:
-    """Every note a plan might write, so the editor knows what to hold read-only.
+# Which id each body-rewriting action targets. Mirrors the handlers that reach
+# `_write_content`: the remaining actions name a note without touching its content,
+# and a note whose body is not being rewritten has no reason to go read-only. Both
+# guards this feeds are about the body — the editor stops accepting keystrokes, and
+# `PUT /notes/{id}` refuses a content write — while title, tags, category and
+# annotations never race it.
+BODY_WRITING_TARGETS = {
+    "edit_note": "noteId",
+    "edit_section": "noteId",
+    "append_note": "noteId",
+    # The child's own row is new, but its block is written into the parent's body,
+    # so the parent is what locks.
+    "create_child_note": "parentId",
+    "add_reference": "noteId",
+    "create_diagram": "noteId",
+    "edit_diagram": "noteId",
+    "generate_image": "noteId",
+}
 
-    Derived from the plan's own targets rather than trusting a client-supplied list,
-    and intersected with the ids the run is allowed to touch — a note the plan names
-    but the context does not contain would be refused by the executor anyway.
 
-    Lives here rather than in the router because both callers need it now: the router
-    when a plan arrives already approved, and the worker the moment it finishes
-    planning one of its own.
+def _declared_refs(plan: Dict[str, Any]) -> Set[str]:
+    """The `ref` labels a plan assigns to the things it creates.
+
+    A later action may target one of these instead of a real id. Those notes do not
+    exist yet, so nobody has one open and nothing needs holding — but they have to be
+    recognised here, or the single-note fallback below would read a ref as a stale id
+    and hold whichever note happened to be in context.
+    """
+    refs = set()
+    for action in plan.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        ref = action.get("ref")
+        if isinstance(ref, str) and ref:
+            refs.add(ref)
+    return refs
+
+
+def touched_note_ids(plan: Dict[str, Any], exec_ctx: Dict[str, Any]) -> List[str]:
+    """Every note a plan will rewrite, so the editor knows what to hold read-only.
+
+    The plan's targets are the whole answer, and deliberately so. Nothing is held
+    before there is a plan, because until one exists there is nothing to say what
+    needs holding; and the note the request was made from is not special once there
+    is, because asking a question about a note is not the same as editing it.
+
+    Derived from the plan rather than trusting a client-supplied list, and intersected
+    with the ids the run is allowed to touch — a note the plan names but the context
+    does not contain would be refused by the executor anyway.
+
+    Lives here rather than in the router because the resolution below has to mirror
+    `PlanExecutor._resolve_note`, and because both callers need it: the router when a
+    plan arrives already approved, and the worker the moment it finishes planning one
+    of its own.
     """
     allowed = set(exec_ctx.get("valid_note_ids") or [])
     current = exec_ctx.get("current_note_id")
+    refs = _declared_refs(plan)
     touched = set()
     for action in plan.get("actions") or []:
         if not isinstance(action, dict):
             continue
-        for key in ("noteId", "parentId"):
-            value = action.get(key)
-            if not isinstance(value, str):
-                continue
-            if value in allowed:
-                touched.add(value)
-            elif value.lower() in ("current", "this", "thisnote", "this_note") and current:
-                touched.add(current)
-            elif len(allowed) == 1:
-                # Mirrors the executor's single-note fallback.
-                touched.update(allowed)
-    if anchor_note_id:
-        touched.add(anchor_note_id)
+        key = BODY_WRITING_TARGETS.get(action.get("type"))
+        if key is None:
+            continue
+        value = action.get(key)
+        if not isinstance(value, str) or value in refs:
+            continue
+        if value in allowed:
+            touched.add(value)
+        elif value.lower() in ("current", "this", "thisnote", "this_note") and current:
+            touched.add(current)
+        elif len(allowed) == 1:
+            # Mirrors the executor's single-note fallback.
+            touched.update(allowed)
     return sorted(touched)
-
 
 
 # ─── block helpers ───────────────────────────────────────────────────────────

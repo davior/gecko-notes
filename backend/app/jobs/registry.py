@@ -107,13 +107,18 @@ def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
         note_id=job.note_id,
         note_title=job.note_title or "",
         # Unlike a render, a turn rewrites the document itself — so the editor holds
-        # every note it may touch read-only while it works. Three things end that: the
-        # turn finishing, its heartbeat stopping (which releases the note immediately
-        # rather than waiting for the sweeper, because a lock nobody can clear is worse
-        # than no lock), and — the reason `awaiting_approval` sits outside
-        # ACTIVE_STATUSES — a plan pausing to ask the user whether to go ahead. It is
-        # holding nothing while it waits, so it should not hold the note either.
-        locks_note=job.status in ACTIVE_STATUSES and not is_stale(job),
+        # every note it will rewrite read-only while it works. Four things mean it is
+        # holding nothing: having no notes to hold, which covers both a turn still
+        # planning and a plan that writes no bodies; the turn finishing; its heartbeat
+        # stopping (which releases the note immediately rather than waiting for the
+        # sweeper, because a lock nobody can clear is worse than no lock); and — the
+        # reason `awaiting_approval` sits outside ACTIVE_STATUSES — a plan pausing to
+        # ask the user whether to go ahead.
+        #
+        # The empty check is not just tidiness: `jobsLockingNote` falls back to the
+        # anchor note when it cannot read `touched_note_ids`, and a planning turn
+        # advertising a lock is exactly the case that fallback would get wrong.
+        locks_note=bool(touched) and job.status in ACTIVE_STATUSES and not is_stale(job),
         error_message=job.error_message,
         created_at=job.created_at,
         meta={

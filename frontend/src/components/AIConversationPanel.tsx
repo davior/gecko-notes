@@ -153,6 +153,10 @@ interface PendingPlan {
   plan: Plan
   /** Resolves the ids the plan names to note, folder and category titles. */
   labelMap: Map<string, string>
+  /** Titles of the notes this plan would rewrite that have been edited since it was
+   *  asked for. Nothing is held while a turn plans, so this is real work, and the modal
+   *  is the last moment it can be mentioned — after Approve it is already overwritten. */
+  staleNotes?: string[]
 }
 
 interface AIConversationPanelProps {
@@ -713,6 +717,22 @@ export default function AIConversationPanel({
         void notesApi
           .list({ ids: data.found_note_ids.join(','), limit: 50, include_children: true })
           .then((res) => onSearchResults?.(data.search_label || 'Search results', res.data))
+          .catch(() => {})
+      }
+      // Which of the notes this plan would rewrite have changed since it was asked for.
+      // Fetched rather than read from the notes store, which the editor never populates.
+      if (data.would_touch_note_ids.length && parked.created_at) {
+        const askedAt = new Date(parked.created_at).getTime()
+        void notesApi
+          .list({ ids: data.would_touch_note_ids.join(','), limit: 50, include_children: true })
+          .then((res) => {
+            const stale = res.data
+              .filter((n) => new Date(n.modified_at).getTime() > askedAt)
+              .map((n) => n.title || 'Untitled')
+            if (!stale.length) return
+            setPendingPlan((prev) =>
+              prev && prev.runId === parked.id ? { ...prev, staleNotes: stale } : prev)
+          })
           .catch(() => {})
       }
       // Voice confirms out loud instead of through the modal.
@@ -1296,6 +1316,13 @@ export default function AIConversationPanel({
       // model's reply to this same stored transcript, and if it got there first this
       // save would overwrite it.
       await persistCurrentSession(withUser, sessionId)
+
+      // Flush the editor before the turn exists. Nothing is held while a turn plans,
+      // so the note stays editable — which makes "modified after this turn was asked
+      // for" the test for whether a run is about to overwrite real work. Saving now
+      // keeps that test honest: without it, an autosave of the user's own pre-send
+      // typing would land after the turn started and read as a conflict.
+      await onBeforeExecute?.()
 
       const { data: job } = await assistantApi.start({
         prompt_ctx: aiService.buildPlanRequest(req),
@@ -2354,6 +2381,17 @@ export default function AIConversationPanel({
                 </li>
               ))}
             </ul>
+            {!!pendingPlan.staleNotes?.length && (
+              // The note was editable the whole time this plan was being written, so
+              // these edits are real. The plan was built from the text as it stood when
+              // it was asked for, and approving writes that version back.
+              <p className="px-4 pb-2 text-xs text-amber-600 dark:text-amber-400">
+                ⚠ You have edited {pendingPlan.staleNotes.map((t) => `“${t}”`).join(', ')} since
+                asking for this plan. Approving overwrites{' '}
+                {pendingPlan.staleNotes.length === 1 ? 'those changes' : 'them'} — a version
+                snapshot is saved first, so you can restore from history.
+              </p>
+            )}
             {pendingPlan.plan.actions.some((a) => a.type === 'edit_note' && a.mode === 'replace') && (
               <p className="px-4 pb-2 text-xs text-amber-600 dark:text-amber-400">
                 ⚠ A full replace overwrites the note body — embedded child notes or images may be removed. A version snapshot is saved first, so you can restore from history.
