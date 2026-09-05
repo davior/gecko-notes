@@ -223,7 +223,11 @@ export default function ActivityIndicator({ onInsert }: Props) {
                         <a
                           className="btn-ghost px-1.5 py-0.5 text-xs flex items-center gap-1"
                           href={job.result_url}
-                          download
+                          download={
+                            job.kind === 'video'
+                              ? `${job.note_title || job.title || 'video'}.mp4`
+                              : true
+                          }
                           title="Download"
                         >
                           <Download className="w-3 h-3" /> Download
