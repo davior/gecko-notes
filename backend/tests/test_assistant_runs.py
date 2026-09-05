@@ -186,14 +186,16 @@ def test_creating_a_turn_queues_it_and_reports_it_as_activity(session, monkeypat
     assert queued == [result.data.id]
 
 
-def test_a_turn_locks_its_note_from_the_moment_it_is_asked_for(session, monkeypatch):
-    # The whole point of the change: the note is held from the request, not from the
-    # approval, because the plan is computed against the note's text at this instant.
+def test_a_turn_holds_nothing_while_it_is_still_planning(session, monkeypatch):
+    # Nothing can be held before there is a plan to say what needs holding. The note
+    # the turn was asked from is not a good enough guess: "write me a new note about
+    # geckos" never touches it, and locking it would stop you working for no reason.
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     result = assistant.create_run(payload(), request_for(USER), session)
 
-    assert result.data.locks_note is True
-    assert result.data.meta["touched_note_ids"] == ["note-1"]
+    assert result.data.locks_note is False
+    assert result.data.meta["touched_note_ids"] == []
+    assert result.data.meta["phase"] == "planning"
 
 
 def test_a_turn_with_nothing_to_send_is_refused(session):
@@ -348,6 +350,80 @@ def test_the_notes_an_approved_plan_may_write_are_derived_from_it(session, monke
         row.id, assistant.ApproveRequest(), request_for(USER), session
     )
     assert set(result.data.meta["touched_note_ids"]) == {"note-1", "note-2"}
+
+
+def test_the_note_a_turn_was_asked_from_is_not_locked_unless_the_plan_writes_it(
+    session, monkeypatch
+):
+    # The other half of the fix. Deriving the set from the plan is not enough on its
+    # own: the anchor note used to be added to it unconditionally, so "add a note about
+    # geckos" still froze whatever you were reading at the time.
+    now = datetime.utcnow()
+    session.add(Note(id="note-2", title="Second", content="[]", category_id=CATEGORY,
+                     tags="[]", created_at=now, modified_at=now, user_id=USER))
+    session.commit()
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-2", "content": "y"},
+    ]}, exec_ctx={"current_note_id": "note-1", "valid_note_ids": ["note-1", "note-2"]},
+        note_id="note-1")
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+    assert result.data.meta["touched_note_ids"] == ["note-2"]
+
+
+def test_a_plan_that_only_changes_metadata_locks_nothing(session, monkeypatch):
+    # Read-only is about the body. Title, tags and category are edited elsewhere in the
+    # UI and never race the document, and `PUT /notes/{id}` only refuses content — so
+    # freezing the editor for these would make a note feel broken for no benefit.
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "rename_note", "noteId": "note-1", "title": "Renamed"},
+        {"type": "set_tags", "noteId": "note-1", "tags": ["a"], "mode": "add"},
+        {"type": "set_category", "noteId": "note-1", "categoryId": CATEGORY},
+        {"type": "move_note", "noteId": "note-1", "folderId": None},
+    ]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+    assert result.data.meta["touched_note_ids"] == []
+    assert result.data.locks_note is False
+
+
+def test_a_forward_ref_does_not_drag_in_the_note_that_happens_to_be_open(
+    session, monkeypatch
+):
+    # `c1` is a note this plan is about to create, not a stale id — so it must not fall
+    # through to the single-note fallback and hold the one note in context. The created
+    # note cannot need holding either: nobody has it open yet.
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "create_note", "title": "New", "content": "x", "ref": "c1"},
+        {"type": "add_reference", "noteId": "c1", "referenceNoteId": "note-1",
+         "referenceTitle": "A note"},
+    ]})
+    monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
+
+    result = assistant.approve_run(
+        row.id, assistant.ApproveRequest(), request_for(USER), session
+    )
+    assert result.data.meta["touched_note_ids"] == []
+
+
+def test_a_parked_plan_says_which_notes_approving_would_rewrite(session, monkeypatch):
+    # It holds nothing while it waits, so the review modal has no lock to read. This is
+    # what lets it warn about edits made since the plan was asked for.
+    row = parked(session, monkeypatch, {"actions": [
+        {"type": "append_note", "noteId": "note-1", "content": "x"},
+        {"type": "rename_note", "noteId": "note-1", "title": "Renamed"},
+    ]})
+
+    result = assistant.get_plan(row.id, request_for(USER), session)
+
+    assert result.data["would_touch_note_ids"] == ["note-1"]
+    assert KINDS["assistant"].to_activity(row).locks_note is False
 
 
 def test_a_note_the_plan_names_but_context_does_not_allow_is_not_locked(session, monkeypatch):

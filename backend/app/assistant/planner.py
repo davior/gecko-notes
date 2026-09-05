@@ -340,14 +340,15 @@ def _decide(
         _append_answer(session, row, _awaiting_message(plan))
         return PlanningResult(False)
 
-    # Plan mode off: straight on into the run, without ever releasing the note. The
-    # lock set at the start of the turn covered only the open note; now that the plan
-    # exists, it covers everything the plan will write.
+    # Plan mode off: straight on into the run. Nothing was held while it planned, and
+    # this is the moment that changes — the plan now says which notes it will rewrite,
+    # and those are exactly the ones that go read-only. A turn that writes no bodies
+    # holds nothing at all.
     _set(
         session, row,
         status="processing", phase="running", stage="Writing",
         progress=PLANNING_SHARE, detail="",
-        touched_note_ids=json.dumps(touched_note_ids(plan, exec_ctx, row.note_id)),
+        touched_note_ids=json.dumps(touched_note_ids(plan, exec_ctx)),
         **shared,
     )
     # The model's reply is already written — it is sitting in the plan's respond

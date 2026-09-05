@@ -73,6 +73,11 @@ export interface ParkedPlan {
   search_label: string
   session_id: string | null
   note_id: string | null
+  /** The notes approving would rewrite. A parked plan holds nothing while it waits, so
+   *  this is information rather than a lock: it is what lets the review modal warn that
+   *  a note has been edited since the plan was asked for, before those edits are
+   *  overwritten rather than after. */
+  would_touch_note_ids: string[]
 }
 
 export const assistantApi = {

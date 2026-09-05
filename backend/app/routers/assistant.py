@@ -163,9 +163,10 @@ def create_run(payload: AssistantTurnRequest, request: Request, session: Session
         prompt_ctx=json.dumps(payload.prompt_ctx),
         exec_ctx=json.dumps(payload.exec_ctx),
         turn_ctx=json.dumps(payload.turn_ctx),
-        # Only the open note, because there is no plan yet to say what else might be
-        # written. The worker widens this the moment there is one.
-        touched_note_ids=json.dumps([payload.note_id] if payload.note_id else []),
+        # Nothing, because there is no plan yet to say what needs holding — and the
+        # note this was asked from is not a good enough guess: most turns never write
+        # it. The worker sets the real set the moment it has a plan.
+        touched_note_ids="[]",
         created_at=now,
         updated_at=now,
     )
@@ -227,7 +228,7 @@ def approve_run(
         stage="Queued",
         detail="",
         touched_note_ids=json.dumps(
-            touched_note_ids(approved, _json_of(job.exec_ctx, {}), job.note_id)
+            touched_note_ids(approved, _json_of(job.exec_ctx, {}))
         ),
     )
     worker.enqueue(job.id)
@@ -262,13 +263,20 @@ def get_plan(run_id: str, request: Request, session: Session = Depends(get_sessi
     user_id = _get_user_id(request)
     job = _job_for(session, user_id, run_id)
     turn_ctx = _json_of(job.turn_ctx, {})
+    plan = _plan_of(job)
     return DataResponse(data={
-        "plan": _plan_of(job),
+        "plan": plan,
         "label_map": turn_ctx.get("label_map") or {},
         "found_note_ids": turn_ctx.get("found_note_ids") or [],
         "search_label": turn_ctx.get("search_label") or "",
         "session_id": job.session_id,
         "note_id": job.note_id,
+        # Which notes approving would rewrite. The parked row itself holds nothing —
+        # that is the point of `awaiting_approval` — so this is information, not a
+        # lock: it lets the review modal warn when one of these has been edited since
+        # the plan was asked for, before the edits are overwritten rather than after.
+        # Derived here so the rule for what counts as a rewrite lives in one place.
+        "would_touch_note_ids": touched_note_ids(plan, _json_of(job.exec_ctx, {})),
     })
 
 
