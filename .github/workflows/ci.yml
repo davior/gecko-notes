@@ -1,0 +1,99 @@
+name: CI
+
+# Until this existed nothing verified the repository: a change could reach `main` with
+# only whoever opened the pull request having run the suites by hand, and a pull request
+# reported no checks at all because there was nothing to produce any. Both suites are
+# fast — the backend is ~9s and the frontend ~1.2s — so there is no reason for that.
+on:
+  pull_request:
+    branches: [main]
+  # `main` too, so the default branch carries a signal of its own rather than only
+  # inheriting whatever the pull request said before it merged.
+  push:
+    branches: [main]
+
+# A second push supersedes the first instead of queueing behind it. `main` is exempt:
+# two pushes to a branch are one thing worth knowing about, two merges are two.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+# Deliberately no `paths:` filters. A job filtered out never reports a status, so once
+# these are required checks a frontend-only change would block forever waiting on a
+# backend check that will never arrive. Both jobs are cheap enough to always run.
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        # Load-bearing. `pytest.ini` sets `pythonpath = .` and there is no installable
+        # package, so `app` is importable only from here.
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # Matches backend/Dockerfile (python:3.11-slim).
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      # Without it the four tests guarded by `needs_ffmpeg` in test_speech_narrate.py
+      # skip themselves. The suite is green either way; this stops them being quietly
+      # skipped forever, and matches what the Dockerfile installs. Conditional because
+      # the runner image may already ship it, and `apt-get update` is not free.
+      - name: Ensure ffmpeg is available
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "ffmpeg already present: $(ffmpeg -version | head -1)"
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # No environment to set up: conftest.py supplies the JWT_SECRET_KEY that app.auth
+      # refuses to import without, and every test needing a database builds its own
+      # in-process SQLite.
+      - name: Run tests
+        run: pytest -q
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Matches frontend/Dockerfile (node:20-alpine).
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Not --ignore-scripts: esbuild's postinstall is what places its binary.
+      - name: Install dependencies
+        run: npm ci
+
+      # First because it takes about a second, so a failing test does not wait on a build.
+      - name: Run tests
+        run: npm test
+
+      # `npm run build` is `tsc --noEmit && vite build`, so this typechecks and bundles in
+      # one step. Run through npm rather than `npx tsc`, which fetches a newer compiler
+      # than the pinned one when the cache is cold — and a newer one rejects `baseUrl`.
+      - name: Typecheck and build
+        run: npm run build
