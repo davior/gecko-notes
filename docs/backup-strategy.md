@@ -20,7 +20,7 @@ The goal — automated, resilient, off-site backups covering the database and ev
 
 **The real design question isn't "backup, yes or no" — it's "how much has to move over the wire each run, and does that cost grow as the library grows?"** The two things being backed up don't have the same growth profile: the database is small and stays small (it's text/metadata — notes, users, settings — not the bulky content itself), while the media library is where nearly all the bytes and nearly all the growth live. So the two get different, and simpler, treatment: **the database snapshot is just re-copied in full on every run** — at its size, that costs nothing worth optimizing, and trying to save bytes on it would only add complexity for no real benefit. **The media tree is where "only send what's missing" actually earns its keep**: each run checks, per file, whether the destination already has it, and sends only the files it doesn't. §4 is the centerpiece of this document and explains precisely how that check works.
 
-**Recommendation, in one sentence:** take a consistent SQLite snapshot on a schedule and copy it whole every time, back it up together with the entire `data/media/` tree using restic (which skips any media file the destination already has, encrypted, deduplicated), run **rest-server** on at least one destination so that "what do you already have" stays fast as the repository grows, and fan the same backup out to two or more remote locations via a small cron sidecar — all without running a second live instance of the app anywhere.
+**Recommendation, in one sentence:** take a consistent SQLite snapshot on a schedule and copy it whole every time, back it up together with the entire `data/media/` tree using restic (which skips any media file the destination already has, encrypted, deduplicated), fan the same backup out to two or more remote locations over plain SFTP and S3-compatible storage — **no special software needs to run on either destination** — via a small cron sidecar, all without running a second live instance of the app anywhere.
 
 ---
 
@@ -68,14 +68,18 @@ This is the part that actually matters, because this is where the bytes and the 
 
 You floated doing this by hand: keep track of the last backup time, and copy everything (files, at least) created since then. That works in the common case, but it's more fragile than it needs to be — a run that fails partway through, a file whose write finishes just before or after the recorded cutoff, or a clock that drifts between the machine writing files and the one recording "last backup time" can all cause a file to be silently skipped forever or re-sent needlessly. **Restic solves the same problem more robustly by not depending on time at all**: its repository keeps an index of exactly which files (as content-hashed chunks) it already has. Each run, restic checks each file's content against that index — already there → skip it entirely, don't even read it again for transfer purposes; not there → send it. That's the same "does the destination already have this?" check you described, just keyed on content rather than on a timestamp, so a failed run or a clock mismatch can't cause a file to be missed. In practice, because these files are write-once, this collapses to exactly what you wanted: **new files get sent, unchanged files cost nothing, and nothing needs to track "since when."**
 
-### What running something on the destination adds: `rest-server`
+### The destination doesn't need any special software
 
-You said you don't mind running something on the destination — that's what keeps the "does the destination already have this?" check fast as the media library grows. **`rest-server`** is restic's own small HTTP server for a repository. Run it on at least one destination host, and it gives two concrete things a plain SFTP/S3 backend doesn't:
+Everything in the previous section — content hashing, checking what's already there, deciding what to send — is logic that runs on the **source** side, inside the restic client. The destination only ever needs to answer "read this," "write this," and "list what's here," which is exactly what a destination already does with nothing installed:
 
-- **Fast lookups as the repository grows.** Over raw SFTP, restic still has to enumerate the repository's files to know what already exists before each run; that gets slower as the file count grows into the hundreds of thousands. `rest-server` serves that index directly over HTTP, so the check stays fast regardless of how large the backup history gets.
-- **Append-only mode.** `rest-server --append-only` issues credentials that can add new files but cannot delete or overwrite existing ones. If the source host is ever compromised, whoever has that credential still can't wipe or tamper with prior backups — a real security property that plain SFTP/S3 credentials don't give you without extra setup.
+- **A second self-hosted host, over plain SFTP.** Restic's SFTP backend talks to the destination's stock `sshd` — the SSH server that's already running on basically any server you'd use for this, for ordinary remote access. No restic-specific software, no extra daemon, nothing to install or keep updated on that machine. SFTP and local-filesystem were restic's original backend types; they're not a lesser or newer option.
+- **Off-site storage, over a plain S3-compatible API.** Backblaze B2, a MinIO instance, or similar — again, just an object-storage API restic talks to directly. Nothing runs there either.
 
-**BorgBackup** is worth naming as the alternative: it does the same kind of destination-side lookup, but it *requires* a server-side process (`borg serve` over SSH) for every single destination — there's no "plain object storage" mode. Since one of the fan-out destinations here is meant to be off-site S3-compatible storage (§5) with no server needed, **restic + rest-server is the better fit**: `rest-server` where you want the append-only guarantee and fast lookups (your own second host), and restic's native S3 backend where you don't need a server at all (off-site object storage).
+Both give the exact same delta/dedup correctness described above — same content hashes, same "skip what's already present" behavior. The only thing you give up by not running anything on the destination is **speed of the lookup, at very large scale**: restic still has to figure out what the repository already contains before each run, and over SFTP that means listing directories rather than querying an index over HTTP. For a personal/small-team library, that stays comfortably fast — restic shards its repository into hundreds of subdirectories specifically to keep this listing cheap, and a plain SFTP repository holds up well into the multi-terabyte, tens-of-thousands-of-files range before that overhead becomes something you'd notice. This isn't a near-term concern, so it's not worth trading away "nothing to run on the destination" to pre-empt it.
+
+If it ever does become a concern — or if you later want the extra security property of a destination that can't have its backup history deleted even by someone holding the write credential — restic's own **`rest-server`** is the upgrade path: a small HTTP server for the repository that answers "what do you have" faster at scale, and can issue append-only credentials that add new backups but can't remove or overwrite old ones. It's worth keeping in mind, but it's an optional later step, not part of the default here.
+
+**BorgBackup** is worth naming as the alternative that was considered: it also does content-hash-based dedup, but it *always* requires a server-side process (`borg serve` over SSH) for every destination — there's no dumb-object-storage mode at all, so an off-site S3-compatible bucket isn't an option with Borg. That rules it out here, independent of the rest-server question, since one of the fan-out destinations (§5) is meant to be exactly that kind of server-free storage.
 
 ### The "backing up all day, every day" worry, directly answered
 
@@ -97,15 +101,15 @@ flowchart LR
         CRON -->|"sqlite3 .backup"<br/>WAL-safe snapshot| DB
         CRON -->|reads| MEDIA
     end
-    CRON -->|"restic push<br/>(whole DB + new media files only)"| RS["rest-server<br/>(second self-hosted host,<br/>append-only mode)"]
-    CRON -->|"restic push<br/>(whole DB + new media files only)"| R2[(Off-site S3-compatible<br/>bucket, no server needed)]
+    CRON -->|"restic push over SFTP<br/>(whole DB + new media files only)"| RS[(Second self-hosted host,<br/>stock sshd, no extra software)]
+    CRON -->|"restic push over S3 API<br/>(whole DB + new media files only)"| R2[(Off-site S3-compatible<br/>bucket, no server needed)]
 ```
 
 **Database — periodic snapshot, copied whole every run.** Use SQLite's own online backup API: `sqlite3 /app/data/db/notes.db ".backup /tmp/notes.db.snapshot"` (or the Python `sqlite3.Connection.backup()` equivalent). It's WAL-safe and doesn't corrupt or meaningfully block the live app. Per §4, there's no need to optimize what gets sent here — the whole snapshot goes every run, because at this size that's simpler and just as cheap as anything cleverer. A continuous-streaming tool like Litestream is unnecessary here too — it adds a permanently-running process and a less-familiar restore model, and an hourly snapshot already matches the granularity the app itself uses for `NoteVersion` history.
 
 **Files — the entire `data/media/` tree, every user, every run — but only new files actually transfer.** Point restic at it alongside the fresh DB snapshot in the same run, so the database and the files it references stay consistent with each other at each restore point. Per §4, restic skips any file the destination already has, so this costs nothing beyond whatever's genuinely new since the last run.
 
-**Multiple locations, mixed backend types.** Fan the same backup run out to two+ restic repositories: a second self-hosted host running `rest-server` in append-only mode (fast negotiation, tamper-resistant), plus an off-site S3-compatible bucket (Backblaze B2, or a MinIO instance you control) needing no server at all. This delivers real geographic/provider redundancy without ever running a second live app instance.
+**Multiple locations, both server-free on the destination.** Fan the same backup run out to two+ restic repositories: a second self-hosted host reached over plain SFTP (its existing `sshd`, nothing extra to install), plus an off-site S3-compatible bucket (Backblaze B2, or a MinIO instance you control). Per §4, neither needs any restic-specific software running on it — this delivers real geographic/provider redundancy without ever running a second live app instance, and without maintaining anything extra on either destination.
 
 **Scheduling — a cron sidecar in `docker-compose.yml`.** No scheduler exists in the repo today. A small container (a cron daemon, or a tool like `mcuadros/ofelia`) added to `docker-compose.yml`, with read access to the existing `data/db` and `data/media` bind mounts, keeps the backup schedule declared and versioned alongside the app rather than living as an invisible host-level cron job that's easy to lose track of on a host rebuild.
 
@@ -142,17 +146,17 @@ If the actual goal ever becomes "log in and edit notes from two locations that a
 - `backend/app/routers/media.py` — confirms media files are write-once (`save_upload`), the fact the delta design in §4 relies on.
 - `backend/app/routers/data.py` — the existing per-user export/import feature; keep it separate from this ops-level mechanism rather than merging the two.
 - `backend/app/jobs/runner.py` — the single-process constraint that rules out live multi-instance replication until/unless §6b is undertaken.
-- A new `ops/backup/` (or similar) location would hold the restic config, the snapshot script, and the sidecar's Dockerfile/crontab, plus a `rest-server` deployment on the chosen self-hosted destination — none of this created as part of this document.
+- A new `ops/backup/` (or similar) location would hold the restic config, the snapshot script, and the sidecar's Dockerfile/crontab — none of this created as part of this document. No destination-side deployment is needed for the default setup (§4); `rest-server`, if adopted later, would live on whichever self-hosted host is chosen.
 
 ---
 
 ## 9. Open decisions (needed before implementation)
 
-1. **Second location(s):** a second physical/VPS host you control (running `rest-server`), an off-site object storage account (S3-compatible), or both?
-2. **`rest-server` vs. plain SFTP on the self-hosted destination:** `rest-server` (recommended — faster negotiation as the repo grows, append-only mode) vs. plain SFTP (simpler to stand up, but slower "what do you already have" checks over time and no append-only protection)?
+1. **Second location(s):** a second physical/VPS host you control (reached over its existing SSH access — no software to install for this), an off-site object storage account (S3-compatible), or both?
+2. **`rest-server` later, if ever:** the default needs nothing extra on either destination (§4). Worth revisiting only if the self-hosted repository grows large enough that SFTP lookups are noticeably slow, or if the append-only tamper-resistance property becomes wanted — neither is a concern at today's scale.
 3. **Backup frequency:** is hourly an acceptable recovery point, or is a tighter window needed? (Per §4, this is purely a data-loss-window decision — the whole-DB-every-run cost doesn't scale with frequency in any way that matters at this size.)
 4. **Retention length:** does the §5 default (48h hourly / 14d daily / 8w weekly) match how far back you'd realistically want to restore from?
-5. **Secret storage:** where should the restic repository password and any remote-storage/`rest-server` credentials live (the app already refuses to start without `JWT_SECRET_KEY` in `.env`; the same pattern could hold these)?
+5. **Secret storage:** where should the restic repository password and the SSH/S3 credentials for each destination live (the app already refuses to start without `JWT_SECRET_KEY` in `.env`; the same pattern could hold these)?
 6. **Failure alerting:** should a failed backup run notify you (the app already has SMTP configured for other features — reusing it is straightforward)?
 
 ---
