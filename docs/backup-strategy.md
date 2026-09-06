@@ -146,7 +146,7 @@ If the actual goal ever becomes "log in and edit notes from two locations that a
 - `backend/app/routers/media.py` — confirms media files are write-once (`save_upload`), the fact the delta design in §4 relies on.
 - `backend/app/routers/data.py` — the existing per-user export/import feature; keep it separate from this ops-level mechanism rather than merging the two.
 - `backend/app/jobs/runner.py` — the single-process constraint that rules out live multi-instance replication until/unless §6b is undertaken.
-- A new `ops/backup/` (or similar) location would hold the restic config, the snapshot script, and the sidecar's Dockerfile/crontab — none of this created as part of this document. No destination-side deployment is needed for the default setup (§4); `rest-server`, if adopted later, would live on whichever self-hosted host is chosen.
+- `ops/backup/` now holds the implementation: the sidecar's `Dockerfile`, `entrypoint.sh`/`backup.sh`, and a `README.md` walking through the Synology-side setup (NAS configuration, router port-forward, key exchange) for the first destination wired up. No destination-side software is needed (§4); `rest-server`, if adopted later, would live on whichever self-hosted host is chosen. The off-site object-storage leg from §5 isn't wired up yet — only the NAS destination is, for this iteration.
 
 ---
 
