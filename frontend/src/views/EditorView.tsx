@@ -259,11 +259,16 @@ export default function EditorView() {
     },
   })
 
-  // Insert blocks at the cursor when the editor is focused, otherwise append to
-  // the end of the note (e.g. dictation started while focus was elsewhere).
+  // Insert blocks after `anchorBlockId` when given and still present (used by
+  // dictation — see dictationAnchorBlockIdRef below), otherwise at the cursor
+  // when the editor is focused, otherwise append to the end of the note.
   // Returns the inserted blocks so callers (e.g. dictation) can track them.
-  const insertBlocksAtCursor = useCallback((blocks: PartialBlock[]) => {
+  const insertBlocksAtCursor = useCallback((blocks: PartialBlock[], anchorBlockId?: string | null) => {
     if (!editor || blocks.length === 0) return []
+    if (anchorBlockId) {
+      const anchor = editor.getBlock(anchorBlockId)
+      if (anchor) return editor.insertBlocks(blocks, anchor, 'after')
+    }
     if (editor.isFocused()) {
       const cursorBlock = editor.getTextCursorPosition().block
       return editor.insertBlocks(blocks, cursorBlock, 'after')
@@ -304,6 +309,12 @@ export default function EditorView() {
   // whenever a dictation session isn't active — see the effect below.
   const dictationModeRef = useRef<DictationMode>(null)
   const dictationSessionBlockIdRef = useRef<string | null>(null)
+  // The block the cursor was in when the *current* dictation session started
+  // — captured before dictation moves focus to the mic button (so the note
+  // editor is no longer "focused" for the rest of the session). Without this,
+  // every dictated chunk would fall back to appending at the end of the note
+  // instead of landing where the user had their cursor.
+  const dictationAnchorBlockIdRef = useRef<string | null>(null)
 
   const insertDictatedText = useCallback((text: string) => {
     const trimmed = text.trim()
@@ -325,7 +336,10 @@ export default function EditorView() {
       // through and re-anchor to a freshly inserted one.
     }
 
-    const inserted = insertBlocksAtCursor([{ type: 'paragraph', content: [{ type: 'text', text: trimmed, styles: {} }] }])
+    const inserted = insertBlocksAtCursor(
+      [{ type: 'paragraph', content: [{ type: 'text', text: trimmed, styles: {} }] }],
+      inSession ? dictationAnchorBlockIdRef.current : null,
+    )
     const newBlock = inserted[0]
     if (newBlock) {
       if (inSession) dictationSessionBlockIdRef.current = newBlock.id
@@ -377,8 +391,26 @@ export default function EditorView() {
   // continuing to append to a stale one.
   useEffect(() => {
     dictationModeRef.current = dictation.mode
-    if (dictation.mode !== 'dictation') dictationSessionBlockIdRef.current = null
+    if (dictation.mode !== 'dictation') {
+      dictationSessionBlockIdRef.current = null
+      dictationAnchorBlockIdRef.current = null
+    }
   }, [dictation.mode])
+
+  // Dictation now focuses the mic button as soon as it starts (so Enter/Space
+  // can toggle it), which means the editor is no longer "focused" by the time
+  // insertDictatedText runs. So capture the cursor's block *here*, synchronously,
+  // right before that focus change happens — this is the last moment the editor
+  // still reports itself focused for a click that's about to start dictation.
+  const handleDictationToggle = useCallback(() => {
+    const willStart = dictation.status === 'idle' || dictation.status === 'error'
+    if (willStart) {
+      dictationAnchorBlockIdRef.current = editor?.isFocused()
+        ? editor.getTextCursorPosition().block.id
+        : null
+    }
+    dictation.toggleDictation()
+  }, [dictation, editor])
 
   // Upload a recorded video blob to /media and return its URL + stored filename
   // (the filename is what the async transcription job references).
@@ -1820,7 +1852,7 @@ export default function EditorView() {
                   anchorRef={exportAnchorRef}
                   onPlayPause={handlePlayPause}
                   dictation={dictation}
-                  onDictationToggle={dictation.toggleDictation}
+                  onDictationToggle={handleDictationToggle}
                   onRecordToggle={dictation.toggleRecording}
                   insertMode={ttsInsertMode}
                   onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
@@ -1945,7 +1977,7 @@ export default function EditorView() {
                 anchorRef={exportAnchorRef}
                 onPlayPause={handlePlayPause}
                 dictation={dictation}
-                onDictationToggle={dictation.toggleDictation}
+                onDictationToggle={handleDictationToggle}
                 onRecordToggle={dictation.toggleRecording}
                 insertMode={ttsInsertMode}
                 onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
