@@ -30,9 +30,9 @@ import { errorMessage } from '@/utils/aiErrors'
 import { isActive, isAwaitingApproval, isSettled } from '@/api/activity'
 import { useActivityStore } from '@/stores/activity'
 import type { Recipe } from '@/api/recipes'
-import { renderRecipePrompt, getCurrentSelectionText } from '@/utils/recipeVariables'
+import { renderRecipePrompt } from '@/utils/recipeVariables'
 import { matchRecipeVoiceCommand } from '@/utils/recipeVoiceCommand'
-import { extractPlainText, extractLinkedFileUrls, extractBlockTexts, type MarkdownEditor } from '@/utils/blocks'
+import { extractPlainText, extractLinkedFileUrls, extractBlockTexts, getEditorSelectionMarkdown, type MarkdownEditor } from '@/utils/blocks'
 import { describeDiagrams } from '@/utils/diagram'
 import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
 import {
@@ -208,6 +208,12 @@ function uid() {
 
 function safeStringify(v: unknown): string {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+// Wraps the user's highlighted excerpt with a note telling the model what it means,
+// so "this"/"the highlighted section" in the user's message resolves unambiguously.
+function formatSelectionBlock(text: string): string {
+  return `**User's current text selection in this note:**\n\n> ${text.replace(/\n/g, '\n> ')}\n\nWhen the user refers to "this", "the highlighted section", "the selected text", or similar, they mean the excerpt above.`
 }
 
 // Full error dump for the collapsible "More details" panel: request line, HTTP
@@ -478,6 +484,12 @@ export default function AIConversationPanel({
   const [attachNotice, setAttachNotice] = useState('')
   const [frozenContext, setFrozenContext] = useState<PlanContext | null>(null)
   const [freezing, setFreezing] = useState(false)
+  // The user's live text selection in the open note (editor mode only), kept in sync
+  // via editor.onSelectionChange purely for display — buildScopeContext() re-reads the
+  // editor directly at send time, since the editor's own selection state (not the DOM)
+  // is what persists once focus moves to this panel's input.
+  const [liveSelection, setLiveSelection] = useState('')
+  const [selectionDismissed, setSelectionDismissed] = useState(false)
   // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
   // The reply so far, polled off the turn's job row while it is planning.
   const [streamingText, setStreamingText] = useState<string | null>(null)
@@ -809,6 +821,22 @@ export default function AIConversationPanel({
     setFrozenContext(null)
   }, [contextScope, useSummaries, includeLinkedFiles, attachedNotes])
 
+  // Track the editor's live text selection, for the "using selection" chip. List mode
+  // has no open editor. A fresh non-empty selection clears any earlier dismissal.
+  useEffect(() => {
+    if (isList || !editor?.onSelectionChange) {
+      setLiveSelection('')
+      return
+    }
+    const readSelection = () => {
+      const text = getEditorSelectionMarkdown(editor)
+      setLiveSelection(text)
+      if (text) setSelectionDismissed(false)
+    }
+    readSelection()
+    return editor.onSelectionChange(readSelection)
+  }, [isList, editor])
+
   useEffect(() => {
     if (!isOpen) return
     // Scroll the message list itself rather than scrollIntoView on an anchor:
@@ -978,10 +1006,16 @@ export default function AIConversationPanel({
     const fileAttachments: FileAttachment[] = []
     const annotationIds = new Set<string>()
 
+    // Read fresh at send time rather than trusting `liveSelection` — the editor's
+    // selection may have changed (or been cleared by clicking back into it) since the
+    // last onSelectionChange fired.
+    const selectionText = (!isList && !selectionDismissed) ? getEditorSelectionMarkdown(editor) : ''
+    const selectionBlock = selectionText ? formatSelectionBlock(selectionText) : ''
+
     if (!isList && contextScope === 'none' && attachedNotes.length === 0) {
       const processed = await Promise.all(pendingFiles.map(processFile))
       const imgs = processed.filter((p): p is Extract<ProcessedFile, {kind:'image'}> => p.kind === 'image')
-      return { referenceContextText: '', currentNoteText: '', attachments: supportsImages ? imgs.map(p => p.attachment) : [], targetNotes: [], annotationIds }
+      return { referenceContextText: '', currentNoteText: selectionBlock, attachments: supportsImages ? imgs.map(p => p.attachment) : [], targetNotes: [], annotationIds }
     }
 
     // `id` is carried through so the model can target each note in plan actions.
@@ -1095,6 +1129,7 @@ export default function AIConversationPanel({
       ? 0
       : notes.findIndex((n) => Boolean(n.id) && n.id === noteId)
     const currentNoteParts: string[] = currentIndex >= 0 ? [rendered[currentIndex]] : []
+    if (selectionBlock) currentNoteParts.push(selectionBlock)
     const referenceParts = rendered.filter((_, i) => i !== currentIndex)
 
     // Assets marked "use as AI context" — the reference material kept alongside the note
@@ -1413,7 +1448,7 @@ export default function AIConversationPanel({
   // user is prompted to confirm" naturally falls out — a respond-only reply still runs
   // straight through either way.
   function handleRunRecipe(recipe: Recipe) {
-    const prompt = renderRecipePrompt(recipe.prompt, { title: noteTitle, selectedText: getCurrentSelectionText() })
+    const prompt = renderRecipePrompt(recipe.prompt, { title: noteTitle, selectedText: getEditorSelectionMarkdown(editor) })
     if (!prompt.trim()) return
     setPanelTab('chat')
     void handleSend(prompt, conversation)
@@ -1592,7 +1627,7 @@ export default function AIConversationPanel({
     // routing below, so recipes stay a one-shot voice command.
     const recipeMatch = matchRecipeVoiceCommand(text, recipes)
     if (recipeMatch) {
-      const prompt = renderRecipePrompt(recipeMatch.prompt, { title: noteTitle, selectedText: getCurrentSelectionText() })
+      const prompt = renderRecipePrompt(recipeMatch.prompt, { title: noteTitle, selectedText: getEditorSelectionMarkdown(editor) })
       await handleSend(prompt, conversationRef.current)
       return
     }
@@ -1808,7 +1843,7 @@ export default function AIConversationPanel({
           onUpdate={updateRecipe}
           onDelete={deleteRecipe}
           onRun={handleRunRecipe}
-          previewContext={{ title: noteTitle, selectedText: getCurrentSelectionText() }}
+          previewContext={{ title: noteTitle, selectedText: getEditorSelectionMarkdown(editor) }}
           disabled={!aiService}
         />
       )}
@@ -2274,6 +2309,25 @@ export default function AIConversationPanel({
                   </button>
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Current text-selection pill */}
+          {liveSelection && !selectionDismissed && (
+            <div className="flex flex-wrap gap-1 px-2 pb-1">
+              <span
+                className="flex items-center gap-1 text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded px-1.5 py-0.5"
+                title={liveSelection}
+              >
+                Using selection: “{liveSelection.length > 40 ? `${liveSelection.slice(0, 38)}…` : liveSelection}”
+                <button
+                  onClick={() => setSelectionDismissed(true)}
+                  className="hover:text-red-500 transition-colors"
+                  aria-label="Stop using the current selection"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
             </div>
           )}
 

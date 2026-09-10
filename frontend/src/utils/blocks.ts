@@ -9,6 +9,11 @@
  */
 export interface MarkdownEditor {
   blocksToMarkdownLossy(blocks?: unknown[]): string
+  // Optional: only the live editor (not the parsed-JSON view of a fetched note)
+  // implements these. Used to read the user's current text selection.
+  getSelection?(): { blocks?: unknown[] } | undefined
+  getSelectedText?(): string
+  onSelectionChange?(callback: () => void): () => void
 }
 
 /**
@@ -137,6 +142,30 @@ export function rewriteImageUrls(blocks: unknown[], mapping: Record<string, stri
   }
   for (const block of blocks) walk(block as Record<string, unknown>)
   return blocks
+}
+
+/**
+ * The user's current text selection in the live editor, rendered as Markdown so it
+ * reads consistently with the rest of the note body sent to the AI. Multi-block
+ * selections go through blocksToMarkdownLossy (same call used for full notes);
+ * an inline/single-block selection falls back to the plain highlighted substring.
+ *
+ * Note: BlockNote's selection lives in the editor's own state, not the DOM, so this
+ * still returns the right thing after focus moves to a sibling panel (e.g. the AI
+ * chat input) — it's only cleared once the user clicks/types back inside the editor.
+ */
+export function getEditorSelectionMarkdown(editor: MarkdownEditor | null | undefined): string {
+  if (!editor) return ''
+  try {
+    const selection = editor.getSelection?.()
+    if (selection?.blocks?.length) {
+      const fromBlocks = editor.blocksToMarkdownLossy(selection.blocks)
+      if (fromBlocks.trim()) return fromBlocks.trim()
+    }
+    const direct = editor.getSelectedText?.()
+    if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  } catch { /* fall through */ }
+  return ''
 }
 
 export function extractLinkedFileUrls(blocks: unknown[]): string[] {
