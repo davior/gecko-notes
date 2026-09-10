@@ -40,15 +40,6 @@ export function renderRecipePrompt(template: string, ctx: RecipeVariableContext)
   })
 }
 
-// The current browser text selection, if any — used to fill {{selected text}}.
-export function getCurrentSelectionText(): string {
-  try {
-    return window.getSelection()?.toString() ?? ''
-  } catch {
-    return ''
-  }
-}
-
 // Shown in the recipe editor so authors know which placeholders are available.
 export const RECIPE_VARIABLE_HELP: { token: string; description: string }[] = [
   { token: '{{title}}', description: "The current note's title" },
