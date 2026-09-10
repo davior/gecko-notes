@@ -48,6 +48,7 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
   const panelRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   const lastVolRef = useRef(tts.volume || 1)
+  const dictationBtnRef = useRef<HTMLButtonElement>(null)
 
   const [pos, setPos] = useState<{ x: number; y: number } | null>(() => {
     try {
@@ -135,6 +136,21 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
   const recordActive = dictation?.status === 'recording' && dictation?.mode === 'record'
   const dictationActive = dictation?.status === 'recording' && dictation?.mode === 'dictation'
 
+  // Focus the dictation button itself whenever a dictation session starts or
+  // ends, so Enter/Space (the button's native activation keys) toggle it
+  // straight back on — without needing to click the mic again. Once the
+  // editor is clicked into, focus moves there and this stops applying, which
+  // is expected: while editing, the editor should own the keyboard.
+  const prevDictationModeRef = useRef(dictation?.mode)
+  useEffect(() => {
+    const prevMode = prevDictationModeRef.current
+    const nextMode = dictation?.mode
+    prevDictationModeRef.current = nextMode
+    const enteredDictation = nextMode === 'dictation' && prevMode !== 'dictation'
+    const exitedDictation = prevMode === 'dictation' && nextMode !== 'dictation'
+    if (enteredDictation || exitedDictation) dictationBtnRef.current?.focus()
+  }, [dictation?.mode])
+
   // Shared controls, identical in both floating and docked modes.
   const controls = (
     <>
@@ -204,11 +220,9 @@ export default function TTSPlaybackControls({ tts, anchorRef, onPlayPause, dicta
 
       {dictation && onDictationToggle && dictation.isSupported && (
         <button
+          ref={dictationBtnRef}
           className="p-1.5 rounded-full text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-50"
           onClick={onDictationToggle}
-          // Keep the editor's focus/cursor so dictated text lands at the cursor
-          // position rather than blurring the note (which appends to the end).
-          onMouseDown={(e) => e.preventDefault()}
           disabled={dictation.status === 'transcribing' || recordActive}
           title={dictationActive ? 'Stop dictation' : 'Start dictation'}
           aria-label={dictationActive ? 'Stop dictation' : 'Start dictation'}

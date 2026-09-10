@@ -509,6 +509,19 @@ export default function AIConversationPanel({
     sttProvider,
   })
 
+  // While dictating, keep the caret pinned to the end of the input so Enter
+  // (handled by the textarea's onKeyDown) always submits the dictated text,
+  // even if the field wasn't focused — or the cursor was elsewhere — before
+  // dictation started.
+  useEffect(() => {
+    if (dictation.mode !== 'dictation') return
+    const el = inputRef.current
+    if (!el) return
+    el.focus()
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  }, [input, dictation.mode])
+
   // Read-aloud for assistant responses. One player instance for the panel — only
   // one message speaks at a time (tracked by speakingMsgId). The TTS provider
   // (Deepgram Flux or fal.ai fallback) is resolved server-side.
