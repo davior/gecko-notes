@@ -50,7 +50,7 @@ export default function RecipePickerDropdown({ recipes, disabled, onSelect }: Re
         <BookOpen className="w-3 h-3" />
       </button>
       {open && (
-        <div className="absolute bottom-full mb-1 left-0 z-30 w-64 max-w-[80vw] rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden">
+        <div className="absolute bottom-full mb-1 right-0 z-30 w-64 max-w-[80vw] rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden">
           <input
             ref={inputRef}
             value={query}
