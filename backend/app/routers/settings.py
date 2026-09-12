@@ -1671,6 +1671,29 @@ def load_speech_config(session: Session, user_id: str) -> Dict[str, Any]:
     }
 
 
+def load_selected_voice(session: Session, user_id: str) -> Optional[str]:
+    """The user's globally selected fal.ai voice (e.g. "Rex"), read for callers
+    outside a request — the article-to-video renderer runs on a worker thread
+    with no request body to carry it in.
+
+    Persisted as a generic per-user setting under the key "tts_model" (see the
+    frontend settings store's `updateAppSettings({ tts_model: voice })`) —
+    confusingly the same key name `load_speech_config` uses for the actual
+    fal.ai *model* id, but a separate row: this one lives at the top level of
+    UserSetting, that one inside the `_SPEECH_CONFIG` JSON blob.
+    """
+    row = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == "tts_model")
+    ).first()
+    if not row or not row.value:
+        return None
+    try:
+        value = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def get_voices_for_model(session: Session, model_id: str, custom_models: List[Dict[str, Any]]) -> List[str]:
     """Get available voices for a given TTS model."""
     # Check curated models
@@ -2060,6 +2083,7 @@ async def _fal_tts(session: Session, user_id: str, api_key: str, text: str, voic
 
 async def synthesize_tts_bytes(
     session: Session, user_id: str, text: str, *, voice: Optional[str] = None,
+    provider_override: Optional[str] = None,
 ) -> Tuple[bytes, str]:
     """Synthesise one piece of text with the account's TTS settings.
 
@@ -2067,6 +2091,13 @@ async def synthesize_tts_bytes(
     it resolves the provider, honours the disk cache, records usage, and returns
     `(audio_bytes, media_type)`. Callers outside a request (the render worker
     runs on its own thread) drive it with `asyncio.run`.
+
+    `provider_override` lets a caller that makes many calls for one artifact —
+    the renderer, one call per narration chunk — pin whichever provider "auto"
+    would have picked for the *first* chunk and reuse it for every chunk after.
+    Left as "auto" per call, a transient Deepgram hiccup partway through would
+    silently fall back to fal.ai for just that one chunk (see below), handing
+    back a video whose narrator audibly changes voice partway through.
 
     Raises HTTPException on failure — the HTTP endpoint surfaces that directly,
     and the worker turns it into a job error.
@@ -2078,7 +2109,7 @@ async def synthesize_tts_bytes(
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
 
     speech_cfg = load_speech_config(session, user_id)
-    tts_provider = speech_cfg["tts_provider"]
+    tts_provider = provider_override or speech_cfg["tts_provider"]
     deepgram_key = load_deepgram_api_key(session, user_id)
     fal_key = load_fal_api_key(session, user_id)
 

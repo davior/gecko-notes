@@ -68,11 +68,34 @@ def _tts_caller(user_id: str):
     bill for the narration only once. Each call opens its own session because
     this runs on a worker thread, not in a request.
     """
-    from app.routers.settings import synthesize_tts_bytes
+    from app.routers.settings import (
+        load_deepgram_api_key, load_selected_voice, load_speech_config, synthesize_tts_bytes,
+    )
+
+    with Session(engine) as session:
+        # Read-aloud gets the user's chosen voice from the request body; a
+        # render has no request, so without this the fal.ai path fell back to
+        # the selected model's first listed voice for every render, silently
+        # ignoring whatever voice (e.g. a non-default one like "Rex") the user
+        # picked in Settings -> Speech.
+        voice = load_selected_voice(session, user_id)
+
+        # Resolve "auto" to a concrete provider once, up front, and pin it for
+        # every chunk of this render. Left as "auto" per chunk, a transient
+        # Deepgram hiccup partway through a narration would silently fall back
+        # to fal.ai — a different engine with a different voice — for just
+        # that one chunk, handing back a video that audibly changes voice
+        # mid-way. Pinned, the same hiccup fails the render instead, which is
+        # a render worth retrying rather than a video worth keeping.
+        tts_provider = load_speech_config(session, user_id)["tts_provider"]
+        if tts_provider == "auto":
+            tts_provider = "deepgram" if load_deepgram_api_key(session, user_id) else "fal"
 
     def call(text: str) -> bytes:
         with Session(engine) as session:
-            data, _media_type = asyncio.run(synthesize_tts_bytes(session, user_id, text))
+            data, _media_type = asyncio.run(
+                synthesize_tts_bytes(session, user_id, text, voice=voice, provider_override=tts_provider)
+            )
             return data
 
     return call
