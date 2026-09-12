@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { connectFluxStream, type FluxStreamEvent, type FluxStreamHandle } from '@/api/fluxStream'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
+import { useSettingsStore } from '@/stores/settings'
 
 // The explicit conversational states the voice overlay renders.
 export type VoiceState =
@@ -49,7 +50,12 @@ export function useVoiceMode(options: UseVoiceModeOptions): UseVoiceModeReturn {
   const [interimText, setInterimText] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
 
-  const tts = useTextToSpeech()
+  // Voice mode speaks via Deepgram Flux, whose voice comes from the account's
+  // Deepgram config, not this hook's `model` option — but a Deepgram hiccup
+  // falls back to fal.ai (see synthesize_tts_bytes), and that fallback needs
+  // the configured fal.ai voice or it silently speaks the hardcoded default.
+  const ttsVoice = useSettingsStore((s) => s.voice)
+  const tts = useTextToSpeech({ model: ttsVoice })
   // useTextToSpeech returns a fresh object every render, so hold it in a ref and
   // have the lifecycle callbacks below read tts.stop()/tts.play() through it.
   // Depending on the `tts` object directly would recreate teardown() every render,

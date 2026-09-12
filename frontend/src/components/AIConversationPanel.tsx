@@ -416,6 +416,7 @@ export default function AIConversationPanel({
   const falKeyConfigured = useSettingsStore((s) => s.falKeyConfigured)
   const deepgramKeyConfigured = useSettingsStore((s) => s.deepgramKeyConfigured)
   const sttProvider = useSettingsStore((s) => s.sttProvider)
+  const ttsVoice = useSettingsStore((s) => s.voice)
   const categories = useCategoriesStore((s) => s.categories)
 
   // Conversation and session state (self-managed — not driven by props)
@@ -536,8 +537,11 @@ export default function AIConversationPanel({
 
   // Read-aloud for assistant responses. One player instance for the panel — only
   // one message speaks at a time (tracked by speakingMsgId). The TTS provider
-  // (Deepgram Flux or fal.ai fallback) is resolved server-side.
-  const readAloud = useTextToSpeech()
+  // (Deepgram Flux or fal.ai fallback) is resolved server-side, but the fal.ai
+  // fallback still needs the user's chosen voice passed through explicitly —
+  // omitting it here silently fell back to the hardcoded default voice
+  // instead of the one configured in Settings → Speech.
+  const readAloud = useTextToSpeech({ model: ttsVoice })
   useEffect(() => {
     if (readAloud.status === 'idle' || readAloud.status === 'error') setSpeakingMsgId(null)
   }, [readAloud.status])
