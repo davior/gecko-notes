@@ -51,6 +51,9 @@ PUBLIC_PATHS = {
     "/api/auth/resend-verification",
     "/api/auth/forgot-password",
     "/api/auth/reset-password",
+    # A JS-invisible HttpOnly cookie can't be cleared client-side, so logout must
+    # work even when the presented token is already expired.
+    "/api/auth/logout",
 }
 
 
@@ -105,6 +108,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _origin_allowed_for_cookie(request: Request) -> bool:
+    """Cookie-authenticated writes must come from a known origin.
+
+    Only applies to the cookie path: a Bearer header cannot be attached by a
+    cross-site form or image, so header-authenticated requests are exempt. Safe
+    methods are exempt too — they change nothing.
+    """
+    if request.method in _SAFE_METHODS:
+        return True
+    origin = request.headers.get("Origin") or request.headers.get("Referer")
+    if not origin:
+        return False          # fail closed: a same-origin browser write always sends one
+    return any(origin.startswith(o) for o in _cors_origins)
+
 
 @app.middleware("http")
 async def add_cache_headers(request: Request, call_next):
@@ -124,14 +144,24 @@ async def jwt_auth_middleware(request: Request, call_next):
     if not request.url.path.startswith("/api/") or _is_public(request.url.path):
         return await call_next(request)
 
+    token = None
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    else:
+        token = request.cookies.get(auth_router.AUTH_COOKIE_NAME)
+        if token and not _origin_allowed_for_cookie(request):
+            return JSONResponse(status_code=403, content={"error": {
+                "code": "forbidden_origin",
+                "message": "Cookie authentication requires an allowed Origin",
+            }})
+
+    if not token:
         return JSONResponse(
             status_code=401,
             content={"error": {"code": "unauthorized", "message": "Missing or invalid Authorization header"}},
         )
 
-    token = auth_header[7:]
     try:
         payload = decode_token(token)
         request.state.user_id = payload.get("sub")

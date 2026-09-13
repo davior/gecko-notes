@@ -58,6 +58,12 @@ export const authApi = {
     return res.data
   },
 
+  // Clears the suite session cookie (see backend/app/routers/auth.py). The client
+  // is otherwise stateless (localStorage), so this only matters for the cookie.
+  async logout(): Promise<void> {
+    await client.post('/auth/logout')
+  },
+
   async me(): Promise<User> {
     const res = await client.get<User>('/auth/me')
     return res.data

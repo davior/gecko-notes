@@ -1,6 +1,7 @@
+import os
 import uuid
 from datetime import datetime, timedelta
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from jose import JWTError
 from sqlmodel import Session, select, func
 
@@ -15,7 +16,7 @@ from app.schemas import (
     TwoFactorDisableRequest,
 )
 from app.auth import (
-    hash_password, verify_password, create_access_token,
+    hash_password, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_DAYS,
     create_challenge_token, decode_challenge_token,
     generate_url_token, generate_numeric_code, hash_token,
     encrypt_api_key, decrypt_api_key,
@@ -34,6 +35,15 @@ VERIFY_TOKEN_EXPIRE_HOURS = 24
 RESET_TOKEN_EXPIRE_MINUTES = 60
 EMAIL_2FA_CODE_EXPIRE_MINUTES = 10
 EMAIL_2FA_MAX_ATTEMPTS = 5
+
+# ─── Suite SSO cookie ──────────────────────────────────────────────────────────
+# In addition to the JSON token, login also sets an HttpOnly cookie so a sibling
+# app on a different geckopico.com subdomain (GAM, later GVC) can share the
+# session. The header stays the primary path for Gecko Notes' own frontend.
+AUTH_COOKIE_NAME = "gecko_session"
+# "" (dev) -> a host-only cookie. ".geckopico.com" -> sent to every subdomain.
+AUTH_COOKIE_DOMAIN = os.getenv("AUTH_COOKIE_DOMAIN", "").strip() or None
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "true").lower() != "false"
 
 
 # ─── Small helpers ────────────────────────────────────────────────────────────
@@ -60,12 +70,22 @@ def _verification_required(session: Session) -> bool:
     return email_enabled() and get_bool(session, EMAIL_VERIFICATION_REQUIRED, True)
 
 
-def _finalize_login(session: Session, user: User) -> Token:
+def _finalize_login(session: Session, user: User, response: Response) -> Token:
     user.last_login = datetime.utcnow()
     session.add(user)
     session.commit()
     session.refresh(user)
     token = create_access_token({"sub": user.id, "username": user.username})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=ACCESS_TOKEN_EXPIRE_DAYS * 24 * 3600,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="lax",
+        domain=AUTH_COOKIE_DOMAIN,
+        path="/",
+    )
     return Token(access_token=token, token_type="bearer", user=UserRead.model_validate(user))
 
 
@@ -217,7 +237,7 @@ def register(payload: UserCreate, background_tasks: BackgroundTasks, session: Se
 @router.post("/login")
 @limiter.limit("5/minute")
 def login(request: Request, payload: UserLogin, background_tasks: BackgroundTasks,
-          session: Session = Depends(get_session)):
+          response: Response, session: Session = Depends(get_session)):
     user = session.exec(select(User).where(User.username == payload.username)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -236,12 +256,12 @@ def login(request: Request, payload: UserLogin, background_tasks: BackgroundTask
             _issue_email_2fa_code(session, background_tasks, user)
         return TwoFactorRequired(method=user.two_factor_method, challenge_token=challenge)
 
-    return _finalize_login(session, user)
+    return _finalize_login(session, user, response)
 
 
 @router.post("/login/2fa", response_model=Token)
 @limiter.limit("10/minute")
-def login_two_factor(request: Request, payload: LoginTwoFactorRequest,
+def login_two_factor(request: Request, payload: LoginTwoFactorRequest, response: Response,
                      session: Session = Depends(get_session)):
     try:
         claims = decode_challenge_token(payload.challenge_token)
@@ -259,7 +279,17 @@ def login_two_factor(request: Request, payload: LoginTwoFactorRequest,
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid verification code")
 
-    return _finalize_login(session, user)
+    return _finalize_login(session, user, response)
+
+
+@router.post("/logout", status_code=204)
+def logout(response: Response):
+    """Clear the suite session cookie. A JS-invisible HttpOnly cookie can't be
+    cleared from the client, so this needs a real endpoint — it's on
+    PUBLIC_PATHS so logging out still works with an expired token."""
+    response.delete_cookie(
+        AUTH_COOKIE_NAME, domain=AUTH_COOKIE_DOMAIN, path="/", samesite="lax"
+    )
 
 
 # ─── Email verification & password reset ──────────────────────────────────────
@@ -324,6 +354,20 @@ def reset_password(request: Request, payload: ResetPasswordRequest,
 @router.get("/me", response_model=UserRead)
 def me(request: Request, session: Session = Depends(get_session)):
     return UserRead.model_validate(_require_auth(request, session))
+
+
+@router.get("/session", response_model=Token)
+def current_session(request: Request, session: Session = Depends(get_session)):
+    """Exchange a valid session (cookie or header) for a token plus the user.
+
+    This is what lets a sibling app in the suite start up signed in. It mints a
+    fresh token rather than echoing the presented one, so the sibling's copy has
+    its own full lifetime.
+    """
+    user = _require_auth(request, session)
+    token = create_access_token({"sub": user.id, "username": user.username})
+    return Token(access_token=token, token_type="bearer",
+                 user=UserRead.model_validate(user))
 
 
 @router.patch("/me", response_model=UserRead)

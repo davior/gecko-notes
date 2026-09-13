@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { authApi, isTwoFactorRequired } from '@/api/auth'
 import { configApi } from '@/api/config'
@@ -11,8 +11,27 @@ const inputCls =
   'w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm'
 const labelCls = 'block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
 
+// A sibling app in the suite (GAM, later GVC) sends the browser here with
+// ?redirect=<url> when it needs a signed-in session, so login can send it back.
+// Only ever navigate to a *.geckopico.com origin — anything else is refused so
+// this can't become an open redirect.
+function validatedRedirect(raw: string | null): string | null {
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    if (url.hostname === 'geckopico.com' || url.hostname.endsWith('.geckopico.com')) {
+      return url.toString()
+    }
+  } catch {
+    // not a valid absolute URL — ignore
+  }
+  return null
+}
+
 export default function LoginView() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const redirectTarget = validatedRedirect(searchParams.get('redirect'))
   const { login, completeTwoFactor, register, loading, error } = useAuthStore()
 
   const [mode, setMode] = useState<Mode>('login')
@@ -79,6 +98,10 @@ export default function LoginView() {
         setStep('twofa')
         return
       }
+      if (redirectTarget) {
+        window.location.href = redirectTarget
+        return
+      }
       navigate('/notes', { replace: true })
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
@@ -121,6 +144,10 @@ export default function LoginView() {
   async function handleTwoFactor() {
     try {
       await completeTwoFactor(challengeToken, code)
+      if (redirectTarget) {
+        window.location.href = redirectTarget
+        return
+      }
       navigate('/notes', { replace: true })
     } catch {
       // store set the error
