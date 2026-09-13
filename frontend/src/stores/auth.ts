@@ -107,6 +107,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout() {
+    // Best-effort: clears the suite session cookie server-side. Ignore failure so
+    // a network hiccup never leaves the user stuck unable to log out locally.
+    authApi.logout().catch(() => {})
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     set({ token: null, user: null, isAuthenticated: false, error: null })
