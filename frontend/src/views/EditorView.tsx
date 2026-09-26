@@ -49,7 +49,8 @@ import { transcriptionApi } from '@/api/transcription'
 import { notesApi, configApi, type Note } from '@/api/notes'
 import { foldersApi, type Folder } from '@/api/folders'
 import { annotationsApi, type Annotation } from '@/api/annotations'
-import { useDictation, type DictationMode } from '@/hooks/useDictation'
+import { useDictation } from '@/hooks/useDictation'
+import { insertDictationAtSelection, normalizeDictatedText } from '@/utils/dictationInsert'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { extractPlainText } from '@/utils/blocks'
 import { noteToMarkdownBody, svgToPngData } from '@/utils/export'
@@ -259,16 +260,10 @@ export default function EditorView() {
     },
   })
 
-  // Insert blocks after `anchorBlockId` when given and still present (used by
-  // dictation — see dictationAnchorBlockIdRef below), otherwise at the cursor
-  // when the editor is focused, otherwise append to the end of the note.
-  // Returns the inserted blocks so callers (e.g. dictation) can track them.
-  const insertBlocksAtCursor = useCallback((blocks: PartialBlock[], anchorBlockId?: string | null) => {
+  // Insert blocks at the cursor when the editor is focused, otherwise append to
+  // the end of the note. Returns the inserted blocks.
+  const insertBlocksAtCursor = useCallback((blocks: PartialBlock[]) => {
     if (!editor || blocks.length === 0) return []
-    if (anchorBlockId) {
-      const anchor = editor.getBlock(anchorBlockId)
-      if (anchor) return editor.insertBlocks(blocks, anchor, 'after')
-    }
     if (editor.isFocused()) {
       const cursorBlock = editor.getTextCursorPosition().block
       return editor.insertBlocks(blocks, cursorBlock, 'after')
@@ -302,50 +297,42 @@ export default function EditorView() {
     if (firstBlock) editor.insertBlocks(blocks, firstBlock, 'before')
   }, [editor])
 
-  // Tracks the paragraph block the *current* dictation session is appending
-  // to, so consecutive recognized chunks concatenate onto one line instead of
-  // each becoming its own new block (which, without a stable insertion point,
-  // ends up stacking in reverse order as the cursor never advances). Cleared
-  // whenever a dictation session isn't active — see the effect below.
-  const dictationModeRef = useRef<DictationMode>(null)
-  const dictationSessionBlockIdRef = useRef<string | null>(null)
-  // The block the cursor was in when the *current* dictation session started
-  // — captured before dictation moves focus to the mic button (so the note
-  // editor is no longer "focused" for the rest of the session). Without this,
-  // every dictated chunk would fall back to appending at the end of the note
-  // instead of landing where the user had their cursor.
-  const dictationAnchorBlockIdRef = useRef<string | null>(null)
+  // Whether the user has put the text cursor somewhere in this note's body.
+  // ProseMirror keeps its selection when the editor blurs, so once they have,
+  // dictation can keep typing there even though focus moves to the mic button
+  // (on click, and deliberately once a session starts, so Enter/Space toggle
+  // it). Set by the editor wrapper's onFocus; reset whenever a note is loaded
+  // into the editor — see the hydrate effect.
+  const editorHasCursorRef = useRef(false)
 
+  // Dictated text goes where the note's cursor is, like typing, and each chunk
+  // continues from where the last one ended. With no cursor placed in the note
+  // it starts a line at the bottom instead, and leaves the cursor there so the
+  // rest of the session carries on along that line.
   const insertDictatedText = useCallback((text: string) => {
-    const trimmed = text.trim()
-    if (!trimmed || !editor) return
+    const words = normalizeDictatedText(text)
+    if (!words || !editor) return
 
-    const inSession = dictationModeRef.current === 'dictation'
-    const targetId = inSession ? dictationSessionBlockIdRef.current : null
+    const hasCursor = editorHasCursorRef.current || editor.isFocused()
+    if (hasCursor && editor.transact((tr) => insertDictationAtSelection(tr, words))) return
 
-    if (targetId) {
-      const existing = editor.getBlock(targetId)
-      if (existing) {
-        const priorText = extractPlainText([existing])
-        const merged = priorText ? `${priorText} ${trimmed}` : trimmed
-        editor.updateBlock(targetId, { content: [{ type: 'text', text: merged, styles: {} }] })
-        if (editor.isFocused()) editor.setTextCursorPosition(targetId, 'end')
-        return
-      }
-      // Target block was deleted mid-session (e.g. user backspaced it) — fall
-      // through and re-anchor to a freshly inserted one.
+    // No cursor, or it's on a block that can't hold text (e.g. an image):
+    // start a new paragraph after that block, or at the bottom of the note —
+    // filling the note's trailing empty line rather than leaving a gap above.
+    const doc = editor.document
+    const anchor = hasCursor ? editor.getTextCursorPosition().block : doc[doc.length - 1]
+    if (!anchor) return
+    let targetId = anchor.id
+    if (!hasCursor && anchor.type === 'paragraph' && anchor.content.length === 0 && anchor.children.length === 0) {
+      editor.updateBlock(anchor, { content: words })
+    } else {
+      const [inserted] = editor.insertBlocks([{ type: 'paragraph', content: words }], anchor, 'after')
+      if (!inserted) return
+      targetId = inserted.id
     }
-
-    const inserted = insertBlocksAtCursor(
-      [{ type: 'paragraph', content: [{ type: 'text', text: trimmed, styles: {} }] }],
-      inSession ? dictationAnchorBlockIdRef.current : null,
-    )
-    const newBlock = inserted[0]
-    if (newBlock) {
-      if (inSession) dictationSessionBlockIdRef.current = newBlock.id
-      if (editor.isFocused()) editor.setTextCursorPosition(newBlock.id, 'end')
-    }
-  }, [editor, insertBlocksAtCursor])
+    editor.setTextCursorPosition(targetId, 'end')
+    editorHasCursorRef.current = true
+  }, [editor])
 
   // Upload an audio blob to /media and return its URL. The filename extension
   // must match the blob type so the backend accepts it (.webm/.ogg/.mp3 are allowed).
@@ -385,32 +372,6 @@ export default function EditorView() {
     onRecordingComplete: handleRecordingComplete,
     sttProvider,
   })
-
-  // Clear the dictation session's target block whenever a session isn't
-  // active, so the next session starts a fresh paragraph rather than
-  // continuing to append to a stale one.
-  useEffect(() => {
-    dictationModeRef.current = dictation.mode
-    if (dictation.mode !== 'dictation') {
-      dictationSessionBlockIdRef.current = null
-      dictationAnchorBlockIdRef.current = null
-    }
-  }, [dictation.mode])
-
-  // Dictation now focuses the mic button as soon as it starts (so Enter/Space
-  // can toggle it), which means the editor is no longer "focused" by the time
-  // insertDictatedText runs. So capture the cursor's block *here*, synchronously,
-  // right before that focus change happens — this is the last moment the editor
-  // still reports itself focused for a click that's about to start dictation.
-  const handleDictationToggle = useCallback(() => {
-    const willStart = dictation.status === 'idle' || dictation.status === 'error'
-    if (willStart) {
-      dictationAnchorBlockIdRef.current = editor?.isFocused()
-        ? editor.getTextCursorPosition().block.id
-        : null
-    }
-    dictation.toggleDictation()
-  }, [dictation, editor])
 
   // Upload a recorded video blob to /media and return its URL + stored filename
   // (the filename is what the async transcription job references).
@@ -740,6 +701,9 @@ export default function EditorView() {
     const blocks = isNewNote ? EMPTY_DOCUMENT : parseNoteContent(note?.content ?? '[]')
     isHydratingEditor.current = true
     editor.replaceBlocks(editor.document, blocks as Parameters<typeof editor.replaceBlocks>[1])
+    // The selection just landed wherever the replaced content left it, not
+    // somewhere the user chose — unless they're in the editor right now.
+    editorHasCursorRef.current = editor.isFocused()
     currentNoteContent.current = extractPlainText(blocks as unknown[])
     syncedEditorKey.current = editorKey
     hasPendingChanges.current = false
@@ -1852,7 +1816,7 @@ export default function EditorView() {
                   anchorRef={exportAnchorRef}
                   onPlayPause={handlePlayPause}
                   dictation={dictation}
-                  onDictationToggle={handleDictationToggle}
+                  onDictationToggle={dictation.toggleDictation}
                   onRecordToggle={dictation.toggleRecording}
                   insertMode={ttsInsertMode}
                   onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
@@ -1893,7 +1857,13 @@ export default function EditorView() {
               <EditorErrorBoundary>
                 <EditorNoteContext.Provider value={noteId ? { id: noteId, title } : null}>
                 <ChildNoteChainContext.Provider value={note?.id ? [note.id] : []}>
-                  <div ref={annotationContainerRef} className="relative">
+                  <div
+                    ref={annotationContainerRef}
+                    className="relative"
+                    // isFocused() filters out focus landing on a control inside a
+                    // block (e.g. a diagram's source textarea) rather than the text.
+                    onFocus={() => { if (editor.isFocused()) editorHasCursorRef.current = true }}
+                  >
                     <BlockNoteView
                       editor={editor}
                       editable={!noteLock}
@@ -1977,7 +1947,7 @@ export default function EditorView() {
                 anchorRef={exportAnchorRef}
                 onPlayPause={handlePlayPause}
                 dictation={dictation}
-                onDictationToggle={handleDictationToggle}
+                onDictationToggle={dictation.toggleDictation}
                 onRecordToggle={dictation.toggleRecording}
                 insertMode={ttsInsertMode}
                 onToggleInsertMode={() => setTtsInsertMode((v) => !v)}
