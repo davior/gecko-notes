@@ -137,6 +137,7 @@ export interface RenderOptions {
   insert_into_note: boolean
   title_card: boolean
   chapter_screens: boolean
+  read_chapters: boolean
   embed_chapters: boolean
   thumbnail: boolean
   subtitles: SubtitleMode
@@ -178,6 +179,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   insert_into_note: true,
   title_card: true,
   chapter_screens: false,
+  read_chapters: true,
   embed_chapters: true,
   thumbnail: true,
   subtitles: 'sidecar',

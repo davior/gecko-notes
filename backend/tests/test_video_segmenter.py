@@ -140,6 +140,34 @@ def test_headings_become_chapter_marks_and_are_still_narrated():
     assert plan.shots[0].narration == "Chapter One."
 
 
+def test_read_chapters_off_keeps_the_mark_but_drops_the_narration():
+    root = _media("a.png")
+    plan = _run([
+        {"id": "1", "type": "heading", "props": {"level": 1}, "content": _text("Chapter One")},
+        {"id": "2", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "3", "type": "paragraph", "content": _text("Body.")},
+    ], media_root=root, options=RenderOptions(title_card=False, read_chapters=False))
+
+    assert plan.shots[0].chapter == "Chapter One"
+    assert "Chapter One" not in plan.shots[0].narration
+
+
+def test_read_chapters_off_leaves_chapter_screens_silent_but_present():
+    root = _media("a.png")
+    plan = _run([
+        {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "2", "type": "paragraph", "content": _text("First.")},
+        {"id": "3", "type": "heading", "props": {"level": 2}, "content": _text("Next Up")},
+        {"id": "4", "type": "paragraph", "content": _text("Second.")},
+    ], media_root=root,
+       options=RenderOptions(title_card=False, chapter_screens=True, read_chapters=False))
+
+    cards = [s for s in plan.shots if s.kind == "card"]
+    assert [c.card_title for c in cards] == ["Next Up"]
+    assert cards[0].narration == ""
+    assert cards[0].chapter == "Next Up"
+
+
 def _with_chapter_screens():
     return RenderOptions(title_card=False, chapter_screens=True)
 
