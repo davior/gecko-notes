@@ -147,6 +147,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     return () => { cancelled = true; clearTimeout(timer) }
   }, [
     noteId, payload.speed, payload.title_card, payload.chapter_screens,
+    payload.read_chapters,
     payload.narrate_code, payload.min_shot_seconds, payload.card_seconds,
     payload.quotes.enabled,
     payload.shot_end_pause_ms,
@@ -676,6 +677,11 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                     <input type="checkbox" checked={options.chapter_screens}
                            onChange={(e) => patch({ chapter_screens: e.target.checked })} />
                     Chapter screens
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <input type="checkbox" checked={options.read_chapters}
+                           onChange={(e) => patch({ read_chapters: e.target.checked })} />
+                    Read chapters aloud
                   </label>
                   <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                     <input type="checkbox" checked={options.embed_chapters}

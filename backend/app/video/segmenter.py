@@ -368,9 +368,17 @@ def segment(
             result.shots.append(pending_card)
             pending_card = None
 
+        # A heading with nothing spoken under it (read_chapters off) has no shot
+        # to hang its mark on; hand it to the shot that starts here instead.
+        carried_chapter = None
+        if (pending_chapter and open_shot is None
+                and next_shot is not None and next_shot.kind != "card"):
+            carried_chapter = pending_chapter
         pending_text = []
         pending_chapter = None
         open_shot = next_shot
+        if carried_chapter and open_shot is not None and not open_shot.chapter:
+            open_shot.chapter = carried_chapter
 
     for block in _flatten(blocks):
         kind = _classify(block, options)
@@ -408,7 +416,8 @@ def segment(
                         # the words were no longer on screen.
                         pending_card = Shot(
                             kind="card", card_title=heading, chapter=heading,
-                            card_kind="chapter", narration=_as_sentence(heading),
+                            card_kind="chapter",
+                            narration=_as_sentence(heading) if options.read_chapters else "",
                             label="chapter card",
                         )
                         # The card carries the chapter mark, so the section after
@@ -482,6 +491,10 @@ def segment(
                         pending_text.append(_as_sentence(code))
                     flush(Shot(kind=carry_kind, background=carry_background,
                                label="after code"))
+                continue
+
+            if btype == "heading" and not options.read_chapters:
+                # The chapter mark was taken above; the words are just not read.
                 continue
 
             text = _block_narration(block, options)

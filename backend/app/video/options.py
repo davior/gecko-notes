@@ -397,6 +397,9 @@ class RenderOptions(BaseModel):
 
     title_card: bool = True
     chapter_screens: bool = False
+    # Speak each heading aloud. Off, headings are still shown (chapter screens,
+    # the on-video chapter name) and marked, just not narrated.
+    read_chapters: bool = True
     embed_chapters: bool = True
     thumbnail: bool = True
     subtitles: SubtitleMode = "sidecar"
