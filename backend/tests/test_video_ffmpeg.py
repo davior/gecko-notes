@@ -264,6 +264,19 @@ def test_concat_list_quotes_each_entry():
     assert "'\\''" in body.splitlines()[1]
 
 
+@pytest.mark.parametrize("code,stderr,expected", [
+    (-9, b"", "killed by signal 9 (most likely out of memory)"),
+    (1, b"Invalid argument", "exit code 1): Invalid argument"),
+])
+def test_run_failure_reports_how_the_process_died(monkeypatch, code, stderr, expected):
+    class Result:
+        returncode, stderr = code, stderr
+    monkeypatch.setattr(F.subprocess, "run", lambda *a, **k: Result())
+    with pytest.raises(F.FFmpegError) as err:
+        F.run(["ffmpeg", "-i", "x"])
+    assert expected in str(err.value)
+
+
 # ── chunking ─────────────────────────────────────────────────────────────────
 
 def test_short_text_is_one_chunk():
