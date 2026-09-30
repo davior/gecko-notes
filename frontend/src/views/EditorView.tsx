@@ -1171,6 +1171,11 @@ export default function EditorView() {
     setSuggestedTags((s) => s.filter((t) => t !== tag))
   }
 
+  function addAllSuggestedTags() {
+    setTags((t) => [...t, ...suggestedTags.filter((st) => !t.includes(st))])
+    setSuggestedTags([])
+  }
+
   function onTagsGenerated(generated: string[]) {
     setSuggestedTags(generated.filter((t) => !tags.includes(t)))
   }
@@ -1734,9 +1739,18 @@ export default function EditorView() {
                             + #{st}
                           </button>
                         ))}
-                        <button className="ml-auto text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" onClick={() => setSuggestedTags([])}>
-                          Dismiss
-                        </button>
+                        <div className="ml-auto flex items-center gap-2">
+                          <button
+                            className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-300 dark:hover:text-blue-200"
+                            onClick={addAllSuggestedTags}
+                            title="Add every suggested tag"
+                          >
+                            Add All
+                          </button>
+                          <button className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" onClick={() => setSuggestedTags([])}>
+                            Dismiss
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
