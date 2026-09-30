@@ -423,7 +423,7 @@ export default function AIConversationPanel({
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [sessions, setSessions] = useState<AISession[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  // Chat | Recipes | History | Assets — four tabs sharing this one side panel.
+  // Chat | History | Assets | Recipes — four tabs sharing this one side panel.
   const [panelTab, setPanelTab] = useState<'chat' | 'recipes' | 'history' | 'assets'>('chat')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
@@ -1743,7 +1743,7 @@ export default function AIConversationPanel({
         onMouseDown={startResize}
       />
 
-      {/* Header: Chat | Recipes | History tabs */}
+      {/* Header: Chat | History | Assets | Recipes tabs */}
       <div className="shrink-0 flex items-center justify-between px-2 py-1.5 border-b border-gray-100 dark:border-gray-700">
         <div className="flex items-center gap-0.5 text-xs font-semibold">
           <button
@@ -1758,17 +1758,6 @@ export default function AIConversationPanel({
             Assistant
           </button>
           <button
-            onClick={() => setPanelTab('recipes')}
-            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
-              panelTab === 'recipes'
-                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-            }`}
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            Recipes
-          </button>
-          <button
             onClick={() => setPanelTab('history')}
             disabled={!sessionsEnabled}
             className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors disabled:opacity-40 ${
@@ -1776,9 +1765,10 @@ export default function AIConversationPanel({
                 ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
             }`}
+            title="Show chat history"
+            aria-label="Show chat history"
           >
             <History className="w-3.5 h-3.5" />
-            History
           </button>
           <button
             onClick={() => setPanelTab('assets')}
@@ -1792,17 +1782,19 @@ export default function AIConversationPanel({
             <Paperclip className="w-3.5 h-3.5" />
             Assets
           </button>
+          <button
+            onClick={() => setPanelTab('recipes')}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              panelTab === 'recipes'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Recipes
+          </button>
         </div>
         <div className="flex items-center gap-1">
-          {voiceCapable && (
-            <button
-              onClick={() => (voiceOpen ? void endVoiceSession(true) : void openVoiceSession())}
-              className={`btn-ghost p-1 ${voiceOpen ? 'text-indigo-500' : ''}`}
-              title={voiceOpen ? 'End voice mode' : 'Start voice mode'}
-            >
-              <AudioLines className="w-4 h-4" />
-            </button>
-          )}
           <button
             onClick={() => void handleNewSession()}
             className="btn-ghost p-1"
@@ -2371,6 +2363,19 @@ export default function AIConversationPanel({
                   ) : (
                     <Mic className="w-4 h-4" />
                   )}
+                </button>
+              )}
+              {voiceCapable && (
+                <button
+                  className={`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                    voiceOpen ? 'text-indigo-500' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                  onClick={() => (voiceOpen ? void endVoiceSession(true) : void openVoiceSession())}
+                  onMouseDown={(e) => e.preventDefault()}
+                  title={voiceOpen ? 'End voice mode' : 'Start voice mode'}
+                  aria-label={voiceOpen ? 'End voice mode' : 'Start voice mode'}
+                >
+                  <AudioLines className="w-4 h-4" />
                 </button>
               )}
               <textarea

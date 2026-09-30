@@ -32,7 +32,7 @@ function FolderChip({ folder, onOpen, onOpenDynamic, onMove, onCustomize, onDele
 
   const isDynamic = isDynamicFolder(folder)
   // A dynamic folder is a leaf that runs a search — never a drop target for notes/folders.
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: `folder-drop:${folder.id}`, disabled: isDynamic })
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: `folder-drop:${folder.id}`, data: { folderId: folder.id }, disabled: isDynamic })
   const { setNodeRef: setDragRef, attributes, listeners, isDragging } = useDraggable({
     id: `folder-drag:${folder.id}`,
     data: { type: 'folder', folderId: folder.id },

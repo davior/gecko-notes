@@ -158,7 +158,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
 
         {/* Top row: category + time + pin */}
         <div className="relative z-10 flex items-center justify-between px-3 pt-3 gap-2">
-          <div style={hasImage ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' } : undefined}>
+          <div className="min-w-0" style={hasImage ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' } : undefined}>
             {category
               ? <CategoryBadge category={category} />
               : <span className="text-xs text-gray-400">Uncategorised</span>}

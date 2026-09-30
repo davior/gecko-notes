@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { activityApi, isActive, type ActivityJob, type ActivityKind } from '@/api/activity'
+import { activityApi, isActive, isSettled, type ActivityJob, type ActivityKind } from '@/api/activity'
 import { videoGenApi, type RenderOptions } from '@/api/videoGen'
 import { useAuthStore } from '@/stores/auth'
 
@@ -22,6 +22,9 @@ interface ActivityState {
   track: (job: ActivityJob) => void
   cancel: (job: ActivityJob) => Promise<void>
   dismiss: (key: string) => void
+  /** Drop every finished job (done, failed, cancelled). Running jobs and plans
+   *  awaiting approval stay — the user still has to act on or wait for those. */
+  clearSettled: () => void
   /** Called on mount: recover anything still running after a reload. */
   resume: () => Promise<void>
   /** Start a video render and begin tracking it. */
@@ -124,6 +127,16 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       set((state) => {
         const jobs = { ...state.jobs }
         delete jobs[key]
+        syncDocumentTitle(jobs)
+        return { jobs }
+      })
+    },
+
+    clearSettled() {
+      set((state) => {
+        const jobs = Object.fromEntries(
+          Object.entries(state.jobs).filter(([, job]) => !isSettled(job)),
+        )
         syncDocumentTitle(jobs)
         return { jobs }
       })

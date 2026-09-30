@@ -6,7 +6,7 @@ import {
   Link2, Loader2, Sparkles, X,
 } from 'lucide-react'
 import { useActivityStore, jobKey } from '@/stores/activity'
-import { isActive, type ActivityJob, type ActivityKind } from '@/api/activity'
+import { isActive, isSettled, type ActivityJob, type ActivityKind } from '@/api/activity'
 import { useDropdown } from '@/hooks/useDropdown'
 import { formatBytes, formatTimeAgo } from '@/utils/format'
 
@@ -63,6 +63,7 @@ export default function ActivityIndicator({ onInsert }: Props) {
   const jobs = useActivityStore((s) => s.jobs)
   const cancel = useActivityStore((s) => s.cancel)
   const dismiss = useActivityStore((s) => s.dismiss)
+  const clearSettled = useActivityStore((s) => s.clearSettled)
   const resume = useActivityStore((s) => s.resume)
   const navigate = useNavigate()
   const { open, setOpen, triggerRef, dropdownRef, style } = useDropdown('right')
@@ -129,8 +130,16 @@ export default function ActivityIndicator({ onInsert }: Props) {
           className="z-50 w-80 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-lg overflow-hidden"
           style={style}
         >
-          <div className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
-            Background tasks
+          <div className="px-3 py-2 flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+            <span>Background tasks</span>
+            <button
+              className="btn-ghost px-1.5 py-0.5 text-xs font-medium disabled:opacity-40 disabled:pointer-events-none"
+              onClick={clearSettled}
+              disabled={!list.some(isSettled)}
+              title="Remove all completed tasks"
+            >
+              Clear
+            </button>
           </div>
           <div className="max-h-96 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
             {list.map((job) => {

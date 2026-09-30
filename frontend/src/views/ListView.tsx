@@ -5,7 +5,7 @@ import {
   ChevronDown, Upload, CheckCircle2, Circle, Loader2, Globe,
 } from 'lucide-react'
 import {
-  DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, useDraggable,
+  DndContext, DragOverlay, PointerSensor, TouchSensor, pointerWithin, useSensor, useSensors, useDraggable,
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import { useCreateBlockNote } from '@blocknote/react'
@@ -50,14 +50,26 @@ function filterLocally(list: NoteListItem[], query: string): NoteListItem[] {
   return list.filter((n) => n.title.toLowerCase().includes(q) || n.content_preview.toLowerCase().includes(q))
 }
 
+// Card view sizing: the grid fits as many columns as an 18rem minimum allows — down to
+// a single one on a phone — and each card stops growing at 24rem, so a card is never
+// narrow enough to clip its header row nor wide enough to look stretched. Both are
+// literal class strings (not built from the numbers) so Tailwind can see them.
+const CARD_GRID = 'grid gap-3 grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))]'
+const CARD_MAX_WIDTH = 'max-w-[24rem]'
+
 // Wrap a NoteCard so it can be dragged onto a folder.
-function DraggableNote({ note, children }: { note: NoteListItem; children: React.ReactNode }) {
+function DraggableNote({ note, cardView, children }: { note: NoteListItem; cardView: boolean; children: React.ReactNode }) {
   const { setNodeRef, attributes, listeners, isDragging } = useDraggable({
     id: `note-drag:${note.id}`,
     data: { type: 'note', noteId: note.id },
   })
   return (
-    <div ref={setNodeRef} {...attributes} {...listeners} className={isDragging ? 'opacity-50' : ''}>
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      className={`${cardView ? `${CARD_MAX_WIDTH} min-w-0` : ''} ${isDragging ? 'opacity-50' : ''}`}
+    >
       {children}
     </div>
   )
@@ -551,10 +563,10 @@ export default function ListView() {
     const data = event.active.data.current as { type: string; noteId?: string; folderId?: string } | undefined
     if (!data) return
     if (data.type === 'folder' && data.folderId) {
-      const folder = subfolders.find((f) => f.id === data.folderId)
+      const folder = foldersById.get(data.folderId)
       if (folder) setActiveDrag({ type: 'folder', folder })
     } else if (data.type === 'note' && data.noteId) {
-      const note = notes.find((n) => n.id === data.noteId)
+      const note = notes.find((n) => n.id === data.noteId) ?? deepResults?.find((n) => n.id === data.noteId)
       setActiveDrag({ type: 'note', label: note?.title || 'Untitled' })
     }
   }
@@ -562,25 +574,37 @@ export default function ListView() {
   async function handleDragEnd(event: DragEndEvent) {
     setActiveDrag(null)
     const { active, over } = event
-    if (!over) return
-    const overId = String(over.id)
-    if (!overId.startsWith('folder-drop:')) return
-    const destFolderId = overId.slice('folder-drop:'.length)
+    // Every drop target — folder-bar chip or tree row — carries its folder in
+    // `data.folderId`; null is the root ("All notes" in the tree).
+    const dropData = over?.data.current as { folderId?: string | null } | undefined
     const data = active.data.current as { type: string; noteId?: string; folderId?: string } | undefined
-    if (!data) return
+    if (!dropData || !data || !('folderId' in dropData)) return
+    const destFolderId = dropData.folderId ?? null
+    const destName = destFolderId ? foldersById.get(destFolderId)?.name ?? 'folder' : 'All notes'
     try {
       if (data.type === 'note' && data.noteId) {
-        await foldersStore.moveNoteToFolder(data.noteId, destFolderId)
+        const noteId = data.noteId
+        const note = notes.find((n) => n.id === noteId) ?? deepResults?.find((n) => n.id === noteId)
+        if (note && note.folder_id === destFolderId) return  // already there
+        await foldersStore.moveNoteToFolder(noteId, destFolderId)
         loadNotes(buildParams(), true)
         setSelectedIds((prev) => {
-          if (!prev.has(data.noteId as string)) return prev
+          if (!prev.has(noteId)) return prev
           const next = new Set(prev)
-          next.delete(data.noteId as string)
+          next.delete(noteId)
           return next
         })
+        showToast(`Moved to “${destName}”`)
       } else if (data.type === 'folder' && data.folderId && data.folderId !== destFolderId) {
+        const dragged = foldersById.get(data.folderId)
+        if (!dragged || dragged.parent_folder_id === destFolderId) return  // already there
+        if (destFolderId && ancestorIds(destFolderId, foldersById).includes(data.folderId)) {
+          showToast('A folder can’t be moved into itself.')
+          return
+        }
         await foldersStore.moveFolder(data.folderId, destFolderId)
         foldersStore.loadContents(folderId)
+        showToast(`Moved “${dragged.name}” to “${destName}”`)
       }
     } catch {
       showToast('Could not move item there.')
@@ -612,13 +636,11 @@ export default function ListView() {
     setSelectedIds(allSelected ? new Set() : new Set(allSelectableIds))
   }
 
-  const gridClass = viewMode === 'card'
-    ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3'
-    : 'space-y-3'
+  const gridClass = viewMode === 'card' ? CARD_GRID : 'space-y-3'
 
   function renderNotes(list: NoteListItem[]) {
     return list.map((note) => (
-      <DraggableNote key={note.id} note={note}>
+      <DraggableNote key={note.id} note={note} cardView={viewMode === 'card'}>
         <NoteCard
           note={note}
           category={getCategoryById(note.category_id)}
@@ -781,6 +803,11 @@ export default function ListView() {
         )}
       </header>
 
+      {/* One drag/drop context for the folder tree and the notes column, so notes and
+          folders can be dragged from either onto a tree row. Collision is by pointer,
+          not by the dragged item's rectangle: a note card is far larger than a tree row,
+          so its rectangle overlaps several rows at once and picks the wrong one. */}
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
       <FolderTreePanel
         folders={allFolders}
@@ -796,14 +823,14 @@ export default function ListView() {
         onCustomize={handleCustomizeFolder}
         onDelete={handleDeleteFolder}
         onEmptyArchive={handleEmptyArchive}
+        draggingFolderId={activeDrag?.type === 'folder' ? activeDrag.folder.id : null}
       />
       <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
-      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="flex-1 overflow-y-auto px-4 py-4">
           {deepLoading || (loading && notes.length === 0 && visibleSubfolders.length === 0 && !inDeepMode) ? (
             <div className={gridClass}>
               {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className={`card dark:bg-gray-800 dark:border-gray-700 animate-pulse ${viewMode === 'card' ? 'h-52' : 'p-4'}`}>
+                <div key={i} className={`card dark:bg-gray-800 dark:border-gray-700 animate-pulse ${viewMode === 'card' ? `h-52 ${CARD_MAX_WIDTH}` : 'p-4'}`}>
                   {viewMode === 'list' && <>
                     <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/3 mb-2" />
                     <div className="h-5 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-2" />
@@ -921,7 +948,6 @@ export default function ListView() {
             </div>
           )}
         </DragOverlay>
-      </DndContext>
 
       {toast && (
         <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">
@@ -1072,6 +1098,7 @@ export default function ListView() {
         onNotesChanged={() => { void loadNotes(buildParams(), true) }}
       />
       </div>
+      </DndContext>
     </div>
   )
 }
