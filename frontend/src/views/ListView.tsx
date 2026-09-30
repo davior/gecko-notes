@@ -15,6 +15,7 @@ import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import FolderPickerModal from '@/components/FolderPickerModal'
 import FolderCustomizeModal from '@/components/FolderCustomizeModal'
 import FolderTreePanel from '@/components/FolderTreePanel'
+import FolderMenu, { type FolderMenuActions } from '@/components/FolderMenu'
 import ImportUrlModal from '@/components/ImportUrlModal'
 import BulkExportMenu from '@/components/BulkExportMenu'
 import AIConversationPanel from '@/components/AIConversationPanel'
@@ -29,7 +30,7 @@ import { parseMarkdownFrontmatter, buildImportedMarkdown } from '@/utils/markdow
 import { rewriteImageUrls } from '@/utils/blocks'
 import { importUrlApi, type UrlExtractResult } from '@/api/importUrl'
 import { resolveFolderIcon } from '@/utils/folderIcons'
-import { indexById, findArchiveFolder, isInArchive, ancestorIds } from '@/utils/folderTree'
+import { indexById, findArchiveFolder, isInArchive, ancestorIds, folderMenuTarget, type FolderMenuTarget } from '@/utils/folderTree'
 import { notesApi } from '@/api/notes'
 import type { NoteListItem } from '@/api/notes'
 import type { Folder } from '@/api/folders'
@@ -68,6 +69,8 @@ function DraggableNote({ note, cardView, children }: { note: NoteListItem; cardV
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      // Right-click on a card is the browser's; only the bare background opens the add menu.
+      onContextMenu={(e) => e.stopPropagation()}
       className={`${cardView ? `${CARD_MAX_WIDTH} min-w-0` : ''} ${isDragging ? 'opacity-50' : ''}`}
     >
       {children}
@@ -104,6 +107,9 @@ export default function ListView() {
   const [viewMode, setViewMode] = useState<ViewMode>(storedViewMode)
   const [panelOpen, setPanelOpen] = useState(false)
   const [fabMenuOpen, setFabMenuOpen] = useState(false)
+  // Right-click menu over the folder bar chips or the notes background.
+  const [folderMenu, setFolderMenu] = useState<{ target: FolderMenuTarget; x: number; y: number } | null>(null)
+  const closeFolderMenu = useCallback(() => setFolderMenu(null), [])
   const [activeDrag, setActiveDrag] = useState<
     { type: 'note'; label: string } | { type: 'folder'; folder: Folder } | null
   >(null)
@@ -659,13 +665,34 @@ export default function ListView() {
     ))
   }
 
+  // One set of handlers behind every folder menu: the tree, the folder bar and the notes
+  // background.
+  const folderActions: FolderMenuActions = {
+    onNewSubfolder: handleNewSubfolder,
+    onNewDynamicFolder: handleNewDynamicFolder,
+    onNewNote: handleNewNoteInFolder,
+    onImport: handleImportToFolder,
+    onImportUrl: (id) => setImportUrlTarget(id),
+    onMove: (f) => setMoveTarget({ id: f.id }),
+    onCustomize: handleCustomizeFolder,
+    onDelete: handleDeleteFolder,
+    onEmptyArchive: handleEmptyArchive,
+  }
+
   const folderBarProps = {
     folders: visibleSubfolders,
     onOpen: openFolder,
     onOpenDynamic: openDynamicFolder,
-    onMove: (f: Folder) => setMoveTarget({ id: f.id }),
-    onCustomize: handleCustomizeFolder,
-    onDelete: handleDeleteFolder,
+    onOpenMenu: (f: Folder, x: number, y: number) =>
+      setFolderMenu({ target: folderMenuTarget(f, archiveId, foldersById), x, y }),
+  }
+
+  // Right-click on empty space in the notes view offers the same add menu as the tree,
+  // aimed at the folder being viewed. Links keep the browser's menu (open in new tab…).
+  function handleBackgroundContextMenu(e: React.MouseEvent) {
+    if ((e.target as HTMLElement).closest('a')) return
+    e.preventDefault()
+    setFolderMenu({ target: { kind: 'create', folderId }, x: e.clientX, y: e.clientY })
   }
 
   const newNotePath = folderId ? `/notes/new?folder=${folderId}` : '/notes/new'
@@ -814,19 +841,11 @@ export default function ListView() {
         currentFolderId={folderId}
         onOpenFolder={openFolder}
         onOpenDynamic={openDynamicFolder}
-        onNewSubfolder={handleNewSubfolder}
-        onNewDynamicFolder={handleNewDynamicFolder}
-        onNewNote={handleNewNoteInFolder}
-        onImport={handleImportToFolder}
-        onImportUrl={(id) => setImportUrlTarget(id)}
-        onMove={(f) => setMoveTarget({ id: f.id })}
-        onCustomize={handleCustomizeFolder}
-        onDelete={handleDeleteFolder}
-        onEmptyArchive={handleEmptyArchive}
+        {...folderActions}
         draggingFolderId={activeDrag?.type === 'folder' ? activeDrag.folder.id : null}
       />
       <div className="relative flex-1 flex flex-col min-w-0 min-h-0">
-        <main className="flex-1 overflow-y-auto px-4 py-4">
+        <main className="flex-1 overflow-y-auto px-4 py-4" onContextMenu={handleBackgroundContextMenu}>
           {deepLoading || (loading && notes.length === 0 && visibleSubfolders.length === 0 && !inDeepMode) ? (
             <div className={gridClass}>
               {Array.from({ length: 6 }).map((_, i) => (
@@ -948,6 +967,16 @@ export default function ListView() {
             </div>
           )}
         </DragOverlay>
+
+      {folderMenu && (
+        <FolderMenu
+          target={folderMenu.target}
+          x={folderMenu.x}
+          y={folderMenu.y}
+          actions={folderActions}
+          onClose={closeFolderMenu}
+        />
+      )}
 
       {toast && (
         <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">

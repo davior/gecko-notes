@@ -1,29 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import {
-  Home, ChevronDown, MoreVertical, FolderPlus, Plus, Upload, FolderInput, Palette, Trash2,
-  PanelLeftClose, Folder as FolderIcon, Search, Globe,
-  type LucideIcon,
+  Home, ChevronDown, MoreVertical, FolderPlus, PanelLeftClose, Folder as FolderIcon,
 } from 'lucide-react'
 import type { Folder } from '@/api/folders'
 import { resolveFolderIcon } from '@/utils/folderIcons'
-import { buildForest, indexById, findArchiveFolder, ancestorIds, isDynamicFolder, type FolderNode } from '@/utils/folderTree'
+import {
+  buildForest, indexById, findArchiveFolder, ancestorIds, isDynamicFolder,
+  folderFilterIds, pruneForest, folderMenuTarget,
+  type FolderNode, type FolderMenuTarget,
+} from '@/utils/folderTree'
+import FolderMenu, { type FolderMenuActions } from './FolderMenu'
+import FolderFilterInput from './FolderFilterInput'
 
-interface Props {
+interface Props extends FolderMenuActions {
   folders: Folder[]
   currentFolderId: string | null
   onOpenFolder: (id: string | null) => void
   onOpenDynamic: (folder: Folder) => void  // clicking a dynamic folder runs its saved search
-  onNewSubfolder: (parentId: string | null) => void
-  onNewDynamicFolder: (parentId: string | null) => void
-  onNewNote: (folderId: string | null) => void
-  onImport: (folderId: string | null) => void
-  onImportUrl: (folderId: string | null) => void
-  onMove: (folder: Folder) => void
-  onCustomize: (folder: Folder) => void
-  onDelete: (folder: Folder) => void       // parent decides archive vs. permanent delete
-  onEmptyArchive: () => void
   /** Folder currently being dragged (from here or the folder bar), so rows that can't
    *  accept it — itself, its descendants, its current parent — stop offering to. The
    *  drag/drop context itself lives in the parent; this panel only registers rows. */
@@ -47,11 +41,7 @@ function readStoredSize(key: string, fallback: number): number {
   }
 }
 
-type MenuKind = 'root' | 'normal' | 'archived' | 'bin' | 'dynamic'
-interface MenuTarget { kind: MenuKind; folder: Folder | null }
-interface MenuState { target: MenuTarget; top: number; left: number }
-
-const MENU_WIDTH = 192 // matches w-48
+interface MenuState { target: FolderMenuTarget; x: number; y: number }
 
 // Hovering a collapsed folder this long mid-drag opens it, so nested targets are reachable.
 const DRAG_EXPAND_MS = 600
@@ -62,9 +52,12 @@ interface RowCtx {
   byId: Map<string, Folder>
   draggingFolderId: string | null
   expanded: Set<string>
+  /** A name filter is active: every branch that survived it is shown open, and the
+   *  chevrons stop toggling (the saved expanded set is left alone for when it clears). */
+  filtering: boolean
   toggleExpand: (id: string) => void
   expand: (id: string) => void
-  openMenu: (target: MenuTarget, btn: HTMLElement) => void
+  openMenu: (target: FolderMenuTarget, x: number, y: number) => void
   onOpenFolder: (id: string | null) => void
   onOpenDynamic: (folder: Folder) => void
 }
@@ -93,16 +86,15 @@ function canDropFolderOn(
 const ACTION_BTN =
   'p-0.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0 transition-opacity opacity-60 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100'
 
-function TreeRow({ node, depth, inArchive, ctx }: { node: FolderNode; depth: number; inArchive: boolean; ctx: RowCtx }) {
+function TreeRow({ node, depth, ctx }: { node: FolderNode; depth: number; ctx: RowCtx }) {
   const { folder } = node
   const isBin = folder.id === ctx.archiveId
   const isDynamic = isDynamicFolder(folder)
   const hasChildren = !isDynamic && node.children.length > 0
-  const isOpen = ctx.expanded.has(folder.id)
+  const isOpen = ctx.filtering || ctx.expanded.has(folder.id)
   const isActive = ctx.currentFolderId === folder.id
   const resolved = resolveFolderIcon(folder)
   const btnRef = useRef<HTMLButtonElement>(null)
-  const kind: MenuKind = isBin ? 'bin' : isDynamic ? 'dynamic' : inArchive ? 'archived' : 'normal'
 
   // Ids are prefixed `tree-` because the folder bar registers the same folders as
   // `folder-drag:`/`folder-drop:` in the one shared DndContext, and ids must be unique.
@@ -135,9 +127,18 @@ function TreeRow({ node, depth, inArchive, ctx }: { node: FolderNode; depth: num
         className={`${rowClasses(isActive)} ${isOver ? DROP_HIGHLIGHT : ''} ${isDragging ? 'opacity-40' : ''}`}
         style={{ paddingLeft: `${0.25 + depth * 0.85}rem` }}
         onClick={() => (isDynamic ? ctx.onOpenDynamic(folder) : ctx.onOpenFolder(folder.id))}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          ctx.openMenu(folderMenuTarget(folder, ctx.archiveId, ctx.byId), e.clientX, e.clientY)
+        }}
         title={isDynamic ? folder.search_query ?? undefined : undefined}
       >
-        {hasChildren ? (
+        {hasChildren && ctx.filtering ? (
+          <span className="p-1 shrink-0 text-gray-400">
+            <ChevronDown className="w-3.5 h-3.5" />
+          </span>
+        ) : hasChildren ? (
           // p-1 makes this button 1.375rem wide (0.25rem×2 padding + 0.875rem icon),
           // matching the placeholder span below so folder icons line up whether or
           // not a folder has children.
@@ -166,13 +167,18 @@ function TreeRow({ node, depth, inArchive, ctx }: { node: FolderNode; depth: num
           className={ACTION_BTN}
           title="Folder actions"
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); if (btnRef.current) ctx.openMenu({ kind, folder }, btnRef.current) }}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (!btnRef.current) return
+            const rect = btnRef.current.getBoundingClientRect()
+            ctx.openMenu(folderMenuTarget(folder, ctx.archiveId, ctx.byId), rect.left, rect.bottom + 4)
+          }}
         >
           <MoreVertical className="w-3.5 h-3.5" />
         </button>
       </div>
       {hasChildren && isOpen && node.children.map((c) => (
-        <TreeRow key={c.folder.id} node={c} depth={depth + 1} inArchive={inArchive || isBin} ctx={ctx} />
+        <TreeRow key={c.folder.id} node={c} depth={depth + 1} ctx={ctx} />
       ))}
     </>
   )
@@ -214,7 +220,7 @@ export default function FolderTreePanel({
     return new Set()
   })
   const [menu, setMenu] = useState<MenuState | null>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
+  const [filter, setFilter] = useState('')
 
   const isMobileRef = useRef(isMobile)
   const panelWidthRef = useRef(panelWidth)
@@ -224,7 +230,15 @@ export default function FolderTreePanel({
   useEffect(() => { panelHeightRef.current = panelHeight }, [panelHeight])
 
   const byId = useMemo(() => indexById(folders), [folders])
-  const forest = useMemo(() => buildForest(folders), [folders])
+  const fullForest = useMemo(() => buildForest(folders), [folders])
+  // While filtering, only matching folders and their ancestors survive; "All notes" (the
+  // root row) is rendered outside the forest, so it always stays.
+  const filterIds = useMemo(() => folderFilterIds(folders, filter), [folders, filter])
+  const forest = useMemo(
+    () => (filterIds ? pruneForest(fullForest, filterIds) : fullForest),
+    [fullForest, filterIds],
+  )
+  const filtering = filterIds !== null
   const archiveFolder = useMemo(() => findArchiveFolder(folders), [folders])
   const archiveId = archiveFolder?.id ?? null
   const normalRoots = useMemo(() => forest.filter((n) => n.folder.id !== archiveId), [forest, archiveId])
@@ -257,16 +271,6 @@ export default function FolderTreePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, folders])
 
-  // Close the action menu on any outside click.
-  useEffect(() => {
-    if (!menu) return
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [menu])
-
   function toggleExpand(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -279,13 +283,10 @@ export default function FolderTreePanel({
     setExpanded((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
   }
 
-  function openMenu(target: MenuTarget, btn: HTMLElement) {
-    const rect = btn.getBoundingClientRect()
-    // Anchor by the button's left edge (the panel hugs the screen's left), clamped
-    // so the menu never spills off the right side.
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - MENU_WIDTH - 8))
-    setMenu({ target, top: rect.bottom + 4, left })
+  function openMenu(target: FolderMenuTarget, x: number, y: number) {
+    setMenu({ target, x, y })
   }
+  const closeMenu = useCallback(() => setMenu(null), [])
 
   function startResize(e: React.MouseEvent) {
     e.preventDefault()
@@ -315,7 +316,7 @@ export default function FolderTreePanel({
   }
 
   const ctx: RowCtx = {
-    currentFolderId, archiveId, byId, draggingFolderId, expanded, toggleExpand, expand, openMenu, onOpenFolder, onOpenDynamic,
+    currentFolderId, archiveId, byId, draggingFolderId, expanded, filtering, toggleExpand, expand, openMenu, onOpenFolder, onOpenDynamic,
   }
   const rootBtnRef = useRef<HTMLButtonElement>(null)
   // "All notes" is the root: dropping here moves a note or folder out to the top level.
@@ -324,64 +325,6 @@ export default function FolderTreePanel({
     data: { folderId: null },
     disabled: !canDropFolderOn(draggingFolderId, null, byId),
   })
-
-  function menuItem(key: string, Icon: LucideIcon, label: string, onClick: () => void, danger = false) {
-    return (
-      <button
-        key={key}
-        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-700 ${
-          danger ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'
-        }`}
-        onClick={() => { setMenu(null); onClick() }}
-      >
-        <Icon className="w-4 h-4 shrink-0" /> <span className="truncate">{label}</span>
-      </button>
-    )
-  }
-
-  function renderMenuItems(target: MenuTarget) {
-    const { kind, folder } = target
-    const fid = folder?.id ?? null
-    if (kind === 'bin') {
-      return [menuItem('empty', Trash2, 'Empty Archive Bin', onEmptyArchive, true)]
-    }
-    if (kind === 'archived' && folder) {
-      return [
-        menuItem('restore', FolderInput, 'Move out / restore…', () => onMove(folder)),
-        menuItem('delete', Trash2, 'Delete permanently', () => onDelete(folder), true),
-      ]
-    }
-    // Dynamic (saved-search) folder: a leaf, so no "new child" actions.
-    if (kind === 'dynamic' && folder) {
-      return [
-        menuItem('move', FolderInput, 'Move to…', () => onMove(folder)),
-        menuItem('customize', Palette, 'Customize', () => onCustomize(folder)),
-        menuItem('delete', Trash2, 'Delete', () => onDelete(folder), true),
-      ]
-    }
-    if (kind === 'root') {
-      return [
-        menuItem('new-folder', FolderPlus, 'New folder', () => onNewSubfolder(null)),
-        menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(null)),
-        menuItem('new-note', Plus, 'New note', () => onNewNote(null)),
-        menuItem('import', Upload, 'Import Markdown', () => onImport(null)),
-        menuItem('import-url', Globe, 'Import URL', () => onImportUrl(null)),
-      ]
-    }
-    // normal folder
-    if (!folder) return null
-    return [
-      menuItem('new-sub', FolderPlus, 'New subfolder', () => onNewSubfolder(fid)),
-      menuItem('new-dynamic', Search, 'New dynamic folder', () => onNewDynamicFolder(fid)),
-      menuItem('new-note', Plus, 'New note', () => onNewNote(fid)),
-      menuItem('import', Upload, 'Import Markdown', () => onImport(fid)),
-      menuItem('import-url', Globe, 'Import URL', () => onImportUrl(fid)),
-      <div key="sep" className="my-1 border-t border-gray-100 dark:border-gray-700" />,
-      menuItem('move', FolderInput, 'Move to…', () => onMove(folder)),
-      menuItem('customize', Palette, 'Customize', () => onCustomize(folder)),
-      menuItem('delete', Trash2, 'Delete', () => onDelete(folder), true),
-    ]
-  }
 
   if (!open) {
     return (
@@ -425,6 +368,10 @@ export default function FolderTreePanel({
           </div>
         </div>
 
+        <div className="shrink-0 px-2 py-1.5 border-b border-gray-100 dark:border-gray-700">
+          <FolderFilterInput value={filter} onChange={setFilter} />
+        </div>
+
         <nav className="flex-1 min-h-0 overflow-y-auto py-1 px-1">
           {/* Root "All notes" */}
           <div
@@ -432,6 +379,11 @@ export default function FolderTreePanel({
             className={`${rowClasses(rootActive)} ${rootIsOver ? DROP_HIGHLIGHT : ''}`}
             style={{ paddingLeft: '0.25rem' }}
             onClick={() => onOpenFolder(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              openMenu({ kind: 'create', folderId: null }, e.clientX, e.clientY)
+            }}
           >
             <span className="w-[1.375rem] shrink-0" />
             <Home className="w-4 h-4 shrink-0 text-gray-400" />
@@ -441,26 +393,31 @@ export default function FolderTreePanel({
               className={ACTION_BTN}
               title="Add here"
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); if (rootBtnRef.current) openMenu({ kind: 'root', folder: null }, rootBtnRef.current) }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (!rootBtnRef.current) return
+                const rect = rootBtnRef.current.getBoundingClientRect()
+                openMenu({ kind: 'create', folderId: null }, rect.left, rect.bottom + 4)
+              }}
             >
               <MoreVertical className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {normalRoots.map((n) => (
-            <TreeRow key={n.folder.id} node={n} depth={1} inArchive={false} ctx={ctx} />
+            <TreeRow key={n.folder.id} node={n} depth={1} ctx={ctx} />
           ))}
 
           {normalRoots.length === 0 && !archiveNode && (
             <p className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">
-              No folders yet. Use the ⋯ menu to add one.
+              {filtering ? <>No folders match “{filter.trim()}”.</> : 'No folders yet. Use the ⋯ menu to add one.'}
             </p>
           )}
 
           {archiveNode && (
             <>
               <div className="my-1 border-t border-gray-100 dark:border-gray-700/70" />
-              <TreeRow node={archiveNode} depth={1} inArchive={false} ctx={ctx} />
+              <TreeRow node={archiveNode} depth={1} ctx={ctx} />
             </>
           )}
         </nav>
@@ -475,16 +432,17 @@ export default function FolderTreePanel({
         title="Drag to resize"
       />
 
-      {menu && createPortal(
-        <div
-          ref={menuRef}
-          className="fixed z-50 w-48 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 text-sm"
-          style={{ top: menu.top, left: menu.left }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {renderMenuItems(menu.target)}
-        </div>,
-        document.body,
+      {menu && (
+        <FolderMenu
+          target={menu.target}
+          x={menu.x}
+          y={menu.y}
+          actions={{
+            onNewSubfolder, onNewDynamicFolder, onNewNote, onImport, onImportUrl,
+            onMove, onCustomize, onDelete, onEmptyArchive,
+          }}
+          onClose={closeMenu}
+        />
       )}
     </aside>
   )

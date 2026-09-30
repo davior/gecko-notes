@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { Home } from 'lucide-react'
 import { foldersApi, type Folder } from '@/api/folders'
 import { resolveFolderIcon } from '@/utils/folderIcons'
-import { buildTree, isDynamicFolder } from '@/utils/folderTree'
+import { buildTree, isDynamicFolder, folderFilterIds } from '@/utils/folderTree'
+import FolderFilterInput from './FolderFilterInput'
 
 interface Props {
   title?: string
@@ -16,6 +17,7 @@ interface Props {
 export default function FolderPickerModal({ title = 'Move to folder', disabledIds, onSelect, onClose }: Props) {
   const [folders, setFolders] = useState<Folder[]>([])
   const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('')
 
   useEffect(() => {
     let active = true
@@ -27,12 +29,20 @@ export default function FolderPickerModal({ title = 'Move to folder', disabledId
 
   // Dynamic (saved-search) folders are leaves that hold nothing, so they can't be a
   // move destination.
-  const tree = useMemo(() => buildTree(folders.filter((f) => !isDynamicFolder(f))), [folders])
+  const destinations = useMemo(() => folders.filter((f) => !isDynamicFolder(f)), [folders])
+  // A name filter keeps matching folders plus their ancestors; "All notes (root)" below is
+  // outside the tree, so it always shows.
+  const filterIds = useMemo(() => folderFilterIds(destinations, filter), [destinations, filter])
+  const tree = useMemo(
+    () => buildTree(filterIds ? destinations.filter((f) => filterIds.has(f.id)) : destinations),
+    [destinations, filterIds],
+  )
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white dark:bg-gray-800 rounded-xl p-5 max-w-sm w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">{title}</h3>
+        <FolderFilterInput value={filter} onChange={setFilter} autoFocus className="mb-2" />
         <div className="max-h-72 overflow-y-auto -mx-1">
           <button
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -43,7 +53,9 @@ export default function FolderPickerModal({ title = 'Move to folder', disabledId
           {loading ? (
             <p className="text-sm text-gray-400 px-3 py-2">Loading…</p>
           ) : tree.length === 0 ? (
-            <p className="text-sm text-gray-400 px-3 py-2">No folders yet.</p>
+            <p className="text-sm text-gray-400 px-3 py-2">
+              {filterIds ? <>No folders match “{filter.trim()}”.</> : 'No folders yet.'}
+            </p>
           ) : (
             tree.map((f) => {
               const disabled = disabledIds?.has(f.id)
