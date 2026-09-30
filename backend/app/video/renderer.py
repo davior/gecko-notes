@@ -8,7 +8,8 @@ Each shot is encoded to its own MP4 with identical codec parameters, so the
 stitch is a `concat -c copy` remux rather than a second full encode, and a shot
 is the natural unit of progress. Everything happens in a scratch directory that
 is removed on every exit path; only the finished artefacts are moved into the
-user's media directory.
+user's media directory. The one thing that outlives a failed render is its
+encoded segments (see `shot_cache`), so a retry doesn't redo them.
 """
 
 import json
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from app.video import compose, ffmpeg as F
+from app.video import compose, ffmpeg as F, shot_cache
 from app.video.narration import (
     Cue, NarrationResult, build_narration_chunks, shift_cues, synthesize_shot, write_srt,
 )
@@ -166,6 +167,14 @@ def render(
     work_dir = os.path.join(media_dir, WORK_ROOT_NAME, job_id)
     os.makedirs(work_dir, exist_ok=True)
 
+    # Encoded segments outlive a failed render (see shot_cache), so a retry only
+    # redoes what actually failed. Housekeeping must never fail a render.
+    cache = shot_cache.ShotCache(media_dir, user_id)
+    try:
+        shot_cache.prune(media_dir)
+    except Exception:
+        logger.exception("Could not prune the video shot cache")
+
     try:
         progress("Preparing", 2, "Reading the article")
         plan: Segmentation = segment(
@@ -234,6 +243,7 @@ def render(
         # ── per-shot render ───────────────────────────────────────────────────
         base = 2 + NARRATION_SHARE
         shot_files: List[str] = []
+        reused = 0
         # Collected as the shots are rendered and laid out on a timeline
         # afterwards, once the transition overlap is known.
         durations: List[float] = []
@@ -322,30 +332,48 @@ def render(
 
             output = f"shot_{index:04d}.mp4"
 
-            def _encode(with_options: RenderOptions) -> None:
-                argv = F.build_shot_command(
+            def _argv(with_options: RenderOptions) -> List[str]:
+                return F.build_shot_command(
                     kind=shot.kind, background=background, audio=narration.path,
                     duration=duration, output=output, options=with_options,
                     preview=preview, overlay_png=shot_overlay, subtitle_file=shot_srt,
                     background_has_audio=has_audio, index=index,
                 )
+
+            def _encode(with_options: RenderOptions) -> None:
                 # Run inside the work dir so every path in the command is a bare
                 # filename — which is what keeps the `subtitles=` filter, whose
                 # argument needs escaping, free of anything that needs escaping.
-                F.run(argv, cwd=work_dir, timeout=F.shot_timeout(duration))
+                F.run(_argv(with_options), cwd=work_dir, timeout=F.shot_timeout(duration))
 
-            try:
-                _encode(options)
-            except F.FFmpegError as exc:
-                # Losing a forty-minute render to one expensive segment is a bad
-                # trade when the two most expensive things in it are also the two
-                # least important. Retry once without them; the narration is
-                # already synthesised and cached, so this costs no speech.
-                logger.warning("Segment %d failed (%s) — retrying it plainer", index + 1, exc)
-                plain = options.model_copy(deep=True)
-                plain.ken_burns.effect = "none"
-                plain.waveform.enabled = False
-                _encode(plain)
+            # A segment encoded by an earlier attempt that died later on (usually
+            # at the stitch) is reused rather than encoded again.
+            key = shot_cache.shot_key(
+                _argv(options),
+                [background, narration.path, shot_overlay, shot_srt],
+                work_dir,
+            )
+            fell_back = cache.restore(key, os.path.join(work_dir, output))
+            if fell_back is not None:
+                reused += 1
+            else:
+                try:
+                    _encode(options)
+                except F.FFmpegError as exc:
+                    # Losing a forty-minute render to one expensive segment is a bad
+                    # trade when the two most expensive things in it are also the two
+                    # least important. Retry once without them; the narration is
+                    # already synthesised and cached, so this costs no speech.
+                    logger.warning("Segment %d failed (%s) — retrying it plainer", index + 1, exc)
+                    plain = options.model_copy(deep=True)
+                    plain.ken_burns.effect = "none"
+                    plain.waveform.enabled = False
+                    _encode(plain)
+                    fell_back = True
+                else:
+                    fell_back = False
+                cache.store(key, os.path.join(work_dir, output), plain=fell_back)
+            if fell_back:
                 plan.warnings.append(
                     f"Segment {index + 1} was rendered without motion or a waveform: "
                     f"it was too long to render with them."
@@ -354,6 +382,10 @@ def render(
             shot_files.append(output)
             durations.append(duration)
             shot_cues.append(narration.cues)
+
+        if reused:
+            logger.info("Video render %s reused %d of %d encoded segments from an earlier attempt",
+                        job_id, reused, len(shots))
 
         # ── timeline ──────────────────────────────────────────────────────────
         # A crossfade overlaps each pair of shots, so every shot after the first
@@ -378,14 +410,27 @@ def render(
             # A blend needs adjacent shots on screen together, which no per-shot
             # filter can express, so this path re-encodes the joined stream once.
             # Every other transition still stitches as a remux below.
-            F.run(
-                F.build_xfade_command(
-                    shot_files, durations, "stitched.mp4", options=options,
-                    preview=preview, style=options.transition.style, overlap=overlap,
-                ),
-                cwd=work_dir, timeout=F.shot_timeout(sum(durations)),
-            )
-        else:
+            try:
+                F.run(
+                    F.build_xfade_command(
+                        shot_files, durations, "stitched.mp4", options=options,
+                        preview=preview, style=options.transition.style, overlap=overlap,
+                    ),
+                    cwd=work_dir, timeout=F.shot_timeout(sum(durations)),
+                )
+            except F.FFmpegError as exc:
+                # This is the one step that holds every segment open at once, so
+                # it is the one a small host runs out of memory in — after all the
+                # encoding is done. Joining with straight cuts needs almost none,
+                # so a finished video without the blend beats no video at all.
+                logger.warning("Crossfade stitch failed (%s) — joining with cuts instead", exc)
+                plan.warnings.append(
+                    "Crossfade transitions were skipped: blending the segments "
+                    "together failed, so they are joined with straight cuts."
+                )
+                overlap = 0.0
+                chapters, all_cues, timeline = build_timeline(shots, durations, shot_cues, overlap)
+        if overlap <= 0:
             F.write_concat_list(os.path.join(work_dir, "shots.txt"), shot_files)
             F.run(F.build_concat_command("shots.txt", "stitched.mp4"), cwd=work_dir, timeout=1800)
 
@@ -435,6 +480,9 @@ def render(
         stem = uuid.uuid4().hex
         video_filename = f"{stem}.mp4"
         shutil.move(os.path.join(work_dir, final), os.path.join(user_dir, video_filename))
+        # The segments are inside the finished video now, so their cached copies
+        # are dead weight; only a render that fails leaves them behind.
+        cache.discard_used()
 
         subtitle_filename = None
         if srt_written and options.subtitles in ("sidecar", "soft", "burn"):

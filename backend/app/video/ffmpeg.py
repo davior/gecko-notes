@@ -118,8 +118,19 @@ def run(argv: Sequence[str], *, cwd: Optional[str] = None, timeout: int = SHOT_T
             f"encoding preset."
         ) from exc
     if result.returncode != 0:
-        tail = result.stderr.decode(errors="replace")[-800:]
-        raise FFmpegError(f"ffmpeg failed: {tail}")
+        stderr = result.stderr.decode(errors="replace")
+        tail = stderr[-800:].strip()
+        code = result.returncode
+        # `-loglevel error` means a process killed from outside says nothing at
+        # all, so the exit status is the only clue that it was the OOM killer.
+        if code < 0:
+            reason = f"killed by signal {-code}"
+            if code == -9:
+                reason += " (most likely out of memory)"
+        else:
+            reason = f"exit code {code}"
+        logger.error("ffmpeg %s\nargv: %s\nstderr: %s", reason, " ".join(argv), stderr or "<empty>")
+        raise FFmpegError(f"ffmpeg failed ({reason}): {tail}".rstrip(": "))
 
 
 def probe_duration(path: str) -> float:
