@@ -11,6 +11,19 @@ import type { NoteSearchFilter, AnnualRange } from '@/api/notes'
 
 export interface SmartQueryCategory { id: string; label: string }
 
+/** The search-box query for "every note with this tag" — what clicking a tag produces. */
+export function tagSearchQuery(tag: string): string {
+  return `tags:"${tag.replace(/"/g, '')}"`
+}
+
+/** The tag if `query` is exactly a `tags:"name"` search (see tagSearchQuery), else null.
+ *  Such a query is precise syntax, so it runs as a plain tag filter with no AI round
+ *  trip — and still works when no AI provider is configured. */
+export function parseTagSearchQuery(query: string): string | null {
+  const m = query.trim().match(/^tags:"([^"]+)"$/i)
+  return m ? m[1] : null
+}
+
 export const SMART_QUERY_INSTRUCTIONS = `You turn a note-search query into a structured JSON filter. The query may be natural language (e.g. "find notes from the first week of January about the new year") or advanced syntax (e.g. "tags:Animals", "date:2026-02-02 and category:Ideas"), or a mix. Output ONLY a single JSON object matching this shape (every field is optional — omit ones that don't apply):
 
 {

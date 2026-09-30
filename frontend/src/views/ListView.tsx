@@ -32,9 +32,9 @@ import { importUrlApi, type UrlExtractResult } from '@/api/importUrl'
 import { resolveFolderIcon } from '@/utils/folderIcons'
 import { indexById, findArchiveFolder, isInArchive, ancestorIds, folderMenuTarget, type FolderMenuTarget } from '@/utils/folderTree'
 import { notesApi } from '@/api/notes'
-import type { NoteListItem } from '@/api/notes'
+import type { NoteListItem, NoteSearchFilter } from '@/api/notes'
 import type { Folder } from '@/api/folders'
-import { generateNoteFilter } from '@/services/smartQuery'
+import { generateNoteFilter, tagSearchQuery, parseTagSearchQuery } from '@/services/smartQuery'
 
 type ViewMode = 'list' | 'card'
 
@@ -252,6 +252,17 @@ export default function ListView() {
     clearSelection()
     setDeepLoading(true)
     try {
+      // A lone `tags:"name"` (what clicking a tag produces) is exact syntax: filter by
+      // that tag directly rather than asking the AI, so it also works with no AI set up
+      // (the keyword fallback below only looks at titles and bodies, never tags).
+      const tag = parseTagSearchQuery(query)
+      if (tag) {
+        const filter: NoteSearchFilter = { tags: [tag] }
+        if (activeCategoryId) filter.category_ids = [activeCategoryId]
+        const result = await notesApi.smartSearch(filter)
+        setDeepResults(result.data)
+        return
+      }
       if (aiService) {
         try {
           const filter = await generateNoteFilter(aiService, { query, categories })
@@ -290,6 +301,11 @@ export default function ListView() {
   // returns to this search rather than the note's physical folder.
   function openDynamicFolder(folder: Folder) {
     setUrlQuery(folder.search_query ?? null)
+  }
+
+  // Clicking a tag on a note searches every note with that tag (partial matches count).
+  function searchByTag(tag: string) {
+    setUrlQuery(tagSearchQuery(tag))
   }
 
   function toggleSelect(id: string) {
@@ -660,6 +676,7 @@ export default function ListView() {
           onArchive={handleArchiveNote}
           onRestore={handleRestoreNote}
           onDeletePermanent={handleDeleteNotePermanent}
+          onTagClick={searchByTag}
         />
       </DraggableNote>
     ))

@@ -3,16 +3,18 @@ interface Props {
   removable?: boolean
   onRemove?: (tag: string) => void
   onClick?: (tag: string) => void
+  /** Tooltip for the clickable tag; what clicking does depends on the caller. */
+  clickTitle?: string
 }
 
-export default function TagChip({ tag, removable, onRemove, onClick }: Props) {
+export default function TagChip({ tag, removable, onRemove, onClick, clickTitle = 'Copy tag' }: Props) {
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700 border border-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600">
       {onClick ? (
         <button
           type="button"
           className="cursor-pointer hover:underline focus:outline-none"
-          title="Copy tag"
+          title={clickTitle}
           onClick={(e) => { e.stopPropagation(); onClick(tag) }}
         >
           #{tag}
