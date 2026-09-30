@@ -75,6 +75,49 @@ export function ancestorIds(folderId: string, byId: Map<string, Folder>, maxDept
   return out
 }
 
+/** Ids of the folders a name filter keeps: every folder whose name contains `query`
+ *  (case-insensitive) plus all their ancestors, so a match is always reachable from the
+ *  root. Returns null for a blank query, meaning "no filtering — show everything". */
+export function folderFilterIds(folders: Folder[], query: string): Set<string> | null {
+  const q = query.trim().toLowerCase()
+  if (!q) return null
+  const byId = indexById(folders)
+  const keep = new Set<string>()
+  for (const f of folders) {
+    if (!f.name.toLowerCase().includes(q)) continue
+    keep.add(f.id)
+    for (const a of ancestorIds(f.id, byId)) keep.add(a)
+  }
+  return keep
+}
+
+/** Drop every node of a nested forest whose folder isn't in `keep`. */
+export function pruneForest(forest: FolderNode[], keep: Set<string>): FolderNode[] {
+  return forest
+    .filter((n) => keep.has(n.folder.id))
+    .map((n) => ({ folder: n.folder, children: pruneForest(n.children, keep) }))
+}
+
+/** What a folder context menu was opened on. `create` is "add something here" — the
+ *  "All notes" root row (folderId null) or the background of the folder being viewed. */
+export type FolderMenuTarget =
+  | { kind: 'create'; folderId: string | null }
+  | { kind: 'normal' | 'archived' | 'dynamic'; folder: Folder }
+  | { kind: 'bin' }
+
+/** Which menu a folder gets: the Archive Bin, anything inside the bin, a saved-search
+ *  folder (a leaf), or an ordinary folder. */
+export function folderMenuTarget(
+  folder: Folder,
+  archiveId: string | null,
+  byId: Map<string, Folder>,
+): FolderMenuTarget {
+  if (folder.id === archiveId) return { kind: 'bin' }
+  if (isDynamicFolder(folder)) return { kind: 'dynamic', folder }
+  if (isInArchive(folder.id, byId, archiveId)) return { kind: 'archived', folder }
+  return { kind: 'normal', folder }
+}
+
 /** True if folderId is the Archive Bin itself or lives anywhere inside it. */
 export function isInArchive(
   folderId: string | null,

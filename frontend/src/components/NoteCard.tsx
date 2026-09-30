@@ -126,7 +126,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
     const hasImage = Boolean(note.first_image_url)
     return (
       <div
-        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col justify-between shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
+        className={`relative rounded-xl overflow-hidden cursor-pointer h-52 flex flex-col shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 ${
           hasImage
             ? 'border border-gray-200 dark:border-gray-700'
             : 'card'
@@ -156,82 +156,86 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
           <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl" style={{ backgroundColor: category?.color ?? '#6B7280' }} />
         )}
 
-        {/* Top row: category + time + pin */}
-        <div className="relative z-10 flex items-center justify-between px-3 pt-3 gap-2">
-          <div className="min-w-0" style={hasImage ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' } : undefined}>
-            {category
-              ? <CategoryBadge category={category} />
-              : <span className="text-xs text-gray-400">Uncategorised</span>}
+        {/* Content column, top to bottom: category + actions, dates, title, preview, and
+            the tags pinned to the bottom edge. */}
+        <div className="relative z-10 flex flex-col flex-1 min-h-0 px-3 pt-3 pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0" style={hasImage ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' } : undefined}>
+              {category
+                ? <CategoryBadge category={category} />
+                : <span className="text-xs text-gray-400">Uncategorised</span>}
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {note.is_shared && (
+                <button
+                  title="Shared publicly — click to copy link"
+                  className="p-0.5 rounded transition-colors text-green-400 hover:bg-white/10"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={handleShareClick}
+                >
+                  <Globe
+                    className="w-3.5 h-3.5"
+                    style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
+                  />
+                </button>
+              )}
+              {onPin && (
+                <button
+                  className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-400' : 'text-gray-300 hover:text-gray-500'}`}
+                  style={hasImage && !note.is_pinned ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                  title={note.is_pinned ? 'Unpin note' : 'Pin to top'}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
+                >
+                  <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
+                </button>
+              )}
+              {onToggleSelect && (
+                <button
+                  className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
+                  style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+                  title={selected ? 'Deselect note' : 'Select note'}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <NoteMenu
+                noteId={note.id}
+                inArchive={inArchive}
+                hasImage={hasImage}
+                onArchive={onArchive}
+                onRestore={onRestore}
+                onDeletePermanent={onDeletePermanent}
+              />
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span
-              className="text-xs text-gray-500 dark:text-gray-400"
-              style={hasImage ? { color: 'white', textShadow } : undefined}
-            >
-              {relativeDate(note.modified_at)}
-            </span>
-            {note.is_shared && (
-              <button
-                title="Shared publicly — click to copy link"
-                className="p-0.5 rounded transition-colors text-green-400 hover:bg-white/10"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={handleShareClick}
-              >
-                <Globe
-                  className="w-3.5 h-3.5"
-                  style={hasImage ? { color: 'rgba(255,255,255,0.85)' } : undefined}
-                />
-              </button>
-            )}
-            {onPin && (
-              <button
-                className={`p-0.5 rounded transition-colors ${note.is_pinned ? 'text-blue-400' : 'text-gray-300 hover:text-gray-500'}`}
-                style={hasImage && !note.is_pinned ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title={note.is_pinned ? 'Unpin note' : 'Pin to top'}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onPin(note.id) }}
-              >
-                <Pin className="w-3.5 h-3.5" fill={note.is_pinned ? 'currentColor' : 'none'} />
-              </button>
-            )}
-            {onToggleSelect && (
-              <button
-                className={`p-0.5 rounded transition-colors ${selected ? 'text-green-500' : 'text-gray-300 hover:text-gray-500'}`}
-                style={hasImage && !selected ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                title={selected ? 'Deselect note' : 'Select note'}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onToggleSelect(note.id) }}
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-            <NoteMenu
-              noteId={note.id}
-              inArchive={inArchive}
-              hasImage={hasImage}
-              onArchive={onArchive}
-              onRestore={onRestore}
-              onDeletePermanent={onDeletePermanent}
-            />
-          </div>
-        </div>
 
-        {/* Bottom: title + preview + tags */}
-        <div className="relative z-10 px-3 pb-3">
+          {/* Dates sit on their own line under the header so both fit on a narrow card. */}
+          <div
+            className="flex flex-wrap items-center gap-x-2 text-[11px] leading-tight mt-1 text-gray-500 dark:text-gray-400"
+            style={hasImage ? { color: 'white', textShadow } : undefined}
+          >
+            <span title={new Date(note.created_at).toLocaleString()}>Created {relativeDate(note.created_at)}</span>
+            <span aria-hidden="true">·</span>
+            <span title={new Date(note.modified_at).toLocaleString()}>Modified {relativeDate(note.modified_at)}</span>
+          </div>
+
           <h3
-            className="font-semibold text-sm leading-tight mb-1 truncate text-gray-900 dark:text-gray-100"
+            className="font-semibold text-sm leading-tight mt-2 mb-1 line-clamp-2 text-gray-900 dark:text-gray-100"
             style={hasImage ? { color: 'white', textShadow } : undefined}
           >
             {note.title || 'Untitled'}
           </h3>
           <p
-            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-1.5"
+            className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 min-h-0 overflow-hidden"
             style={hasImage ? { color: 'rgba(255,255,255,0.9)', textShadow } : undefined}
           >
             {note.content_preview || 'No content'}
           </p>
           {visibleTags.length > 0 && (
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-1 mt-auto pt-1.5">
               {visibleTags.map((tag) => (
                 <span
                   key={tag}
