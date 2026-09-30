@@ -1,3 +1,4 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Pin, Globe, CheckCircle2, MoreHorizontal, Trash2, RotateCcw, type LucideIcon } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import type { NoteListItem } from '@/api/notes'
@@ -96,6 +97,147 @@ function NoteMenu({ noteId, inArchive, hasImage, onArchive, onRestore, onDeleteP
   )
 }
 
+// Tags on a card: a single line of whole chips. Whatever wraps past the first line is
+// clipped, so a long title and preview are never squeezed by a second row of tags; the
+// clipped ones are counted in a "+N" badge whose popover lists every tag. Clicking any
+// tag searches for it.
+interface CardTagsProps {
+  tags: string[]
+  hasImage: boolean
+  onTagClick?: (tag: string) => void
+}
+
+function CardTags({ tags, hasImage, onTagClick }: CardTagsProps) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  const badgeRef = useRef<HTMLButtonElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+  const [hidden, setHidden] = useState(0)
+  const [pos, setPos] = useState<{ right: number; bottom: number; maxHeight: number } | null>(null)
+
+  // The row is exactly one chip tall with overflow hidden, so chips that wrap onto a
+  // later line are the ones clipped: count those whose top is below the first chip's.
+  useLayoutEffect(() => {
+    const row = rowRef.current
+    if (!row) return
+    const measure = () => {
+      const chips = Array.from(row.children) as HTMLElement[]
+      const firstTop = chips[0]?.offsetTop ?? 0
+      setHidden(chips.filter((c) => c.offsetTop > firstTop).length)
+    }
+    measure()
+    // The row narrows when the badge appears and chips resize when fonts load.
+    const ro = new ResizeObserver(measure)
+    ro.observe(row)
+    Array.from(row.children).forEach((c) => ro.observe(c))
+    return () => ro.disconnect()
+  }, [tags])
+
+  // Dismiss the popover on an outside press, Escape, page scroll or resize (it is
+  // fixed-positioned, so it would otherwise drift away from its badge).
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!popRef.current?.contains(t) && !badgeRef.current?.contains(t)) close()
+    }
+    const onScroll = (e: Event) => { if (!popRef.current?.contains(e.target as Node)) close() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [pos])
+
+  function toggleAll(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (pos || !badgeRef.current) { setPos(null); return }
+    const rect = badgeRef.current.getBoundingClientRect()
+    // Open upward: the badge sits at the card's bottom edge, often near the viewport's.
+    setPos({
+      right: Math.max(8, window.innerWidth - rect.right),
+      bottom: window.innerHeight - rect.top + 4,
+      maxHeight: Math.max(96, Math.min(192, rect.top - 12)),
+    })
+  }
+
+  const chipClass = `text-xs px-1.5 py-0.5 rounded-full max-w-full truncate ${
+    hasImage ? '' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }`
+  const chipStyle = hasImage
+    ? { backgroundColor: 'rgba(255,255,255,0.25)', color: 'white', textShadow }
+    : undefined
+
+  return (
+    <div className="flex items-start gap-1 mt-auto pt-1.5 shrink-0">
+      <div ref={rowRef} className="flex flex-wrap gap-1 flex-1 min-w-0 h-5 overflow-hidden">
+        {tags.map((tag) =>
+          onTagClick ? (
+            <button
+              key={tag}
+              type="button"
+              title="Search this tag"
+              className={`${chipClass} hover:underline`}
+              style={chipStyle}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onTagClick(tag) }}
+            >
+              #{tag}
+            </button>
+          ) : (
+            <span key={tag} className={chipClass} style={chipStyle}>#{tag}</span>
+          ),
+        )}
+      </div>
+      {hidden > 0 && (
+        <button
+          ref={badgeRef}
+          type="button"
+          title={`Show all ${tags.length} tags`}
+          aria-label={`Show all ${tags.length} tags`}
+          aria-expanded={pos !== null}
+          className={`shrink-0 h-5 min-w-5 px-1 rounded-full text-[10px] font-semibold leading-5 text-center ${
+            hasImage ? '' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500'
+          }`}
+          style={hasImage ? { backgroundColor: 'rgba(255,255,255,0.35)', color: 'white', textShadow } : undefined}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={toggleAll}
+        >
+          +{hidden}
+        </button>
+      )}
+      {pos && createPortal(
+        <div
+          ref={popRef}
+          role="dialog"
+          aria-label="All tags"
+          className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-700 dark:bg-gray-800 flex flex-wrap gap-1"
+          style={{ right: pos.right, bottom: pos.bottom, maxHeight: pos.maxHeight }}
+          // A portal's events still bubble through React to the card, which would open the note.
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {tags.map((tag) => (
+            <TagChip
+              key={tag}
+              tag={tag}
+              clickTitle="Search this tag"
+              onClick={onTagClick ? (t) => { setPos(null); onTagClick(t) } : undefined}
+            />
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
 interface Props {
   note: NoteListItem
   category?: Category
@@ -109,10 +251,11 @@ interface Props {
   onArchive?: (id: string) => void
   onRestore?: (id: string) => void
   onDeletePermanent?: (id: string) => void
+  /** Clicking a tag chip (card or list) — the list view turns it into a search. */
+  onTagClick?: (tag: string) => void
 }
 
-export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list', inArchive = false, onArchive, onRestore, onDeletePermanent }: Props) {
-  const visibleTags = note.tags.slice(0, 3)
+export default function NoteCard({ note, category, onClick, onPin, selected = false, onToggleSelect, onShareClick, viewMode = 'list', inArchive = false, onArchive, onRestore, onDeletePermanent, onTagClick }: Props) {
 
   function handleShareClick(e: React.MouseEvent) {
     e.stopPropagation()
@@ -157,9 +300,10 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
         )}
 
         {/* Content column, top to bottom: category + actions, dates, title, preview, and
-            the tags pinned to the bottom edge. */}
+            the tags pinned to the bottom edge. Only the preview may give way when space is
+            short — the title always keeps its two lines. */}
         <div className="relative z-10 flex flex-col flex-1 min-h-0 px-3 pt-3 pb-3">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 shrink-0">
             <div className="min-w-0" style={hasImage ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' } : undefined}>
               {category
                 ? <CategoryBadge category={category} />
@@ -214,7 +358,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
 
           {/* Dates sit on their own line under the header so both fit on a narrow card. */}
           <div
-            className="flex flex-wrap items-center gap-x-2 text-[11px] leading-tight mt-1 text-gray-500 dark:text-gray-400"
+            className="flex flex-wrap items-center gap-x-2 text-[11px] leading-tight mt-1 shrink-0 text-gray-500 dark:text-gray-400"
             style={hasImage ? { color: 'white', textShadow } : undefined}
           >
             <span title={new Date(note.created_at).toLocaleString()}>Created {relativeDate(note.created_at)}</span>
@@ -223,7 +367,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
           </div>
 
           <h3
-            className="font-semibold text-sm leading-tight mt-2 mb-1 line-clamp-2 text-gray-900 dark:text-gray-100"
+            className="font-semibold text-sm leading-tight mt-2 mb-1 shrink-0 line-clamp-2 text-gray-900 dark:text-gray-100"
             style={hasImage ? { color: 'white', textShadow } : undefined}
           >
             {note.title || 'Untitled'}
@@ -234,29 +378,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
           >
             {note.content_preview || 'No content'}
           </p>
-          {visibleTags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-auto pt-1.5">
-              {visibleTags.map((tag) => (
-                <span
-                  key={tag}
-                  className={`text-xs px-1.5 py-0.5 rounded-full ${hasImage ? '' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}
-                  style={hasImage
-                    ? { backgroundColor: 'rgba(255,255,255,0.25)', color: 'white', textShadow }
-                    : undefined}
-                >
-                  #{tag}
-                </span>
-              ))}
-              {note.tags.length > 3 && (
-                <span
-                  className={`text-xs px-1 ${hasImage ? '' : 'text-gray-400 dark:text-gray-500'}`}
-                  style={hasImage ? { color: 'rgba(255,255,255,0.7)' } : undefined}
-                >
-                  +{note.tags.length - 3}
-                </span>
-              )}
-            </div>
-          )}
+          {note.tags.length > 0 && <CardTags tags={note.tags} hasImage={hasImage} onTagClick={onTagClick} />}
         </div>
       </div>
     )
@@ -332,7 +454,7 @@ export default function NoteCard({ note, category, onClick, onPin, selected = fa
         <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-4 mb-2">{note.content_preview || 'No content'}</p>
         {note.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
-            {note.tags.slice(0, 4).map((tag) => <TagChip key={tag} tag={tag} />)}
+            {note.tags.slice(0, 4).map((tag) => <TagChip key={tag} tag={tag} onClick={onTagClick} clickTitle="Search this tag" />)}
             {note.tags.length > 4 && <span className="text-xs text-gray-400 px-1">+{note.tags.length - 4} more</span>}
           </div>
         )}
