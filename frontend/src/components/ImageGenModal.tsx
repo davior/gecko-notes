@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { X, Sparkles, Loader2 } from 'lucide-react'
 import { settingsApi, type ImageSettings, type FalPrice } from '@/api/settings'
 import { imageGenApi, estimateImageCost, formatCost } from '@/api/imageGen'
+import { overridesSize } from '@/utils/imageParams'
 
 const IMAGE_SIZE_LABELS: Record<string, string> = {
   square_hd: 'Square (HD)',
@@ -70,7 +71,10 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
     ? [...settings.curated_models, ...settings.custom_models.map((id) => ({ id, label: id }))]
     : []
   const noKey = settings !== null && !settings.has_api_key
-  const est = estimateImageCost(prices[model], size)
+  // A model whose saved parameters set the size ignores the dropdown, and the preset-based
+  // estimate (megapixels per preset) no longer describes what will be generated.
+  const sizeOverridden = overridesSize(settings?.model_params[model])
+  const est = sizeOverridden ? null : estimateImageCost(prices[model], size)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
@@ -117,11 +121,26 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
                 </div>
                 <div>
                   <label className="label">Size</label>
-                  <select className="input" value={size} onChange={(e) => setSize(e.target.value)}>
+                  <select
+                    className="input"
+                    value={sizeOverridden ? '' : size}
+                    onChange={(e) => setSize(e.target.value)}
+                    disabled={sizeOverridden}
+                  >
+                    {sizeOverridden && <option value="">From parameters</option>}
                     {(settings?.image_sizes ?? []).map((s) => (
                       <option key={s} value={s}>{IMAGE_SIZE_LABELS[s] ?? s}</option>
                     ))}
                   </select>
+                  {sizeOverridden && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Set by this model’s parameters in{' '}
+                      <Link to="/settings/image-gen" className="text-blue-600 hover:underline" onClick={onClose}>
+                        Settings
+                      </Link>
+                      .
+                    </p>
+                  )}
                 </div>
               </div>
 
