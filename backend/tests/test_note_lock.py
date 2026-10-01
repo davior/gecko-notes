@@ -285,7 +285,17 @@ def test_a_beating_job_survives_the_sweeper(session, engine, monkeypatch):
     stop = threading.Event()
     beat = threading.Thread(target=queue.heartbeat, args=(job.id, stop), daemon=True)
     beat.start()
-    time.sleep(0.1)
+    # Wait for the first beat rather than a fixed 100 ms. Under load (a GC pause, a cold
+    # statement cache) the thread can take longer than that to run, and the sweeper would
+    # then be judging a job that simply had not beaten yet — a flake that moves with
+    # whatever else is in the suite. If the heartbeat really never beats, this times out
+    # and the assertion below fails with the job still stale.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        session.expire_all()
+        if not is_stale(session.get(AssistantRunJob, job.id)):
+            break
+        time.sleep(0.01)
 
     assert queue.sweep_stale() == 0          # not ended
     stop.set()
