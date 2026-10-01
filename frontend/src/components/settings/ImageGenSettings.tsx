@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Loader2, ExternalLink } from 'lucide-react'
 import { settingsApi, type ImageSettings, type ImageUsage, type FalPrice } from '@/api/settings'
 import { estimateImageCost, formatCost } from '@/api/imageGen'
+import {
+  PARAM_EXAMPLES,
+  falModelDocsUrl,
+  formatModelParams,
+  mergeExample,
+  overridesSize,
+  parseModelParamsText,
+} from '@/utils/imageParams'
 
 const IMAGE_SIZE_LABELS: Record<string, string> = {
   square_hd: 'Square (HD)',
@@ -18,6 +26,12 @@ export default function ImageGenSettings() {
   const [prices, setPrices] = useState<Record<string, FalPrice>>({})
   const [newModel, setNewModel] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Model-parameters editor: which model it edits (null follows the default model), the
+  // unsaved textarea draft, and its own error since free text saves on demand, not per change.
+  const [paramsModel, setParamsModel] = useState<string | null>(null)
+  const [paramsText, setParamsText] = useState('')
+  const [paramsError, setParamsError] = useState<string | null>(null)
+  const [paramsSaving, setParamsSaving] = useState(false)
 
   async function load() {
     try {
@@ -69,16 +83,61 @@ export default function ImageGenSettings() {
     const default_model = settings.default_model === id
       ? settings.curated_models[0]?.id ?? ''
       : settings.default_model
-    void patch({ custom_models: custom, default_model })
+    // Drop the model's parameters with it so they don't linger if the id is re-added.
+    void patch({ custom_models: custom, default_model, model_params: { [id]: null } })
   }
 
   const allModels = settings
     ? [...settings.curated_models, ...settings.custom_models.map((id) => ({ id, label: id }))]
     : []
 
-  // Per-image estimate for the current default model + size.
+  // The model the parameters editor is on: the one picked there, else the default model.
+  const editModel = settings
+    ? (allModels.some((m) => m.id === paramsModel) ? (paramsModel as string) : settings.default_model)
+    : ''
+  const savedParamsText = formatModelParams(settings?.model_params[editModel])
+  const paramsDirty = paramsText !== savedParamsText
+  // An emptied box over saved params is a clear, so say so on the button.
+  const clearingParams = !paramsText.trim() && !!savedParamsText
+
+  // Reload the draft when the edited model, or what's saved for it, changes. Keyed on the
+  // text rather than the settings object so saving an unrelated setting (e.g. the size)
+  // doesn't wipe a half-typed draft.
+  useEffect(() => {
+    setParamsText(savedParamsText)
+    setParamsError(null)
+  }, [editModel, savedParamsText])
+
+  async function saveParams() {
+    if (!settings) return
+    const parsed = parseModelParamsText(paramsText, settings.reserved_param_keys)
+    if (!parsed.ok) {
+      setParamsError(parsed.error)
+      return
+    }
+    setParamsError(null)
+    setParamsSaving(true)
+    try {
+      setSettings(await settingsApi.updateImageSettings({ model_params: { [editModel]: parsed.value } }))
+      // The echo only moves the saved text if the value changed; normalise the draft either way.
+      setParamsText(formatModelParams(parsed.value))
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: { message?: string } | string } } }).response?.data?.detail
+      setParamsError(
+        detail && typeof detail === 'object' && detail.message ? detail.message : 'Failed to save parameters',
+      )
+    } finally {
+      setParamsSaving(false)
+    }
+  }
+
+  // The default model's parameters can replace the size the dropdown would send.
+  const sizeOverridden = settings ? overridesSize(settings.model_params[settings.default_model]) : false
+
+  // Per-image estimate for the current default model + size. The estimate scales by the
+  // preset's megapixels, so it means nothing once the parameters set the size themselves.
   const estPrice = settings ? prices[settings.default_model] : undefined
-  const estCost = settings ? estimateImageCost(estPrice, settings.image_size) : null
+  const estCost = settings && !sizeOverridden ? estimateImageCost(estPrice, settings.image_size) : null
 
   return (
     <div className="space-y-8">
@@ -127,6 +186,11 @@ export default function ImageGenSettings() {
                   <option key={s} value={s}>{IMAGE_SIZE_LABELS[s] ?? s}</option>
                 ))}
               </select>
+              {sizeOverridden && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  The default model’s parameters set the size themselves, so this is ignored for it.
+                </p>
+              )}
             </div>
 
             <div>
@@ -158,6 +222,109 @@ export default function ImageGenSettings() {
                   <Plus className="w-4 h-4" /> Add
                 </button>
               </div>
+            </div>
+
+            <div className="space-y-3 pt-4 border-t border-gray-100 dark:border-gray-700">
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Advanced</p>
+              <div>
+                <label className="label">Model parameters (JSON)</label>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  Extra settings sent to fal.ai every time this model is used, such as an exact pixel
+                  size, a resolution tier or the number of steps. The keys must match what the model
+                  itself accepts.
+                </p>
+                <select
+                  className="input mb-2"
+                  value={editModel}
+                  onChange={(e) => setParamsModel(e.target.value)}
+                  aria-label="Model to edit parameters for"
+                >
+                  {allModels.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+                <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">Add:</span>
+                  {PARAM_EXAMPLES.map((ex) => (
+                    <button
+                      key={ex.label}
+                      type="button"
+                      title={`${ex.hint}\n${JSON.stringify(ex.params)}`}
+                      className="px-2 py-0.5 text-xs rounded-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      onClick={() => { setParamsText(mergeExample(paramsText, ex.params)); setParamsError(null) }}
+                    >
+                      {ex.label}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  className="input font-mono text-xs"
+                  rows={Math.min(12, Math.max(5, paramsText.split('\n').length))}
+                  spellCheck={false}
+                  value={paramsText}
+                  onChange={(e) => { setParamsText(e.target.value); setParamsError(null) }}
+                  placeholder={'{\n  "image_size": { "width": 1600, "height": 900 }\n}'}
+                />
+                {paramsError && <p className="text-sm text-red-500 mt-1">{paramsError}</p>}
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <button
+                    className="btn-primary text-sm flex items-center gap-1"
+                    disabled={!paramsDirty || paramsSaving}
+                    onClick={() => void saveParams()}
+                  >
+                    {paramsSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {paramsSaving ? 'Saving…' : clearingParams ? 'Clear parameters' : 'Save parameters'}
+                  </button>
+                  {paramsDirty && !paramsSaving && (
+                    <button
+                      className="btn-secondary text-sm"
+                      onClick={() => { setParamsText(savedParamsText); setParamsError(null) }}
+                    >
+                      Revert
+                    </button>
+                  )}
+                  <a
+                    href={falModelDocsUrl(editModel)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-auto inline-flex items-center gap-1 text-xs text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    This model’s parameters on fal.ai <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+
+              <details className="text-xs text-gray-500 dark:text-gray-400">
+                <summary className="cursor-pointer select-none font-medium text-gray-600 dark:text-gray-300">
+                  What can I put here?
+                </summary>
+                <ul className="mt-2 ml-4 list-disc space-y-1.5">
+                  <li>
+                    Every model has its own input schema. Open its page on fal.ai (the link above) and
+                    copy the parameter names from the API tab. The chips are only starting points.
+                  </li>
+                  <li>
+                    <strong>Exact pixels:</strong> models that accept an <code>image_size</code> object
+                    take <code>{'{"image_size": {"width": 1600, "height": 900}}'}</code>. Others use
+                    a named size, or an <code>aspect_ratio</code> such as <code>"16:9"</code>.
+                  </li>
+                  <li>
+                    Setting <code>image_size</code> or <code>aspect_ratio</code> here <strong>replaces
+                    the size dropdown</strong> for this model. Anything else (<code>resolution</code>,
+                    <code> seed</code>, <code>output_format</code>…) is sent alongside it.
+                  </li>
+                  <li>
+                    {settings.reserved_param_keys.map((k, i) => (
+                      <span key={k}>{i > 0 && ', '}<code>{k}</code></span>
+                    ))}{' '}
+                    are managed by the app and can’t be set. Each generation makes one image.
+                  </li>
+                  <li>
+                    If fal.ai rejects a key, its message appears when you generate. Clear the box and
+                    save to go back to the defaults.
+                  </li>
+                </ul>
+              </details>
             </div>
           </div>
         </div>

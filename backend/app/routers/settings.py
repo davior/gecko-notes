@@ -2342,7 +2342,7 @@ def get_usage(request: Request, days: int = 30, session: Session = Depends(get_s
 
 _FAL_KEY = "fal_api_key"              # encrypted; image generation key (fal.run)
 _FAL_ADMIN_KEY = "fal_admin_api_key"  # encrypted; billing/usage/pricing (api.fal.ai/v1) scope
-_FAL_CONFIG = "image_gen_config"      # plain JSON: default_model / custom_models / image_size
+_FAL_CONFIG = "image_gen_config"      # plain JSON: default_model / custom_models / image_size / model_params
 _FAL_PRICE_CACHE = "fal_price_cache"  # plain JSON: {fetched_at, prices: {endpoint_id: {...}}}
 
 _FAL_USAGE_URL = "https://api.fal.ai/v1/models/usage"
@@ -2424,6 +2424,61 @@ def resolve_fal_size_params(model: str, image_size: str) -> Dict[str, str]:
     if model.startswith(_ASPECT_RATIO_MODEL_PREFIXES) or "nano-banana" in model:
         return {"aspect_ratio": _ASPECT_RATIO_MAP.get(image_size, "1:1")}
     return {"image_size": image_size}
+
+
+# Per-model request parameters: free-text JSON a user attaches to a model id (exact
+# pixel sizes, resolution tiers, steps, ...) that is merged into the fal request.
+# Keys the app builds itself can't be overridden — `prompt`; `num_images` (cost
+# accounting and the download path assume exactly one image); `sync_mode` (returns a
+# data URI instead of a fetchable URL).
+IMAGE_PROTECTED_PARAM_KEYS = frozenset({"prompt", "num_images", "sync_mode"})
+# Setting either of these replaces the computed size params entirely, so the size
+# dropdown and the user's JSON never send conflicting size fields.
+_IMAGE_SIZE_PARAM_KEYS = ("image_size", "aspect_ratio")
+_MAX_MODEL_PARAMS_BYTES = 4096
+
+
+def build_fal_image_body(
+    model: str,
+    prompt: str,
+    image_size: str,
+    model_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """The fal.run request body: the named size preset translated for the endpoint,
+    overlaid with the user's per-model params. Reused by the images router."""
+    extra = {k: v for k, v in (model_params or {}).items() if k not in IMAGE_PROTECTED_PARAM_KEYS}
+    size = {} if any(k in extra for k in _IMAGE_SIZE_PARAM_KEYS) else resolve_fal_size_params(model, image_size)
+    return {**size, **extra, "prompt": prompt, "num_images": 1}
+
+
+def _normalize_model_params(raw: Any) -> Dict[str, Dict[str, Any]]:
+    """Stored `model_params` blob -> {model_id: {param: value}}. Drops malformed
+    entries and protected keys so a hand-edited blob can't break a request."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for model_id, params in raw.items():
+        if not isinstance(params, dict):
+            continue
+        model_id = FAL_MODEL_ID_RENAMES.get(str(model_id), str(model_id))
+        clean = {k: v for k, v in params.items() if k not in IMAGE_PROTECTED_PARAM_KEYS}
+        if clean:
+            out[model_id] = clean
+    return out
+
+
+def _validate_model_params(model_id: str, params: Dict[str, Any], allowed: set) -> None:
+    """Raise a 400 `invalid_model_params` when a save would store unusable params."""
+    def bad(message: str) -> None:
+        raise HTTPException(status_code=400, detail={"code": "invalid_model_params", "message": message})
+
+    if model_id not in allowed:
+        bad(f"Model '{model_id}' is not in the configured model list")
+    reserved = sorted(k for k in params if k in IMAGE_PROTECTED_PARAM_KEYS)
+    if reserved:
+        bad(f"These parameters are managed by the app and can't be set: {', '.join(reserved)}")
+    if len(json.dumps(params).encode("utf-8")) > _MAX_MODEL_PARAMS_BYTES:
+        bad(f"Parameters are too large (max {_MAX_MODEL_PARAMS_BYTES // 1024} KB)")
 
 
 def _upsert_user_setting(session: Session, user_id: str, key: str, serialised_value: str) -> None:
@@ -2631,6 +2686,7 @@ def load_fal_config(session: Session, user_id: str) -> Dict[str, Any]:
         "default_model": FAL_MODEL_ID_RENAMES.get(default_model, default_model),
         "custom_models": custom,
         "image_size": cfg.get("image_size") or DEFAULT_IMAGE_SIZE,
+        "model_params": _normalize_model_params(cfg.get("model_params")),
     }
 
 
@@ -2658,6 +2714,8 @@ def get_image_settings(request: Request, session: Session = Depends(get_session)
         "custom_models": cfg["custom_models"],
         "default_model": cfg["default_model"],
         "image_size": cfg["image_size"],
+        "model_params": cfg["model_params"],
+        "reserved_param_keys": sorted(IMAGE_PROTECTED_PARAM_KEYS),
     }
 
 
@@ -2670,6 +2728,9 @@ class ImageSettingsUpdate(BaseModel):
     default_model: Optional[str] = None
     custom_models: Optional[List[str]] = None
     image_size: Optional[str] = None
+    # Per-model patch: {model_id: {param: value}} sets that model's params, null / {}
+    # removes them, and models not mentioned are left as stored.
+    model_params: Optional[Dict[str, Optional[Dict[str, Any]]]] = None
 
 
 @router.put("/images")
@@ -2695,10 +2756,21 @@ def update_image_settings(
         cfg["custom_models"] = [m.strip() for m in payload.custom_models if m and m.strip()]
     if payload.image_size is not None and payload.image_size in FAL_IMAGE_SIZES:
         cfg["image_size"] = payload.image_size
+    if payload.model_params:
+        # Checked against the model list *after* any custom_models change above, so a
+        # model added in the same request can carry params straight away.
+        allowed = allowed_fal_models(session, cfg)
+        for model_id, params in payload.model_params.items():
+            if not params:
+                cfg["model_params"].pop(model_id, None)
+                continue
+            _validate_model_params(model_id, params, allowed)
+            cfg["model_params"][model_id] = params
     _upsert_user_setting(session, user_id, _FAL_CONFIG, json.dumps({
         "default_model": cfg["default_model"],
         "custom_models": cfg["custom_models"],
         "image_size": cfg["image_size"],
+        "model_params": cfg["model_params"],
     }))
 
     session.commit()

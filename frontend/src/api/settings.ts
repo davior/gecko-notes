@@ -228,6 +228,10 @@ export interface ImageSettings {
   custom_models: string[]
   default_model: string
   image_size: string
+  // Free-form request params merged into each fal call, keyed by model id.
+  model_params: Record<string, Record<string, unknown>>
+  // Request keys the app builds itself; the server refuses them in model_params.
+  reserved_param_keys: string[]
 }
 
 export interface ImageSettingsUpdate {
@@ -236,6 +240,9 @@ export interface ImageSettingsUpdate {
   default_model?: string
   custom_models?: string[]
   image_size?: string
+  // Per-model patch: an object sets that model's params, null clears them, and
+  // models not listed are left as stored.
+  model_params?: Record<string, Record<string, unknown> | null>
 }
 
 export interface FalPrice {

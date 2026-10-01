@@ -29,10 +29,10 @@ from app.routers.settings import (
     _record_usage,
     _require_safe_external_url,
     allowed_fal_models,
+    build_fal_image_body,
     compute_fal_cost,
     load_fal_api_key,
     load_fal_config,
-    resolve_fal_size_params,
 )
 
 router = APIRouter()
@@ -124,7 +124,7 @@ async def generate_image_for_user(
     resp = await _post_upstream(
         f"https://fal.run/{model}",
         headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body={"prompt": prompt, "num_images": 1, **resolve_fal_size_params(model, image_size)},
+        json_body=build_fal_image_body(model, prompt, image_size, cfg["model_params"].get(model)),
         timeout=_GENERATE_TIMEOUT,
         provider_label="fal.ai",
     )
