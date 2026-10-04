@@ -22,12 +22,12 @@ import mimetypes
 import os
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Set, Tuple
 
 import json
 from sqlmodel import Session, col, or_, select
 
-from app.models import Note, NoteAsset, Theme, TranscriptionJob, User, VideoRenderJob
+from app.models import Note, NoteAsset, Theme, TranscriptionJob, User, UserSetting, VideoRenderJob
 from app.routers.media import MEDIA_DIR, categorize_extension
 
 logger = logging.getLogger(__name__)
@@ -269,6 +269,46 @@ def sync_note_assets(session: Session, note) -> int:
         return 0
 
 
+def _strings(value: Any) -> Iterator[str]:
+    """Every string anywhere inside a decoded JSON value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def settings_media_filenames(session: Session, user_id: str) -> Set[str]:
+    """Filenames in this user's media dir that one of their settings points at.
+
+    The video dialog's saved options hold the intro and outro clips, watermark,
+    music and background the user picked once and reuses on every render. Those
+    files belong to no note, so without this they would read as leaked and be
+    offered up for deletion by the unlinked-file sweep.
+    """
+    names: Set[str] = set()
+    try:
+        values = session.exec(select(UserSetting.value).where(UserSetting.user_id == user_id)).all()
+    except Exception:
+        logger.exception("Could not read settings for user %s", user_id)
+        return names
+    for raw in values:
+        if not raw or MEDIA_URL_PREFIX not in raw:
+            continue
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        for text in _strings(decoded):
+            parsed = parse_media_url(text)
+            if parsed and parsed[0] == user_id:
+                names.add(parsed[1])
+    return names
+
+
 def file_is_referenced(
     session: Session,
     user_id: str,
@@ -336,6 +376,9 @@ def file_is_referenced(
         )
         .limit(1)
     ).first():
+        return True
+
+    if filename in settings_media_filenames(session, user_id):
         return True
 
     return False

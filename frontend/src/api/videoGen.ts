@@ -73,6 +73,16 @@ export interface CardTextSizes {
   subtitle_pct: number
 }
 
+/** A pre-made clip played before (intro) or after (outro) the article — whole,
+ *  with its own sound, and with nothing of the render's drawn over it. */
+export interface BumperClip {
+  enabled: boolean
+  /** /media/... video in the user's own media. */
+  url: string | null
+  /** The uploaded file's name; the stored file is named by a UUID. */
+  name: string
+}
+
 export interface RenderOptions {
   aspect: AspectRatio
   resolution: VideoResolution
@@ -134,6 +144,8 @@ export interface RenderOptions {
     size_pct: number
     color: string; scrim: number
   }
+  intro: BumperClip
+  outro: BumperClip
   insert_into_note: boolean
   title_card: boolean
   chapter_screens: boolean
@@ -176,6 +188,8 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   music: { enabled: false, url: null, volume: 0.18, duck: true, fade_in: 1.5, fade_out: 3.0 },
   quotes: { enabled: false, position: 'center', size_pct: 4.2, color: '#ffffff', accent: '#818cf8', scrim: 0.55 },
   code: { position: 'center', size_pct: 3.4, color: '#e2e8f0', scrim: 0.72 },
+  intro: { enabled: false, url: null, name: '' },
+  outro: { enabled: false, url: null, name: '' },
   insert_into_note: true,
   title_card: true,
   chapter_screens: false,

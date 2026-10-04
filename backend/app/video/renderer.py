@@ -287,12 +287,23 @@ def render(
                 if write_srt(os.path.join(work_dir, name), narration.cues):
                     shot_srt = name
 
-            if shot.chapter:
+            # An intro or outro's "chapter" names the clip, not a section of the
+            # article, so it must not become the line the overlay follows.
+            if shot.chapter and not shot.bumper:
                 current_chapter = shot.chapter
+
+            # An intro or outro is the user's own branded clip: nothing of the
+            # render's — watermark, overlay text, waveform — is drawn over it.
+            shot_options = options
+            if shot.bumper and options.waveform.enabled:
+                shot_options = options.model_copy(deep=True)
+                shot_options.waveform.enabled = False
 
             shot_layer = layer
             shot_overlay = overlay_name
-            if dynamic_overlay_text:
+            if shot.bumper:
+                shot_layer = shot_overlay = None
+            elif dynamic_overlay_text:
                 # The intro stretch before any heading is marked with the note's
                 # own title as its "chapter" (see segment()'s title card) — showing
                 # it again underneath the title would just repeat it, so that
@@ -349,7 +360,7 @@ def render(
             # A segment encoded by an earlier attempt that died later on (usually
             # at the stitch) is reused rather than encoded again.
             key = shot_cache.shot_key(
-                _argv(options),
+                _argv(shot_options),
                 [background, narration.path, shot_overlay, shot_srt],
                 work_dir,
             )
@@ -358,14 +369,14 @@ def render(
                 reused += 1
             else:
                 try:
-                    _encode(options)
+                    _encode(shot_options)
                 except F.FFmpegError as exc:
                     # Losing a forty-minute render to one expensive segment is a bad
                     # trade when the two most expensive things in it are also the two
                     # least important. Retry once without them; the narration is
                     # already synthesised and cached, so this costs no speech.
                     logger.warning("Segment %d failed (%s) — retrying it plainer", index + 1, exc)
-                    plain = options.model_copy(deep=True)
+                    plain = shot_options.model_copy(deep=True)
                     plain.ken_burns.effect = "none"
                     plain.waveform.enabled = False
                     _encode(plain)
@@ -436,6 +447,14 @@ def render(
 
         final = "stitched.mp4"
 
+        # Where the article itself sits on the finished timeline. An intro or
+        # outro brings its own picture and sound, so the music bed and the poster
+        # frame are both taken from between them. The intro's last `overlap`
+        # seconds are already blending into the article; its end is the moment
+        # the blend has finished.
+        intro_end = durations[0] if shots[0].bumper == "intro" else 0.0
+        outro_length = durations[-1] if shots[-1].bumper == "outro" else 0.0
+
         # ── background music ──────────────────────────────────────────────────
         # A bed has to run continuously across shot boundaries, so it can only go
         # on once the shots are joined. Mixing here re-encodes the audio alone —
@@ -452,6 +471,8 @@ def render(
                 F.build_music_command(
                     final, music_path, "scored.mp4",
                     duration=scored_length, spec=options.music, duck=duck,
+                    start=max(0.0, intro_end - overlap),
+                    end=scored_length - outro_length,
                 ),
                 cwd=work_dir, timeout=1800,
             )
@@ -498,7 +519,8 @@ def render(
                     F.build_poster_command(
                         os.path.join(user_dir, video_filename),
                         os.path.join(user_dir, thumbnail_filename),
-                        at_seconds=min(1.0, max(0.0, timeline / 2)),
+                        at_seconds=intro_end + min(
+                            1.0, max(0.0, (timeline - intro_end - outro_length) / 2)),
                     ),
                     timeout=120,
                 )
