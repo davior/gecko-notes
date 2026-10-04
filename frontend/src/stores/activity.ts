@@ -32,6 +32,7 @@ interface ActivityState {
     noteId: string,
     options: RenderOptions,
     quality?: 'preview' | 'full',
+    selectedContent?: string,
   ) => Promise<void>
   reset: () => void
 }
