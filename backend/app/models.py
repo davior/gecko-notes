@@ -292,6 +292,7 @@ class VideoRenderJob(SQLModel, table=True):
     detail: str = Field(default="")        # e.g. "shot 7 of 19"
     options: str = Field(default="{}")     # RenderOptions, JSON as text
     quality: str = Field(default="full")   # "preview" | "full"
+    selected_content: Optional[str] = None  # If set, render only this BlockNote content; otherwise render full note
     note_title: str = Field(default="")    # snapshot, for download filenames
     result_filename: Optional[str] = None      # rendered .mp4
     subtitle_filename: Optional[str] = None    # .srt sidecar

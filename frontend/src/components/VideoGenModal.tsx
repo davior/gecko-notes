@@ -31,7 +31,9 @@ interface Props {
   noteTitle: string
   /** blockId -> /media URL for rasterised diagram blocks, gathered by the caller. */
   diagramImages: Record<string, string>
-  onGenerate: (options: RenderOptions, quality: 'preview' | 'full') => Promise<void>
+  /** Selected text to render (if any); if undefined, full note is rendered. */
+  selectedContent?: string
+  onGenerate: (options: RenderOptions, quality: 'preview' | 'full', selected?: string) => Promise<void>
   onClose: () => void
 }
 
@@ -186,7 +188,7 @@ function formatDuration(seconds: number): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGenerate, onClose }: Props) {
+export default function VideoGenModal({ noteId, noteTitle, diagramImages, selectedContent, onGenerate, onClose }: Props) {
   const [options, setOptions] = useState<RenderOptions>(loadStoredOptions)
   const [tab, setTab] = useState<TabId>('format')
   const [estimate, setEstimate] = useState<VideoEstimate | null>(null)
@@ -302,7 +304,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     setBusy(quality)
     setError(null)
     try {
-      await onGenerate(payload, quality)
+      await onGenerate(payload, quality, selectedContent)
       onClose()
     } catch (e) {
       setError(apiErrorMessage(e, 'Could not start the render'))

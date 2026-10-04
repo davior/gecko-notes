@@ -712,6 +712,7 @@ class VideoRenderRequest(BaseModel):
     # option schema lives in one place next to the renderer that consumes it.
     options: Dict[str, Any] = {}
     quality: str = "full"  # "preview" renders small and fast, reusing cached narration
+    selected_content: Optional[str] = None  # If provided, render only this content instead of full note
 
 
 class VideoEstimateRead(BaseModel):

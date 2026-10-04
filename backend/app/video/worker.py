@@ -210,7 +210,7 @@ def _run_job(job_id: str) -> None:
                 job_id=job_id,
                 user_id=job.user_id,
                 media_dir=_media_dir(),
-                note_content=note.content or "[]",
+                note_content=job.selected_content or note.content or "[]",
                 note_title=note.title or "Untitled",
                 author=author,
                 options=options,

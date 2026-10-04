@@ -154,8 +154,8 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       }
     },
 
-    async startVideo(noteId, options, quality = 'full') {
-      await videoGenApi.createJob(noteId, options, quality)
+    async startVideo(noteId, options, quality = 'full', selectedContent?: string) {
+      await videoGenApi.createJob(noteId, options, quality, selectedContent)
       // Read it straight back through the activity view rather than mapping the
       // richer render shape by hand, so there is one place that knows the wire form.
       await get().resume()
