@@ -126,6 +126,7 @@ def create_job(payload: VideoRenderRequest, request: Request, session: Session =
         stage="Queued",
         options=json.dumps(options.model_dump()),
         quality="preview" if payload.quality == "preview" else "full",
+        selected_content=payload.selected_content,
         created_at=now,
         updated_at=now,
     )
@@ -201,7 +202,7 @@ def estimate_render(payload: VideoRenderRequest, request: Request, session: Sess
     shots, chars, seconds, warnings = estimate(
         user_id=user_id,
         media_dir=MEDIA_DIR,
-        note_content=note.content or "[]",
+        note_content=payload.selected_content or note.content or "[]",
         note_title=note.title or "Untitled",
         author=(user.username if user else "") or "",
         options=options,

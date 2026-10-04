@@ -679,6 +679,12 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 pass
+        # Video render: selected content (render only selection instead of full note)
+        try:
+            conn.execute(text("ALTER TABLE video_render_job ADD COLUMN selected_content TEXT"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _seed_after_migrations():

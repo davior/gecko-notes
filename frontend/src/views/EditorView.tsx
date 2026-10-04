@@ -52,7 +52,7 @@ import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation } from '@/hooks/useDictation'
 import { insertDictationAtSelection, normalizeDictatedText } from '@/utils/dictationInsert'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
-import { extractPlainText } from '@/utils/blocks'
+import { extractPlainText, getEditorSelectionMarkdown } from '@/utils/blocks'
 import { noteToMarkdownBody, svgToPngData } from '@/utils/export'
 import { ARCHIVE_SYSTEM_KEY } from '@/utils/folderTree'
 
@@ -166,6 +166,7 @@ export default function EditorView() {
   const [showImageGen, setShowImageGen] = useState(false)
   const [showVideoGen, setShowVideoGen] = useState(false)
   const [diagramImages, setDiagramImages] = useState<Record<string, string>>({})
+  const [selectedContent, setSelectedContent] = useState<string | undefined>(undefined)
   const [showHistory, setShowHistory] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [findOpen, setFindOpen] = useState(false)
@@ -957,9 +958,18 @@ export default function EditorView() {
     if (!id) return
     if (hasPendingChanges.current) await doSave(true)
 
+    // Detect selected content and get selected block IDs
+    const selected = getEditorSelectionMarkdown(editor)
+    const selectedBlockIds = new Set(editor?.getSelection?.()?.blocks?.map((b) => b.id) ?? [])
+    setSelectedContent(selected || undefined)
+
+    // Rasterize only diagrams within selected blocks (if selection exists) or all diagrams (if no selection)
     const rasterised: Record<string, string> = {}
     const blocks = (editor?.document ?? []) as { id?: string; type?: string; props?: { source?: string } }[]
     for (const block of blocks) {
+      // Skip if selection exists and this block is not in the selection
+      if (selected && !selectedBlockIds.has(block.id ?? '')) continue
+
       const source = block.type === 'diagram' ? block.props?.source : undefined
       if (!block.id || !source) continue
       try {
@@ -977,10 +987,10 @@ export default function EditorView() {
     setShowVideoGen(true)
   }
 
-  async function runVideoGen(options: RenderOptions, quality: 'preview' | 'full') {
+  async function runVideoGen(options: RenderOptions, quality: 'preview' | 'full', selected?: string) {
     const id = createdNoteId.current || latestNoteId.current
     if (!id) throw new Error('Save the note first')
-    await startVideoJob(id, options, quality)
+    await startVideoJob(id, options, quality, selected)
     showToast(quality === 'preview' ? 'Rendering a preview…' : 'Rendering your video…')
   }
 
@@ -2086,6 +2096,7 @@ export default function EditorView() {
           noteId={createdNoteId.current || latestNoteId.current || ''}
           noteTitle={title || 'Untitled'}
           diagramImages={diagramImages}
+          selectedContent={selectedContent}
           onGenerate={runVideoGen}
           onClose={() => setShowVideoGen(false)}
         />

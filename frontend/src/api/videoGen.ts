@@ -210,9 +210,10 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
 
 export const videoGenApi = {
   /** Queue a render. `preview` renders small and fast; because narration is
-   *  cached by voice+text, a full render afterwards reuses it at no extra cost. */
-  createJob(noteId: string, options: RenderOptions, quality: 'preview' | 'full' = 'full'): Promise<{ data: VideoRenderJob }> {
-    return client.post('/video/jobs', { note_id: noteId, options, quality }).then((r) => r.data)
+   *  cached by voice+text, a full render afterwards reuses it at no extra cost.
+   *  `selectedContent` (if provided) renders only that portion instead of the full note. */
+  createJob(noteId: string, options: RenderOptions, quality: 'preview' | 'full' = 'full', selectedContent?: string): Promise<{ data: VideoRenderJob }> {
+    return client.post('/video/jobs', { note_id: noteId, options, quality, selected_content: selectedContent }).then((r) => r.data)
   },
 
   // Reading and cancelling a render go through `api/activity` now, which covers
