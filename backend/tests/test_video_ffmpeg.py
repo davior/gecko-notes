@@ -1342,3 +1342,42 @@ def test_emoji_are_stripped_from_short_chunks_too():
     joined = "".join(c.text for c in chunks)
     assert "\U0001F697" not in joined
     assert joined == "Drive the car home."
+
+
+def test_a_bed_without_a_window_is_not_trimmed_or_delayed():
+    graph = _graph(F.build_music_command("in.mp4", "b.mp3", "o.mp4",
+                                         duration=40.0, spec=_music(), duck=False))
+    assert "atrim" not in graph and "adelay" not in graph and "apad" not in graph
+
+
+def test_a_bed_windowed_between_an_intro_and_an_outro():
+    """It starts after the intro, stops before the outro, and fades at those edges."""
+    graph = _graph(F.build_music_command(
+        "in.mp4", "b.mp3", "o.mp4", duration=40.0,
+        spec=_music(fade_in=2.0, fade_out=3.0), duck=False, start=5.0, end=32.0))
+    assert "afade=t=in:st=0:d=2.000" in graph
+    # 27 seconds of bed, faded over its own last three.
+    assert "afade=t=out:st=24.000:d=3.000" in graph
+    assert "atrim=end=27.000,adelay=5000|5000,apad[m]" in graph
+    # The output still runs the whole video, intro and outro included.
+    argv = F.build_music_command("in.mp4", "b.mp3", "o.mp4", duration=40.0,
+                                 spec=_music(), duck=False, start=5.0, end=32.0)
+    assert argv[argv.index("-t") + 1] == "40.000"
+
+
+def test_a_bed_stopping_before_an_outro_needs_no_delay():
+    graph = _graph(F.build_music_command(
+        "in.mp4", "b.mp3", "o.mp4", duration=40.0,
+        spec=_music(fade_out=0.0), duck=True, end=30.0))
+    assert "atrim=end=30.000,apad[m]" in graph
+    assert "adelay" not in graph
+    # Padded rather than ended, so the ducking compressor keeps running.
+    assert "[m][key]sidechaincompress=" in graph
+
+
+def test_a_window_out_of_range_is_clamped_to_the_video():
+    graph = _graph(F.build_music_command(
+        "in.mp4", "b.mp3", "o.mp4", duration=10.0,
+        spec=_music(fade_out=0.0), duck=False, start=12.0, end=50.0))
+    # Nothing left to score: a sliver, never a negative trim.
+    assert "atrim=end=0.100" in graph

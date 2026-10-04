@@ -58,6 +58,9 @@ class Shot:
     # `narration` above only carries its text when narrate_code is on — see
     # segment()'s codeBlock branch.
     code_text: Optional[str] = None
+    # "intro" or "outro" for a clip bracketing the article (see _bumper_shot).
+    # The renderer draws nothing of its own over one of these.
+    bumper: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
     label: str = ""
 
@@ -561,4 +564,36 @@ def segment(
             continue
         trimmed.append(shot)
     result.shots = trimmed
+
+    # The intro and outro bracket the article rather than stand in for it, so a
+    # note with nothing of its own to show still renders nothing.
+    if result.shots:
+        intro = _bumper_shot("intro", options, user_id, media_dir, result.warnings)
+        outro = _bumper_shot("outro", options, user_id, media_dir, result.warnings)
+        if intro is not None:
+            result.shots.insert(0, intro)
+        if outro is not None:
+            result.shots.append(outro)
     return result
+
+
+def _bumper_shot(
+    which: str, options: RenderOptions, user_id: str, media_dir: str, warnings: List[str],
+) -> Optional[Shot]:
+    """The intro or outro clip as a shot, or None when it is off or unusable.
+
+    It is a sounded clip like any other in a note: played whole, with its own
+    audio when it has some and silence when it doesn't, which the renderer
+    probes for itself.
+    """
+    spec = options.intro if which == "intro" else options.outro
+    if not spec.enabled or not spec.url:
+        return None
+    path = resolve_media_path(spec.url, user_id, media_dir)
+    if path is None or _media_kind(spec.url) != "video":
+        warnings.append(f"The {which} was skipped: that clip could not be read.")
+        return None
+    return Shot(
+        kind="video_sound", background=path,
+        chapter=which.capitalize(), bumper=which, label=which,
+    )

@@ -22,6 +22,7 @@ from app.asset_utils import (
     register_asset,
     release_media_file,
     remove_media_file,
+    settings_media_filenames,
     sync_note_assets,
 )
 from app.database import get_session
@@ -326,6 +327,10 @@ def _referenced_filenames(session: Session, user_id: str) -> Set[str]:
         ).where(VideoRenderJob.user_id == user_id)
     ).all():
         names.update(n for n in (result, subtitle, thumb) if n)
+
+    # Media a setting holds on to — the video dialog's intro and outro clips,
+    # watermark and music — is the user's own content, not a leak.
+    names.update(settings_media_filenames(session, user_id))
 
     return names
 

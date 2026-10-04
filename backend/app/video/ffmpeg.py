@@ -659,6 +659,7 @@ def crossfade_total(durations: Sequence[float], overlap: float) -> float:
 def build_music_command(
     source: str, music: str, output: str,
     *, duration: float, spec: MusicSpec, duck: bool,
+    start: float = 0.0, end: Optional[float] = None,
 ) -> List[str]:
     """Mix a background bed under the finished video, without touching the picture.
 
@@ -670,14 +671,28 @@ def build_music_command(
     `-stream_loop -1` covers a bed shorter than the video and the output `-t`
     truncates one that is longer. `normalize=0` stops `amix` halving the
     narration to make room, which is the default and never what anyone wants.
+
+    `start`/`end` narrow the bed to a window of the video — the article between
+    an intro and an outro, which bring their own sound. The fades land at the
+    window's edges, and the bed is padded with silence past its end so the mix
+    and the ducking compressor run on to the end of the narration as before.
     """
-    fade_out_at = max(0.0, duration - max(0.0, spec.fade_out))
+    end = duration if end is None else max(0.0, min(end, duration))
+    start = max(0.0, min(start, end))
+    window = max(0.1, end - start)
+    fade_out_at = max(0.0, window - max(0.0, spec.fade_out))
     bed = (f"[1:a]volume={max(0.0, min(1.0, spec.volume)):.3f},"
            f"aresample=48000,aformat=channel_layouts=stereo")
     if spec.fade_in > 0:
         bed += f",afade=t=in:st=0:d={spec.fade_in:.3f}"
     if spec.fade_out > 0:
         bed += f",afade=t=out:st={fade_out_at:.3f}:d={spec.fade_out:.3f}"
+    if start > 0 or end < duration:
+        bed += f",atrim=end={window:.3f}"
+        if start > 0:
+            delay = int(round(start * 1000))
+            bed += f",adelay={delay}|{delay}"
+        bed += ",apad"
     chains = [f"{bed}[m]"]
 
     if duck:

@@ -1,17 +1,30 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, Clapperboard, Loader2, Upload } from 'lucide-react'
 import { mediaApi } from '@/api/media'
 import { settingsApi } from '@/api/settings'
 import {
   DEFAULT_RENDER_OPTIONS, isCrossfade, videoGenApi,
-  type AspectRatio, type FitMode, type KenBurnsEffect, type OverlayPosition,
+  type AspectRatio, type BumperClip, type FitMode, type KenBurnsEffect, type OverlayPosition,
   type OverlayTextMode, type QuotePosition, type RenderOptions, type SubtitleMode,
   type TransitionStyle, type VideoEstimate, type VideoResolution, type WaveMode, type WavePosition,
 } from '@/api/videoGen'
+import { useSettingsStore } from '@/stores/settings'
 import { apiErrorMessage } from '@/utils/format'
 
 const OPTIONS_KEY = 'gecko-video-gen-options'
+/** The account setting the options are saved under. Saved there rather than only
+ *  in this browser so they follow the user to any device — and so the server
+ *  knows the intro, outro, watermark and music files they point at are still in
+ *  use and never offers them up as leaked. */
+const SETTINGS_KEY = 'video_render_options'
+/** Long enough that dragging a slider saves once, at the end. */
+const SAVE_DELAY_MS = 800
+
+type UploadKind = 'watermark' | 'music' | 'intro' | 'outro'
+const UPLOAD_NOUN: Record<UploadKind, string> = {
+  watermark: 'image', music: 'track', intro: 'clip', outro: 'clip',
+}
 
 interface Props {
   noteId: string
@@ -22,6 +35,19 @@ interface Props {
   onClose: () => void
 }
 
+/** The last saved options: the account's copy, else this browser's older local
+ *  one (which is all there was before they were saved to the account). */
+function readStoredOptions(): Partial<RenderOptions> | null {
+  const saved = useSettingsStore.getState().appSettings[SETTINGS_KEY]
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) return saved as Partial<RenderOptions>
+  try {
+    const raw = localStorage.getItem(OPTIONS_KEY)
+    return raw ? JSON.parse(raw) as Partial<RenderOptions> : null
+  } catch {
+    return null  // unparseable or private mode — defaults are fine
+  }
+}
+
 /** Merge a stored blob over the defaults, field by field.
  *
  * Persisted options outlive the shape that wrote them, so anything missing or
@@ -30,9 +56,8 @@ interface Props {
 function loadStoredOptions(): RenderOptions {
   const base: RenderOptions = structuredClone(DEFAULT_RENDER_OPTIONS)
   try {
-    const raw = localStorage.getItem(OPTIONS_KEY)
-    if (!raw) return base
-    const stored = JSON.parse(raw) as Partial<RenderOptions>
+    const stored = readStoredOptions()
+    if (!stored || typeof stored !== 'object') return base
     for (const key of Object.keys(base) as (keyof RenderOptions)[]) {
       const value = stored[key]
       if (value === undefined || value === null) continue
@@ -71,19 +96,75 @@ function SizeSlider({ label, value, min, max, onChange }: {
   )
 }
 
+/** An intro or outro: switched on, a clip uploaded into the user's own media,
+ *  and a player to check it with. */
+function ClipPicker({ label, hint, clip, uploading, busy, onUpload, onChange }: {
+  label: string
+  hint: string
+  clip: BumperClip
+  /** This picker's upload is in flight. */
+  uploading: boolean
+  /** Any upload is in flight, so a second one can't start. */
+  busy: boolean
+  onUpload: (file: File) => void
+  onChange: (changes: Partial<BumperClip>) => void
+}) {
+  return (
+    <section className="space-y-2">
+      <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+        <input type="checkbox" checked={clip.enabled}
+               onChange={(e) => onChange({ enabled: e.target.checked })} />
+        {label}
+      </label>
+      {clip.enabled && (
+        <div className="space-y-2 pl-6">
+          <div className="flex items-center gap-2 min-w-0">
+            <label className="btn-secondary text-xs cursor-pointer inline-flex items-center gap-1 shrink-0">
+              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+              {clip.url ? 'Replace clip' : 'Upload clip'}
+              <input type="file" accept="video/*" className="hidden" disabled={busy}
+                     onChange={(e) => {
+                       const f = e.target.files?.[0]
+                       // Cleared so picking the same file again still uploads it.
+                       e.target.value = ''
+                       if (f) onUpload(f)
+                     }} />
+            </label>
+            {clip.url && (
+              <>
+                <span className="text-xs text-gray-600 dark:text-gray-300 truncate" title={clip.name}>
+                  {clip.name || 'Uploaded clip'}
+                </span>
+                <button className="btn-ghost text-xs shrink-0"
+                        onClick={() => onChange({ url: null, name: '' })}>Remove</button>
+              </>
+            )}
+          </div>
+          {clip.url && (
+            <video src={clip.url} controls preload="metadata"
+                   className="max-h-40 max-w-full rounded bg-black" />
+          )}
+          <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
+        </div>
+      )}
+    </section>
+  )
+}
+
 const ASPECTS: { id: AspectRatio; label: string; hint: string }[] = [
   { id: '16:9', label: '16:9', hint: 'YouTube' },
   { id: '9:16', label: '9:16', hint: 'Shorts / TikTok' },
   { id: '1:1', label: '1:1', hint: 'Instagram' },
 ]
 
-type TabId = 'format' | 'narration' | 'motion' | 'branding' | 'structure'
+type TabId = 'format' | 'narration' | 'motion' | 'branding' | 'bumpers' | 'structure'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'format', label: 'Format' },
   { id: 'narration', label: 'Narration' },
   { id: 'motion', label: 'Motion & audio' },
   { id: 'branding', label: 'Branding' },
+  { id: 'bumpers', label: 'Intro & outro' },
   { id: 'structure', label: 'Structure' },
 ]
 
@@ -111,7 +192,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   const [estimate, setEstimate] = useState<VideoEstimate | null>(null)
   const [voices, setVoices] = useState<string[]>([])
   const [busy, setBusy] = useState<'preview' | 'full' | null>(null)
-  const [uploading, setUploading] = useState<'watermark' | 'music' | null>(null)
+  const [uploading, setUploading] = useState<UploadKind | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const payload = useMemo<RenderOptions>(
@@ -119,12 +200,41 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     [options, diagramImages],
   )
 
-  // Persist as the user goes, so the next video starts from the last one's setup.
+  // Persist as the user goes, so the next video starts from the last one's
+  // setup: to this browser at once, and to the account once the user pauses.
+  // Opening the dialog saves nothing — only a change does — so a stale local
+  // copy is never pushed over what another device saved.
+  const savedJson = useRef<string | null>(null)
+  const pendingJson = useRef<string | null>(null)
+
+  function flushSave() {
+    const json = pendingJson.current
+    if (json === null) return
+    pendingJson.current = null
+    savedJson.current = json
+    useSettingsStore.getState()
+      .updateAppSettings({ [SETTINGS_KEY]: JSON.parse(json) })
+      // This browser still has it, and the next change tries the account again.
+      .catch(() => { savedJson.current = '' })
+  }
+
   useEffect(() => {
+    const json = JSON.stringify({ ...options, diagram_images: {} })
     try {
-      localStorage.setItem(OPTIONS_KEY, JSON.stringify({ ...options, diagram_images: {} }))
+      localStorage.setItem(OPTIONS_KEY, json)
     } catch { /* private mode */ }
+    if (savedJson.current === null) {
+      savedJson.current = json  // what was just loaded
+      return
+    }
+    if (json === savedJson.current) return
+    pendingJson.current = json
+    const timer = setTimeout(flushSave, SAVE_DELAY_MS)
+    return () => clearTimeout(timer)
   }, [options])
+
+  // Closing the dialog mid-pause still saves the last change.
+  useEffect(() => () => flushSave(), [])
 
   useEffect(() => {
     let cancelled = false
@@ -153,6 +263,8 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
     payload.shot_end_pause_ms,
     payload.heading_pause_ms, payload.paragraph_pause_ms,
     payload.transition.style, payload.transition.duration,
+    // The intro and outro are segments of their own and count toward the length.
+    payload.intro.enabled, payload.intro.url, payload.outro.enabled, payload.outro.url,
   ])
 
   function patch(changes: Partial<RenderOptions>) {
@@ -161,18 +273,25 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
   type GroupKey = 'waveform' | 'watermark' | 'overlay_text' | 'fallback'
     | 'title_card_text' | 'chapter_card_text'
     | 'transition' | 'ken_burns' | 'music' | 'quotes' | 'code'
+    | 'intro' | 'outro'
   function patchGroup<K extends GroupKey>(group: K, changes: Partial<RenderOptions[K]>) {
     setOptions((prev) => ({ ...prev, [group]: { ...prev[group], ...changes } }))
   }
 
-  async function upload(kind: 'watermark' | 'music', file: File) {
+  /** Uploads land in the user's own media, not in this note: they're reused for
+   *  every video, and the saved options are what keep them. */
+  async function upload(kind: UploadKind, file: File) {
     setUploading(kind)
     setError(null)
     try {
       const res = await mediaApi.upload(file)
-      patchGroup(kind, { url: res.data.url, enabled: true })
+      if (kind === 'intro' || kind === 'outro') {
+        patchGroup(kind, { url: res.data.url, name: file.name, enabled: true })
+      } else {
+        patchGroup(kind, { url: res.data.url, enabled: true })
+      }
     } catch (e) {
-      setError(apiErrorMessage(e, `Could not upload that ${kind === 'music' ? 'track' : 'image'}`))
+      setError(apiErrorMessage(e, `Could not upload that ${UPLOAD_NOUN[kind]}`))
     } finally {
       setUploading(null)
     }
@@ -660,6 +779,40 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, onGene
                   </div>
                 )}
               </section>
+            </>
+          )}
+
+          {/* ── Intro & outro ────────────────────────────────────────────── */}
+          {tab === 'bumpers' && (
+            <>
+              <ClipPicker
+                label="Intro"
+                hint="Plays first, before the title screen."
+                clip={options.intro}
+                uploading={uploading === 'intro'}
+                busy={uploading !== null}
+                onUpload={(f) => void upload('intro', f)}
+                onChange={(changes) => patchGroup('intro', changes)}
+              />
+              <div className="border-t border-gray-100 dark:border-gray-700 pt-4">
+                <ClipPicker
+                  label="Outro"
+                  hint="Plays last, after the final section."
+                  clip={options.outro}
+                  uploading={uploading === 'outro'}
+                  busy={uploading !== null}
+                  onUpload={(f) => void upload('outro', f)}
+                  onChange={(changes) => patchGroup('outro', changes)}
+                />
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-700 pt-4">
+                Each clip plays whole, with its own sound, fitted to the frame
+                like any other video. Nothing is drawn over it — no watermark,
+                text overlay or waveform — and background music stops short of
+                it. Transitions still join it to the rest of the video. Clips
+                are kept in your media and saved with these settings, so they're
+                used for every video until you change them.
+              </p>
             </>
           )}
 

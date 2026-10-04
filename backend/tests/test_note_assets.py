@@ -30,7 +30,7 @@ from app.asset_utils import (
     release_media_file,
     sync_note_assets,
 )
-from app.models import Note, NoteAsset, Theme, User
+from app.models import Note, NoteAsset, Theme, User, UserSetting
 from app.routers.assets import _ai_eligible, _role_for
 
 USER = "user-1"
@@ -349,6 +349,49 @@ def test_release_keeps_a_file_used_as_a_theme_background(session, media_dir):
     session.commit()
 
     assert release_media_file(session, USER, url) is False
+
+
+def _save_setting(session, key, value, user_id=USER):
+    session.add(UserSetting(user_id=user_id, key=key, value=json.dumps(value)))
+    session.commit()
+
+
+def test_release_keeps_a_file_a_saved_setting_points_at(session, media_dir):
+    """The video dialog's intro clip belongs to no note, but it is still in use."""
+    url = media_file(media_dir, USER, "intro.mp4")
+    _save_setting(session, "video_render_options",
+                  {"intro": {"enabled": True, "url": url}, "music": {"url": None}})
+
+    assert release_media_file(session, USER, url) is False
+    assert (media_dir / USER / "intro.mp4").exists()
+
+
+def test_settings_media_filenames_reads_nested_values_and_only_the_users_own(session):
+    _save_setting(session, "video_render_options", {
+        "intro": {"url": f"/media/{USER}/intro.mp4"},
+        "outro": {"url": f"/media/{USER}/outro.mp4"},
+        "watermark": {"url": f"/media/{OTHER_USER}/theirs.png"},
+        "diagram_images": {"b1": f"/media/{USER}/diagram.png"},
+        "list": [f"/media/{USER}/in-a-list.mp3", "not a url", 3, None],
+    })
+    _save_setting(session, "video_render_options", {"intro": {"url": f"/media/{OTHER_USER}/x.mp4"}},
+                  user_id=OTHER_USER)
+    session.add(UserSetting(user_id=USER, key="broken", value="/media/{not json"))
+    session.commit()
+
+    assert asset_utils.settings_media_filenames(session, USER) == {
+        "intro.mp4", "outro.mp4", "diagram.png", "in-a-list.mp3",
+    }
+
+
+def test_the_unlinked_sweep_does_not_offer_up_a_settings_file(session, media_dir):
+    from app.routers.assets import _referenced_filenames
+
+    url = media_file(media_dir, USER, "outro.mp4")
+    _save_setting(session, "video_render_options", {"outro": {"enabled": False, "url": url}})
+
+    # Switched off but still chosen: the clip is kept for when it's switched back on.
+    assert "outro.mp4" in _referenced_filenames(session, USER)
 
 
 def test_release_never_touches_another_users_file(session, media_dir):

@@ -789,3 +789,86 @@ def test_markers_are_not_counted_as_narration_characters():
     marked = _run([{"type": "paragraph", "content": _text("Hello [pause:2s] world.")}],
                   media_root=root)
     assert marked.narration_chars == plain.narration_chars
+
+
+# ── intro and outro ──────────────────────────────────────────────────────────
+
+def _bracketed(**overrides):
+    return RenderOptions(**{
+        "title_card": True,
+        "intro": {"enabled": True, "url": "/media/u1/intro.mp4"},
+        "outro": {"enabled": True, "url": "/media/u1/outro.mp4"},
+        **overrides,
+    })
+
+
+def test_intro_and_outro_bracket_the_whole_article():
+    root = _media("intro.mp4", "outro.mp4", "a.png")
+    plan = _run([
+        {"id": "1", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "2", "type": "paragraph", "content": _text("The article.")},
+    ], media_root=root, options=_bracketed(), title="Note")
+
+    assert [s.bumper for s in plan.shots] == ["intro", None, None, "outro"]
+    # The intro plays before even the title screen.
+    assert plan.shots[1].card_kind == "title"
+    intro, outro = plan.shots[0], plan.shots[-1]
+    assert intro.kind == outro.kind == "video_sound"
+    assert intro.background.endswith("intro.mp4")
+    assert outro.background.endswith("outro.mp4")
+    # A clip is never narrated over, and each is its own chapter in the MP4.
+    assert intro.narration == outro.narration == ""
+    assert (intro.chapter, outro.chapter) == ("Intro", "Outro")
+    assert plan.warnings == []
+
+
+def test_a_bumper_is_played_whether_or_not_it_carries_sound():
+    """The renderer probes for audio itself; the segmenter must not drop a silent clip."""
+    root = _media("intro.mp4", "outro.mp4")
+    plan = _run([{"id": "1", "type": "paragraph", "content": _text("Words.")}],
+                media_root=root, options=_bracketed(title_card=False), loud=())
+
+    assert [s.bumper for s in plan.shots] == ["intro", None, "outro"]
+
+
+def test_a_switched_off_bumper_is_left_out_even_with_a_clip_chosen():
+    root = _media("intro.mp4", "outro.mp4")
+    options = _bracketed(title_card=False)
+    options.outro.enabled = False
+    plan = _run([{"id": "1", "type": "paragraph", "content": _text("Words.")}],
+                media_root=root, options=options)
+
+    assert [s.bumper for s in plan.shots] == ["intro", None]
+
+
+def test_a_missing_or_foreign_bumper_is_skipped_with_a_warning():
+    root = _media("a.png")
+    options = RenderOptions(
+        title_card=False,
+        intro={"enabled": True, "url": "/media/u1/gone.mp4"},
+        outro={"enabled": True, "url": "/media/u2/theirs.mp4"},
+    )
+    plan = _run([{"id": "1", "type": "paragraph", "content": _text("Words.")}],
+                media_root=root, options=options)
+
+    assert [s.bumper for s in plan.shots] == [None]
+    assert any("intro was skipped" in w for w in plan.warnings)
+    assert any("outro was skipped" in w for w in plan.warnings)
+
+
+def test_a_still_image_is_not_accepted_as_a_bumper():
+    root = _media("logo.png")
+    options = RenderOptions(title_card=False,
+                            intro={"enabled": True, "url": "/media/u1/logo.png"})
+    plan = _run([{"id": "1", "type": "paragraph", "content": _text("Words.")}],
+                media_root=root, options=options)
+
+    assert [s.bumper for s in plan.shots] == [None]
+    assert any("intro was skipped" in w for w in plan.warnings)
+
+
+def test_bumpers_alone_do_not_make_an_empty_note_renderable():
+    root = _media("intro.mp4", "outro.mp4")
+    plan = _run([], media_root=root, options=_bracketed(title_card=False))
+
+    assert plan.shots == []

@@ -365,6 +365,23 @@ class CodeSpec(BaseModel):
         return max(0.0, min(1.0, float(v)))
 
 
+class BumperSpec(BaseModel):
+    """A pre-made clip played before (intro) or after (outro) the article.
+
+    It plays whole, with its own sound, fitted to the frame like any other clip
+    in a note — but it is the user's own branding, so nothing of the render's is
+    drawn over it: no watermark, no text overlay, no waveform, and the music bed
+    stops short of it. Transitions still apply, so it joins the video the same
+    way every other segment does.
+    """
+
+    enabled: bool = False
+    url: Optional[str] = None          # /media/... video
+    # The uploaded file's own name. The file is stored under a UUID, so this is
+    # the only readable label the dialog has for it.
+    name: str = ""
+
+
 class RenderOptions(BaseModel):
     """The complete render configuration. Persisted as JSON on the job row."""
 
@@ -390,6 +407,11 @@ class RenderOptions(BaseModel):
     music: MusicSpec = Field(default_factory=MusicSpec)
     quotes: QuoteSpec = Field(default_factory=QuoteSpec)
     code: CodeSpec = Field(default_factory=CodeSpec)
+
+    # Clips bracketing the whole video: the intro plays before the title
+    # screen, the outro after the last section. See BumperSpec.
+    intro: BumperSpec = Field(default_factory=BumperSpec)
+    outro: BumperSpec = Field(default_factory=BumperSpec)
 
     # Append the finished video to the note as a playable block. Done by the
     # worker rather than the browser so a render survives the tab being closed.
