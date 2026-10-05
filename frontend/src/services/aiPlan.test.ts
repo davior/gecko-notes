@@ -129,3 +129,48 @@ describe('webSearchContinuation', () => {
     expect(text).toContain('do not answer from memory')
   })
 })
+
+// Placing a block (image, diagram, reference, child note) next to a paragraph rather
+// than only under a heading. Before this, "an image above every paragraph in chapter 2"
+// stacked every image beneath the chapter title, because a heading was the only thing
+// a block could be placed against.
+describe('parsePlan — block placement', () => {
+  it('keeps the anchor and side on every block-inserting action', () => {
+    const raws = [
+      { type: 'generate_image', noteId: 'n1', prompt: 'p' },
+      { type: 'create_diagram', noteId: 'n1', source: 'pie' },
+      { type: 'add_reference', noteId: 'n1', referenceNoteId: 'n2', referenceTitle: 'T' },
+      { type: 'create_child_note', parentId: 'n1', title: 'C' },
+    ]
+    for (const raw of raws) {
+      const action = firstAction(JSON.stringify({ ...raw, anchorText: 'Storm clouds', position: 'before' }))
+      expect(action).toMatchObject({ anchorText: 'Storm clouds', position: 'before' })
+    }
+  })
+
+  it.each([
+    ['above', 'before'], ['Below', 'after'], [' under ', 'after'], ['end', 'end'],
+    ['sideways', undefined], ['constructor', undefined],
+  ])('folds position %j onto %j', (said, kept) => {
+    const action = firstAction(JSON.stringify({ type: 'generate_image', noteId: 'n1', prompt: 'p', position: said }))
+    expect((action as { position?: string }).position).toBe(kept)
+  })
+
+  it('reads add_reference’s heading from `section` like every other block action', () => {
+    const action = firstAction('{"type":"add_reference","noteId":"n1","referenceNoteId":"n2","referenceTitle":"T","section":"Intro"}')
+    expect(action).toMatchObject({ insertAfterSection: 'Intro' })
+    expect(action).not.toHaveProperty('section')
+  })
+
+  it.each([
+    [{}, ''],
+    [{ section: 'Intro' }, ' under “Intro”'],
+    [{ section: 'Intro', position: 'before' }, ' above “Intro”'],
+    [{ section: 'Intro', position: 'end' }, ' at the end of “Intro”'],
+    [{ section: 'Intro', anchorText: 'Storm clouds', position: 'before' }, ' above “Storm clouds”'],
+    [{ anchorText: 'Storm clouds' }, ' below “Storm clouds”'],
+  ])('labels %j as landing%s', (fields, suffix) => {
+    const action = { type: 'generate_image', noteId: 'n1', prompt: 'p', ...fields } as PlanAction
+    expect(defaultActionLabel(action, new Map([['n1', 'Note']]))).toBe(`Generate image${suffix} in “Note”: p`)
+  })
+})
