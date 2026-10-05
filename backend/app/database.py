@@ -679,9 +679,13 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 pass
-        # Video render: selected content (render only selection instead of full note)
+        # Video render: selected content (render only selection instead of full note).
+        # The table is `videorenderjob` — SQLModel's default name, like every table
+        # here. This once said `video_render_job`; the error was swallowed below, the
+        # column never arrived, and every read of the table failed — which took
+        # /api/activity, and with it the whole background-task indicator, down too.
         try:
-            conn.execute(text("ALTER TABLE video_render_job ADD COLUMN selected_content TEXT"))
+            conn.execute(text("ALTER TABLE videorenderjob ADD COLUMN selected_content TEXT"))
             conn.commit()
         except Exception:
             pass
