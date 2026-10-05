@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlmodel import Session, select
 
+from app.assistant.plan_parse import POSITION_ALIASES
 from app.blocks.markdown_blocks import markdown_to_blocks
 from app.models import Annotation, Category, Folder, Note, Recipe
 
@@ -301,6 +302,193 @@ def find_section_index(blocks: Sequence[Any], section: str) -> int:
     return hit if hit != -1 else search(exact=False)
 
 
+def section_end(blocks: Sequence[Any], start: int) -> int:
+    """Index just past the section headed at `start`: it runs until the next heading of
+    the same or higher level, or the end of the note."""
+    found = section_heading(blocks[start])
+    level = found[0] if found else 1
+    for index in range(start + 1, len(blocks)):
+        info = section_heading(blocks[index])
+        if info and info[0] <= level:
+            return index
+    return len(blocks)
+
+
+# ─── placing a block next to a paragraph ─────────────────────────────────────
+
+
+def _inline_text(content: Any) -> str:
+    """Plain text of a run of inline content, descending into links.
+
+    `block_text` reads only top-level `text`, which skips a link's words entirely —
+    fine for headings, wrong for a paragraph the model quotes from its middle.
+    """
+    if not isinstance(content, list):
+        return ""
+    out = []
+    for node in content:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == "link":
+            out.append(_inline_text(node.get("content")))
+        else:
+            out.append(str(node.get("text") or ""))
+    return "".join(out)
+
+
+def _subtree_text(block: Any) -> str:
+    """A block's own text followed by every nested child's, space-separated."""
+    if not isinstance(block, dict):
+        return ""
+    parts = [_inline_text(block.get("content"))]
+    for child in block.get("children") or []:
+        parts.append(_subtree_text(child))
+    return " ".join(p for p in parts if p)
+
+
+def normalize_anchor(text: str) -> str:
+    """Reduce a quoted snippet, or a block's text, to a canonical form for matching.
+
+    The model reads note bodies as Markdown, so the snippet it copies carries what the
+    stored block does not: link syntax, emphasis markers, a list bullet, backslash
+    escapes, and an ellipsis where it stopped quoting. Both sides go through this, so a
+    snippet matches whether or not the model kept any of it.
+    """
+    out = text or ""
+    out = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", out)           # an image is not text
+    out = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", out)        # a link is its words
+    out = re.sub(r"\\([\\`*_{}\[\]()#+\-.!>~|])", r"\1", out)  # Markdown escapes
+    out = re.sub(r"[‘’]", "'", out)
+    out = re.sub(r"[“”]", '"', out)
+    out = re.sub(r"[*_`~]+", "", out)
+    out = out.strip()
+    # A leading block marker: heading hashes, a quote, a bullet or checkbox, a number.
+    out = re.sub(r"^(?:#{1,6}\s+|>\s*|[-+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)", "", out)
+    out = re.sub(r"^(?:…|\.\.\.)\s*", "", out)
+    out = re.sub(r"\s*(?:…|\.\.\.)$", "", out)
+    out = re.sub(r"\s+", " ", out)
+    out = re.sub(r"[.,:;!?]+$", "", out)
+    return out.strip().lower()
+
+
+def find_anchor_index(
+    blocks: Sequence[Any], anchor: str, lo: int = 0, hi: Optional[int] = None
+) -> int:
+    """Index of the top-level block in `blocks[lo:hi]` holding `anchor`, or -1.
+
+    Tightest match first — the whole block, then a block that starts with the snippet,
+    then one containing it — so a snippet that happens to recur later in the section
+    still lands on the paragraph it was copied from. Nested blocks (a sub-bullet, a
+    toggle's body) resolve to their top-level ancestor: an image inserted among a list
+    item's children would render indented under that item, which nobody asked for.
+    """
+    target = normalize_anchor(anchor)
+    if not target:
+        return -1
+    hi = len(blocks) if hi is None else hi
+
+    def own_text(block: Any) -> str:
+        return normalize_anchor(_inline_text(block.get("content"))) if isinstance(block, dict) else ""
+
+    own = [(index, own_text(blocks[index])) for index in range(lo, hi)]
+    for test in (
+        lambda text: text == target,
+        lambda text: text.startswith(target),
+        lambda text: target in text,
+    ):
+        for index, text in own:
+            if text and test(text):
+                return index
+    for index in range(lo, hi):
+        if target in normalize_anchor(_subtree_text(blocks[index])):
+            return index
+    return -1
+
+
+@dataclass
+class Placement:
+    """Where to insert a block, and how to say so in the run summary."""
+
+    index: int
+    where: str = ""     # " below “…”", " under “…”", or a fallback notice
+
+
+def resolve_placement(
+    blocks: Sequence[Any],
+    *,
+    section: Optional[str] = None,
+    anchor: Optional[str] = None,
+    position: Optional[str] = None,
+) -> Placement:
+    """Where a newly inserted block goes.
+
+    `anchor` (a snippet of an existing paragraph, list item, quote…) is the precise
+    signal and wins: the block goes directly before or after it. `section` narrows that
+    search when both are given, and on its own places relative to the heading — beneath
+    it, above it, or after the section's last block. With neither, the end of the note.
+
+    Before this, a block could only be placed under a heading, so "an image above every
+    paragraph in chapter 2" stacked every image directly beneath the chapter title.
+
+    A target that cannot be found degrades rather than fails — to the section if that
+    was found, else the end of the note — and `where` says so, because the user is
+    better served by an image in roughly the right place than by a paid generation that
+    was thrown away.
+    """
+    pos = POSITION_ALIASES.get((position or "").strip().lower(), "")
+    section = (section or "").strip()
+    anchor = (anchor or "").strip()
+
+    heading_at = find_section_index(blocks, section) if section else -1
+    lo, hi = 0, len(blocks)
+    if heading_at != -1:
+        lo, hi = heading_at + 1, section_end(blocks, heading_at)
+
+    missing = ""
+    if anchor:
+        snippet = _truncate(anchor, 40)
+        hit = find_anchor_index(blocks, anchor, lo, hi) if heading_at != -1 else -1
+        if hit == -1:
+            # A wrong section name should not cost a right anchor: the snippet is the
+            # more specific of the two, so look for it everywhere before giving up.
+            hit = find_anchor_index(blocks, anchor)
+        if hit != -1:
+            if pos == "before":
+                return Placement(hit, f" above “{snippet}”")
+            return Placement(hit + 1, f" below “{snippet}”")
+        missing = f"“{snippet}” not found"
+
+    if heading_at != -1:
+        if missing:
+            return Placement(heading_at + 1, f" under “{section}” ({missing})")
+        if pos == "before":
+            return Placement(heading_at, f" above “{section}”")
+        if pos == "end":
+            return Placement(hi, f" at the end of “{section}”")
+        return Placement(heading_at + 1, f" under “{section}”")
+
+    if section:
+        missing = f"{missing}; " if missing else ""
+        missing += f"section “{section}” not found"
+    if missing:
+        return Placement(len(blocks), f" ({missing} — added at the end)")
+    return Placement(len(blocks))
+
+
+def _truncate(text: str, max_len: int) -> str:
+    one_line = re.sub(r"\s+", " ", text).strip()
+    return f"{one_line[:max_len - 1]}…" if len(one_line) > max_len else one_line
+
+
+def _placement_of(action: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """The placement fields an action carries, keyed for `resolve_placement`."""
+    return {
+        "section": action.get("section"),
+        "anchor": action.get("anchorText"),
+        "position": action.get("position"),
+    }
+
+
 def collect_embeds(blocks: Sequence[Any]) -> List[Any]:
     """Child-note, reference and diagram blocks found anywhere in `blocks`.
 
@@ -566,14 +754,7 @@ class PlanExecutor:
             )
 
         # The section runs until the next heading of the same or higher level.
-        found = section_heading(blocks[start])
-        level = found[0] if found else 1
-        end = len(blocks)
-        for index in range(start + 1, len(blocks)):
-            info = section_heading(blocks[index])
-            if info and info[0] <= level:
-                end = index
-                break
+        end = section_end(blocks, start)
 
         preserved = collect_embeds(blocks[start:end])
         blocks[start:end] = [*new_blocks, *preserved]
@@ -655,7 +836,8 @@ class PlanExecutor:
         # block or the child is invisible in the UI (mirrors EditorView.insertEmptyChild).
         self._snapshot_once(parent)
         blocks = parse_blocks(parent.content)
-        blocks.append({
+        placement = resolve_placement(blocks, **_placement_of(action))
+        blocks.insert(placement.index, {
             "id": str(uuid.uuid4()),
             "type": "childNote",
             "props": {"childNoteId": child.id, "title": child.title},
@@ -665,7 +847,7 @@ class PlanExecutor:
 
         return ActionResult(
             ok=True,
-            message=f"Created child note “{child.title}” under “{parent.title}”.",
+            message=f"Created child note “{child.title}” under “{parent.title}”{placement.where}.",
             notes_changed=True, touched_current_note=self._touches_current(parent.id),
             note_id=child.id, note_title=child.title,
         )
@@ -780,14 +962,17 @@ class PlanExecutor:
             "props": {"noteId": reference_id, "noteTitle": reference_title},
             "children": [],
         }
-        section = action.get("insertAfterSection")
-        after = find_section_index(blocks, section) if section else -1
-        blocks.insert(len(blocks) if after == -1 else after + 1, block)
+        # `section` too, for a plan that reached here without passing the validator,
+        # which is what folds it onto insertAfterSection.
+        placement = resolve_placement(blocks, **{
+            **_placement_of(action),
+            "section": action.get("insertAfterSection") or action.get("section"),
+        })
+        blocks.insert(placement.index, block)
         self._write_content(note, blocks)
 
-        where = f" under “{section}”" if section else ""
         return ActionResult(
-            ok=True, message=f"Added reference to “{reference_title}”{where}.",
+            ok=True, message=f"Added reference to “{reference_title}”{placement.where}.",
             notes_changed=True, touched_current_note=self._touches_current(note.id),
             note_id=note.id, note_title=note.title,
         )
@@ -884,7 +1069,8 @@ class PlanExecutor:
 
         self._snapshot_once(note)
         blocks = parse_blocks(note.content)
-        blocks.append({
+        placement = resolve_placement(blocks, **_placement_of(action))
+        blocks.insert(placement.index, {
             "id": str(uuid.uuid4()),
             "type": "diagram",
             # Mirrors newDiagramId() in utils/diagram.ts — a stable handle edit_diagram
@@ -894,7 +1080,7 @@ class PlanExecutor:
         })
         self._write_content(note, blocks)
         return ActionResult(
-            ok=True, message=f"Added diagram to “{note.title}”.", notes_changed=True,
+            ok=True, message=f"Added diagram to “{note.title}”{placement.where}.", notes_changed=True,
             touched_current_note=self._touches_current(note.id),
             note_id=note.id, note_title=note.title,
         )
@@ -966,18 +1152,12 @@ class PlanExecutor:
             "props": {"url": url, "name": action.get("alt") or "", "caption": "", "showPreview": True},
             "children": [],
         }
-        section = action.get("section")
-        index = find_section_index(blocks, section) if section else -1
-        placed = index != -1
-        blocks.insert(len(blocks) if not placed else index + 1, block)
+        placement = resolve_placement(blocks, **_placement_of(action))
+        blocks.insert(placement.index, block)
         self._write_content(note, blocks)
 
-        if section:
-            where = f" under “{section}”" if placed else f" (section “{section}” not found — added at the end)"
-        else:
-            where = ""
         return ActionResult(
-            ok=True, message=f"Generated image{where} in “{note.title}”.", notes_changed=True,
+            ok=True, message=f"Generated image{placement.where} in “{note.title}”.", notes_changed=True,
             touched_current_note=self._touches_current(note.id),
             note_id=note.id, note_title=note.title,
         )

@@ -268,5 +268,20 @@
     "name": "labels with unicode and whitespace runs",
     "why": "truncate collapses whitespace and cuts at a code point, not a UTF-16 unit",
     "raw": "{\"actions\": [{\"type\": \"respond\", \"text\": \"line one\\n\\n   line   two \\\\t with  runs of   space that carry on well past the eighty character mark\"}, {\"type\": \"create_note\", \"title\": \"\\ud83e\\udd8e Notes \\u2014 \\u00dcn\\u00efc\\u00f6d\\u00e9\", \"content\": \"x\"}]}"
+  },
+  {
+    "name": "images anchored above each paragraph",
+    "why": "\"an image above every paragraph in chapter 2\" — one generate_image per paragraph, placed by a quoted snippet rather than stacked under the heading",
+    "raw": "{\"actions\": [{\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \"storm over a harbour\", \"section\": \"Chapter 2\", \"anchorText\": \"Storm clouds gathered over the harbour\", \"position\": \"before\"}, {\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \"sailors arguing on deck\", \"section\": \"Chapter 2\", \"anchorText\": \"The crew argued about turning back, some of them shouting over the wind\", \"position\": \"above\", \"alt\": \"The argument\"}]}"
+  },
+  {
+    "name": "placement synonyms and junk",
+    "why": "the model writes the user's word (below, under) or nonsense for position; synonyms fold, junk is dropped, a blank anchor is not carried",
+    "raw": "{\"actions\": [{\"type\": \"create_diagram\", \"noteId\": \"n2\", \"source\": \"flowchart TD\\nA-->B\", \"anchorText\": \"The steps are\", \"position\": \"Below\"}, {\"type\": \"create_diagram\", \"noteId\": \"n2\", \"source\": \"pie\\n\\\"a\\\": 1\", \"section\": \"Results\", \"position\": \"end\"}, {\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \"p\", \"section\": \"Intro\", \"anchorText\": \"   \", \"position\": \"sideways\"}, {\"type\": \"generate_image\", \"noteId\": \"n1\", \"prompt\": \"p\", \"section\": \"Intro\", \"position\": \"constructor\"}]}"
+  },
+  {
+    "name": "reference and child note placed by paragraph",
+    "why": "add_reference takes `section` like the others (folded onto insertAfterSection); create_child_note takes the same placement fields",
+    "raw": "{\"actions\": [{\"type\": \"add_reference\", \"noteId\": \"n1\", \"referenceNoteId\": \"n2\", \"referenceTitle\": \"Second note\", \"section\": \"Sources\", \"anchorText\": \"See also\", \"position\": \"before\"}, {\"type\": \"add_reference\", \"noteId\": \"n1\", \"referenceNoteId\": \"n3\", \"referenceTitle\": \"Third note\", \"insertAfterSection\": \"Sources\", \"section\": \"Ignored\"}, {\"type\": \"create_child_note\", \"parentId\": \"n1\", \"title\": \"Details\", \"content\": \"\", \"spec\": \"the details\", \"section\": \"Plan\", \"anchorText\": \"Phase two begins\", \"position\": \"after\"}, {\"type\": \"create_child_note\", \"parentId\": \"n1\", \"title\": \"Appendix\", \"content\": \"x\", \"section\": \"Plan\", \"position\": \"before\"}]}"
   }
 ]

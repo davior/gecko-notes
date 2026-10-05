@@ -84,6 +84,24 @@ def detect_mermaid_kind(source: str) -> str:
 # ─── labels ──────────────────────────────────────────────────────────────────
 
 
+def placement_suffix(action: Mapping[str, Any], section_key: str = "section") -> str:
+    """Where a block-inserting action puts its block, as a phrase for its label: the
+    quoted paragraph when it has one, else its section, else nothing (end of note)."""
+    position = action.get("position")
+    anchor = action.get("anchorText")
+    if anchor:
+        side = "above" if position == "before" else "below"
+        return f" {side} “{truncate(anchor, 40)}”"
+    section = action.get(section_key)
+    if not section:
+        return ""
+    if position == "before":
+        return f" above “{section}”"
+    if position == "end":
+        return f" at the end of “{section}”"
+    return f" under “{section}”"
+
+
 def default_action_label(action: Mapping[str, Any], label_map: Mapping[str, str]) -> str:
     """Human-readable label for one action.
 
@@ -143,7 +161,11 @@ def default_action_label(action: Mapping[str, Any], label_map: Mapping[str, str]
 
     if kind == "create_child_note":
         title = action.get("title") or "Untitled"
-        return f"Create child note “{title}” under “{name(action.get('parentId'))}”"
+        placed = placement_suffix(action)
+        return (
+            f"Create child note “{title}” under “{name(action.get('parentId'))}”"
+            f"{',' + placed if placed else ''}"
+        )
 
     if kind == "move_note":
         folder_id = action.get("folderId")
@@ -165,11 +187,10 @@ def default_action_label(action: Mapping[str, Any], label_map: Mapping[str, str]
         return f"Create folder “{action.get('name')}”"
 
     if kind == "add_reference":
-        under = action.get("insertAfterSection")
-        suffix = f" under “{under}”" if under else ""
         return (
             f"Add reference to “{action.get('referenceTitle')}” "
-            f"in “{name(action.get('noteId'))}”{suffix}"
+            f"in “{name(action.get('noteId'))}”"
+            f"{placement_suffix(action, 'insertAfterSection')}"
         )
 
     if kind == "add_annotation":
@@ -184,14 +205,13 @@ def default_action_label(action: Mapping[str, Any], label_map: Mapping[str, str]
 
     if kind == "create_diagram":
         label = DIAGRAM_KIND_LABELS[detect_mermaid_kind(action.get("source") or "")].lower()
-        return f"Create {label} in “{name(action.get('noteId'))}”"
+        return f"Create {label} in “{name(action.get('noteId'))}”{placement_suffix(action)}"
 
     if kind == "edit_diagram":
         return f"Update diagram in “{name(action.get('noteId'))}”"
 
     if kind == "generate_image":
-        section = action.get("section")
-        where = f" under “{section}”" if section else ""
+        where = placement_suffix(action)
         prompt = truncate(action.get("prompt") or "", 60)
         return f"Generate image{where} in “{name(action.get('noteId'))}”: {prompt}"
 
@@ -299,6 +319,7 @@ __all__ = [
     "DIAGRAM_KIND_LABELS",
     "truncate",
     "detect_mermaid_kind",
+    "placement_suffix",
     "default_action_label",
     "action_spec",
     "action_needs_generation",

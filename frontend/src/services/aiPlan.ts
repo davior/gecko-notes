@@ -12,6 +12,16 @@ export interface ContextCategory { id: string; label: string }
 export interface ContextRecipe { id: string; name: string; tags: string[]; prompt: string }
 
 
+// Where an action that inserts ONE block (image, diagram, note reference, child note)
+// puts it, beyond its section. `anchorText` quotes the start of an existing paragraph,
+// list item, quote… and the block goes directly `before` or `after` (default) it. With
+// only a section, `position` is relative to the heading: `after` (directly beneath it,
+// the default), `before` (just above it) or `end` (after the section's last block).
+// Without these a block could only go under a heading, so "an image above every
+// paragraph" stacked every image beneath the chapter title.
+export type PlacementPosition = 'before' | 'after' | 'end'
+export interface Placement { anchorText?: string; position?: PlacementPosition }
+
 // All note `content` is MARKDOWN — converted to BlockNote blocks by the executor
 // via the live editor's tryParseMarkdownToBlocks(). The model never emits BlockNote JSON.
 // `spec` (optional, content-bearing actions) defers the body: the planner describes what the
@@ -39,24 +49,24 @@ export type PlanAction =
   | { type: 'edit_section'; noteId: string; section: string; content: string; spec?: string; description?: string }
   | { type: 'append_note'; noteId: string; content: string; spec?: string; description?: string }
   | { type: 'rename_note'; noteId: string; title: string; description?: string }
-  | { type: 'create_child_note'; parentId: string; title: string; content: string; spec?: string; ref?: string; description?: string }
+  | ({ type: 'create_child_note'; parentId: string; title: string; content: string; spec?: string; ref?: string; section?: string; description?: string } & Placement)
   | { type: 'move_note'; noteId: string; folderId: string | null; description?: string }
   | { type: 'set_tags'; noteId: string; tags: string[]; mode: 'replace' | 'add'; description?: string }
   | { type: 'set_category'; noteId: string; categoryId: string; description?: string }
   | { type: 'create_folder'; name: string; parentFolderId?: string | null; ref?: string; description?: string }
-  | { type: 'add_reference'; noteId: string; referenceNoteId: string; referenceTitle: string; insertAfterSection?: string; description?: string }
+  | ({ type: 'add_reference'; noteId: string; referenceNoteId: string; referenceTitle: string; insertAfterSection?: string; description?: string } & Placement)
   | { type: 'add_annotation'; noteId: string; anchorText: string; text: string; description?: string }
   | { type: 'edit_annotation'; noteId: string; annotationId: string; text: string; description?: string }
   | { type: 'delete_annotation'; noteId: string; annotationId: string; description?: string }
   // Diagrams are custom blocks that can't be expressed in Markdown, so they use their own
   // actions carrying raw Mermaid diagram source text (not `content`).
-  | { type: 'create_diagram'; noteId: string; source: string; description?: string }
+  | ({ type: 'create_diagram'; noteId: string; source: string; section?: string; description?: string } & Placement)
   | { type: 'edit_diagram'; noteId: string; diagramId: string; source: string; description?: string }
-  // Generates an image via fal.ai from `prompt` and inserts it into the note. `section`
-  // (optional): a heading to place the image directly beneath (else appended at the end).
+  // Generates an image via fal.ai from `prompt` and inserts it into the note, placed by
+  // `section` / `anchorText` / `position` (see Placement; else appended at the end).
   // `alt` (optional): a short caption for the image block. The prompt is authored by the
   // model from the article content — it is NOT the user's raw request.
-  | { type: 'generate_image'; noteId: string; prompt: string; section?: string; alt?: string; description?: string }
+  | ({ type: 'generate_image'; noteId: string; prompt: string; section?: string; alt?: string; description?: string } & Placement)
   // Recipes: saved, reusable prompts the user runs later from the composer's picker or by
   // voice ("run the summary recipe") instead of retyping them — see the "Recipes" rule below.
   | { type: 'create_recipe'; name: string; prompt: string; tags?: string[]; description?: string }
@@ -117,18 +127,18 @@ Action types (every action MAY also include an optional "description": one short
 - edit_section:       { "type":"edit_section", "noteId":"<id>", "section":"<heading text>", "content":"<markdown incl. the section heading>" }
 - append_note:       { "type":"append_note", "noteId":"<id>", "content":"<markdown>" }
 - rename_note:       { "type":"rename_note", "noteId":"<id>", "title":"<new title>" }
-- create_child_note: { "type":"create_child_note", "parentId":"<id>", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>" }
+- create_child_note: { "type":"create_child_note", "parentId":"<id>", "title":"<title>", "content":"<markdown>", "ref":"<optional local label>", "section":"<optional heading>", "anchorText":"<optional>", "position":"<optional>" } (placement: see "Placing blocks")
 - move_note:         { "type":"move_note", "noteId":"<id>", "folderId":"<id>"|null }
 - set_tags:          { "type":"set_tags", "noteId":"<id>", "tags":["..."], "mode":"replace"|"add" }
 - set_category:      { "type":"set_category", "noteId":"<id>", "categoryId":"<id>" }
 - create_folder:     { "type":"create_folder", "name":"<name>", "parentFolderId":"<id>"|null, "ref":"<optional local label>" }
-- add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "insertAfterSection":"<optional heading>" }
+- add_reference:     { "type":"add_reference", "noteId":"<id>", "referenceNoteId":"<id>", "referenceTitle":"<title>", "section":"<optional heading>", "anchorText":"<optional>", "position":"<optional>" } (placement: see "Placing blocks")
 - add_annotation:    { "type":"add_annotation", "noteId":"<id>", "anchorText":"<verbatim snippet of the block to attach to>", "text":"<markdown annotation>" }
 - edit_annotation:   { "type":"edit_annotation", "noteId":"<id>", "annotationId":"<id>", "text":"<new markdown annotation>" }
 - delete_annotation: { "type":"delete_annotation", "noteId":"<id>", "annotationId":"<id>" }
-- create_diagram:    { "type":"create_diagram", "noteId":"<id>", "source":"<complete Mermaid diagram source>" }
+- create_diagram:    { "type":"create_diagram", "noteId":"<id>", "source":"<complete Mermaid diagram source>", "section":"<optional heading>", "anchorText":"<optional>", "position":"<optional>" } (placement: see "Placing blocks")
 - edit_diagram:      { "type":"edit_diagram", "noteId":"<id>", "diagramId":"<id>", "source":"<complete replacement Mermaid diagram source>" }
-- generate_image:    { "type":"generate_image", "noteId":"<id>", "prompt":"<detailed text-to-image prompt>", "section":"<optional heading to insert under>", "alt":"<optional caption>" }
+- generate_image:    { "type":"generate_image", "noteId":"<id>", "prompt":"<detailed text-to-image prompt>", "section":"<optional heading>", "anchorText":"<optional>", "position":"<optional>", "alt":"<optional caption>" } (placement: see "Placing blocks")
 - create_recipe:     { "type":"create_recipe", "name":"<short name>", "prompt":"<self-contained prompt text>", "tags":["optional", "lowercase", "tags"] }
 - update_recipe:     { "type":"update_recipe", "recipeId":"<id>", "name":"<optional new name>", "prompt":"<optional new prompt>", "tags":["optional new tags"] }
 - delete_recipe:     { "type":"delete_recipe", "recipeId":"<id>" }
@@ -152,9 +162,14 @@ Rules:
   - To ADD content, use append_note or edit_note "amend". These keep ALL existing content, including embedded child notes, note references, links and images.
   - To CHANGE an existing section, use edit_section: set "section" to that section's heading text and "content" to the new Markdown for the whole section (include the heading). Only that section is rewritten; every other section is preserved untouched.
   - Use edit_note "replace" ONLY when the user explicitly asks to rewrite the ENTIRE note. It discards all other sections, formatting and embedded blocks, so avoid it for section-level changes.
+- Placing blocks (generate_image, create_diagram, add_reference, create_child_note — IMPORTANT): each of these inserts ONE block into a note. Say where with these optional fields:
+  - "anchorText": the opening words (about 6–12, copied verbatim) of the existing paragraph, list item, quote or other block to put it next to. Use it WHENEVER the user places something relative to a paragraph or any other non-heading block ("above every paragraph", "after the paragraph about X", "below the list", "before the quote") — a heading alone cannot express that, and every block would end up stacked directly beneath the heading. Quote text that already exists in the note when the action runs: the body you were given, or text an earlier action in this plan writes inline in "content" (never a deferred "spec" body, whose words are not known yet).
+  - "position": with "anchorText", "before" puts the block directly above that paragraph and "after" (the default) directly below it. With only "section", "after" (the default) puts it directly beneath the heading, "before" just above the heading, and "end" after the last block of that section.
+  - "section": a heading's text. With "anchorText" it narrows the search to that section — set it whenever the paragraph sits in a known section/chapter, so the same wording elsewhere in the note cannot capture the block. On its own it places the block relative to that heading (see "position").
+  With none of these the block is appended at the end of the note. For "one per paragraph" requests, emit one action PER PARAGRAPH, each with its own "anchorText" taken from that paragraph — e.g. "add an image above every paragraph in chapter 2" → one generate_image per paragraph of chapter 2, each with "section":"Chapter 2", "anchorText":"<that paragraph's opening words>", "position":"before".
 - Annotations: a note's existing annotations are listed under it as "Annotations on this note" with an "[annotation <id>]" and the snippet of the block they are anchored to. To edit/delete one, use its "<id>" as "annotationId". To add one, set "anchorText" to a short verbatim snippet of the block the annotation should attach to (it is matched against the note's block text). When asked to "read the annotations and revise the note", read these annotation texts and apply the implied edits with edit_section / edit_note / append_note actions.
 - Diagrams: use create_diagram to ADD a new diagram to a note, and edit_diagram to change an existing one. A note's existing diagrams are listed under it as "Diagrams on this note" with a "[diagram <id>]" tag and their current Mermaid source — use that "<id>" as "diagramId" for edit_diagram (which REPLACES the whole diagram, so "source" must be the complete new diagram, not a fragment). "source" must be complete, valid Mermaid syntax starting with the right header keyword for the kind: "flowchart TD" (or LR/BT/RL) for flow charts, "mindmap" for mind maps, "sequenceDiagram" for sequence diagrams, "classDiagram" for class diagrams, "stateDiagram-v2" for state diagrams, "erDiagram" for entity-relationship diagrams, "gantt" for Gantt charts, "pie" for pie charts, "timeline" for timelines. Node linking: in flowchart, classDiagram and stateDiagram-v2 ONLY, a node can link to another note or a URL by adding a line "click <nodeId> href \"/notes/<id>\"" (linking to a note id from the lists below) or "click <nodeId> href \"<url>\" \"_blank\"" (linking to the web) — do NOT add click/href lines for mindmap, sequenceDiagram, erDiagram, gantt, pie or timeline diagrams, since Mermaid does not support node links on those kinds (mindmap link support is a currently open Mermaid limitation). Only create or edit a diagram when the user explicitly asks for one (e.g. "make a mind map of this note", "add a step to the flow chart").
-- Images (generate_image): Use ONLY when the user explicitly asks to create/generate/add an image, picture, illustration or photo (e.g. "make an image for this article", "add a picture", "create an image for each chapter and put it under each title"). YOU author the "prompt": write a vivid, self-contained text-to-image prompt derived from the relevant article content (describe subject, setting, style, mood, composition) — do NOT just copy the user's request verbatim. Set "section" to a section/chapter heading's text to insert the image directly beneath that heading; omit "section" to append the image at the end of the note. For "an image for each chapter/section", emit ONE generate_image action per chapter — each with that chapter's heading text as "section" and its own prompt tailored to that chapter. Optionally set "alt" to a short caption. Generating images costs money, so create only the images the user asked for and no more.
+- Images (generate_image): Use ONLY when the user explicitly asks to create/generate/add an image, picture, illustration or photo (e.g. "make an image for this article", "add a picture", "create an image for each chapter and put it under each title"). YOU author the "prompt": write a vivid, self-contained text-to-image prompt derived from the relevant article content (describe subject, setting, style, mood, composition) — do NOT just copy the user's request verbatim. Place it as described in "Placing blocks": "section" alone puts it directly beneath that heading, "anchorText" + "position" puts it above or below a specific paragraph, and neither appends it at the end of the note. For "an image for each chapter/section", emit ONE generate_image action per chapter — each with that chapter's heading text as "section" and its own prompt tailored to that chapter; for "an image for each paragraph", emit one per paragraph, each anchored to its paragraph. Optionally set "alt" to a short caption. Generating images costs money, so create only the images the user asked for and no more.
 - Recipes (create_recipe / update_recipe / delete_recipe): a Recipe is a saved, reusable prompt the user can run later — from a picker in the AI composer, or by voice ("run the summary recipe") — instead of retyping it each time. The user's existing recipes are listed below under "Recipes". Only create, update or delete a recipe when the user EXPLICITLY asks you to (e.g. "make a recipe that…", "save this as a recipe called…", "create a recipe for X", "rename/update/delete the X recipe") — never as a side effect of an unrelated request, and never in place of simply explaining how recipes work (use a "respond" action for that). When authoring "prompt": it will be sent later as a brand-new message with NO memory of the current conversation, so write it fully self-contained — never reference "this", "what we just discussed", or anything specific to the current chat. Use the placeholders {{title}} (the note open when the recipe is later run), {{selected text}} (the user's text selection at that time) and {{date}} (that day's date) so the recipe adapts to whatever it's run against, instead of hard-coding today's specifics. Give it a short, descriptive "name" and 0+ short lowercase "tags" for grouping (e.g. ["summary"]); omit "tags" if none apply. For update_recipe/delete_recipe, "recipeId" MUST be an id from the "Recipes" list below — never invent one — and update_recipe should omit any field the user isn't changing.
 - If the request targets a note that is not listed below, or you otherwise lack the context to fulfil it, return ONLY a single respond action that explains what the user needs to add to the context. Do not guess or fabricate.
 - Output ONLY the JSON object. No explanations and no code fences around it.`
@@ -261,6 +276,28 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined
 }
 
+// What the model may write for a block's `position`, folded onto the three the
+// executor knows. It is told "before"/"after", but "above"/"below" is how the user said
+// it, and a placement dropped for a synonym is an image back under the heading. A Map,
+// not an object literal: an object's `['constructor']` would find Object's prototype.
+// Mirrors POSITION_ALIASES in plan_parse.py.
+const POSITION_ALIASES = new Map<string, PlacementPosition>([
+  ['before', 'before'], ['above', 'before'],
+  ['after', 'after'], ['below', 'after'], ['under', 'after'], ['beneath', 'after'],
+  ['end', 'end'],
+])
+
+// Where a block-inserting action puts its block, beyond its section — a quoted snippet
+// of the block to sit next to, and which side of it.
+function anchorPlacement(a: Record<string, unknown>): Placement {
+  const anchorText = asString(a.anchorText)
+  const position = POSITION_ALIASES.get((asString(a.position) ?? '').trim().toLowerCase())
+  return {
+    ...(anchorText && anchorText.trim() ? { anchorText } : {}),
+    ...(position ? { position } : {}),
+  }
+}
+
 function validateAction(raw: unknown): PlanAction | null {
   if (typeof raw !== 'object' || raw === null) return null
   const a = raw as Record<string, unknown>
@@ -336,7 +373,8 @@ function validateAction(raw: unknown): PlanAction | null {
       const parentId = asString(a.parentId)
       const title = asString(a.title)
       if (!parentId || title === undefined) return null
-      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...sp, ...r, ...d }
+      const section = asString(a.section)
+      return { type: 'create_child_note', parentId, title, content: asString(a.content) ?? '', ...sp, ...r, ...(section ? { section } : {}), ...anchorPlacement(a), ...d }
     }
     case 'move_note': {
       const noteId = asString(a.noteId)
@@ -364,8 +402,10 @@ function validateAction(raw: unknown): PlanAction | null {
       const referenceNoteId = asString(a.referenceNoteId)
       const referenceTitle = asString(a.referenceTitle)
       if (!noteId || !referenceNoteId || referenceTitle === undefined) return null
-      const insertAfterSection = asString(a.insertAfterSection)
-      return { type: 'add_reference', noteId, referenceNoteId, referenceTitle, insertAfterSection, ...d }
+      // `section` is accepted too: every other block-inserting action calls it that, and
+      // the instructions now do for this one as well.
+      const insertAfterSection = asString(a.insertAfterSection) ?? asString(a.section)
+      return { type: 'add_reference', noteId, referenceNoteId, referenceTitle, insertAfterSection, ...anchorPlacement(a), ...d }
     }
     case 'add_annotation': {
       const noteId = asString(a.noteId)
@@ -389,7 +429,8 @@ function validateAction(raw: unknown): PlanAction | null {
       const noteId = asString(a.noteId)
       const source = asString(a.source)
       if (!noteId || !source?.trim()) return null
-      return { type: 'create_diagram', noteId, source, ...d }
+      const section = asString(a.section)
+      return { type: 'create_diagram', noteId, source, ...(section ? { section } : {}), ...anchorPlacement(a), ...d }
     }
     case 'edit_diagram': {
       const noteId = asString(a.noteId)
@@ -404,7 +445,7 @@ function validateAction(raw: unknown): PlanAction | null {
       if (!noteId || !prompt?.trim()) return null
       const section = asString(a.section)
       const alt = asString(a.alt)
-      return { type: 'generate_image', noteId, prompt, ...(section ? { section } : {}), ...(alt ? { alt } : {}), ...d }
+      return { type: 'generate_image', noteId, prompt, ...(section ? { section } : {}), ...anchorPlacement(a), ...(alt ? { alt } : {}), ...d }
     }
     case 'create_recipe': {
       const name = asString(a.name)
@@ -686,6 +727,18 @@ function truncate(text: string, max = 80): string {
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine
 }
 
+// Where a block-inserting action puts its block, as a phrase for its label: the quoted
+// paragraph when it has one, else its section, else nothing (end of note).
+function placementSuffix(action: Placement, section: string | undefined): string {
+  if (action.anchorText) {
+    return ` ${action.position === 'before' ? 'above' : 'below'} “${truncate(action.anchorText, 40)}”`
+  }
+  if (!section) return ''
+  if (action.position === 'before') return ` above “${section}”`
+  if (action.position === 'end') return ` at the end of “${section}”`
+  return ` under “${section}”`
+}
+
 // Human-readable label for a plan action, used in the confirmation preview.
 // `labelMap` resolves note/folder/category ids (and forward-ref labels) to names.
 export function defaultActionLabel(action: PlanAction, labelMap: Map<string, string>): string {
@@ -708,18 +761,21 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'edit_section': return `Update section “${action.section}” in “${name(action.noteId)}”`
     case 'append_note': return `Append to note “${name(action.noteId)}”`
     case 'rename_note': return `Rename “${name(action.noteId)}” → “${action.title}”`
-    case 'create_child_note': return `Create child note “${action.title || 'Untitled'}” under “${name(action.parentId)}”`
+    case 'create_child_note': {
+      const placed = placementSuffix(action, action.section)
+      return `Create child note “${action.title || 'Untitled'}” under “${name(action.parentId)}”${placed ? `,${placed}` : ''}`
+    }
     case 'move_note': return `Move “${name(action.noteId)}” to ${action.folderId ? `folder “${name(action.folderId)}”` : 'the root'}`
     case 'set_tags': return `${action.mode === 'add' ? 'Add tags to' : 'Set tags on'} “${name(action.noteId)}”: ${action.tags.join(', ')}`
     case 'set_category': return `Set category of “${name(action.noteId)}” to “${name(action.categoryId)}”`
     case 'create_folder': return `Create folder “${action.name}”`
-    case 'add_reference': return `Add reference to “${action.referenceTitle}” in “${name(action.noteId)}”${action.insertAfterSection ? ` under “${action.insertAfterSection}”` : ''}`
+    case 'add_reference': return `Add reference to “${action.referenceTitle}” in “${name(action.noteId)}”${placementSuffix(action, action.insertAfterSection)}`
     case 'add_annotation': return `Annotate “${truncate(action.anchorText, 40)}” in “${name(action.noteId)}”`
     case 'edit_annotation': return `Edit annotation in “${name(action.noteId)}”`
     case 'delete_annotation': return `Delete annotation in “${name(action.noteId)}”`
-    case 'create_diagram': return `Create ${DIAGRAM_KIND_LABELS[detectMermaidKind(action.source)].toLowerCase()} in “${name(action.noteId)}”`
+    case 'create_diagram': return `Create ${DIAGRAM_KIND_LABELS[detectMermaidKind(action.source)].toLowerCase()} in “${name(action.noteId)}”${placementSuffix(action, action.section)}`
     case 'edit_diagram': return `Update diagram in “${name(action.noteId)}”`
-    case 'generate_image': return `Generate image${action.section ? ` under “${action.section}”` : ''} in “${name(action.noteId)}”: ${truncate(action.prompt, 60)}`
+    case 'generate_image': return `Generate image${placementSuffix(action, action.section)} in “${name(action.noteId)}”: ${truncate(action.prompt, 60)}`
     case 'create_recipe': return `Create recipe “${action.name}”`
     case 'update_recipe': return `Update recipe “${name(action.recipeId)}”`
     case 'delete_recipe': return `Delete recipe “${name(action.recipeId)}”`

@@ -20,8 +20,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.assistant.executor import (
     ActionResult, Cancelled, ExecContext, PlanExecutor,
-    build_result_summary, collect_embeds, find_section_index, normalize_heading,
-    section_heading,
+    build_result_summary, collect_embeds, find_anchor_index, find_section_index,
+    normalize_heading, resolve_placement, section_heading,
 )
 from app.models import Annotation, Category, Folder, Note, NoteVersion, Recipe
 
@@ -383,6 +383,203 @@ def test_add_reference_lands_under_a_named_section(session):
     assert result[0].ok
     kinds = [b["type"] for b in blocks_of(session, "note-1")]
     assert kinds[1] == "noteReference"
+
+
+# ─── placing a block next to a paragraph ─────────────────────────────────────
+
+
+def chapters() -> list:
+    """Three chapters; the second has three paragraphs to anchor images to."""
+    return [
+        heading("Chapter 1", block_id="h1"), para("The voyage began at dawn.", "p1"),
+        heading("Chapter 2", block_id="h2"),
+        para("Storm clouds gathered over the harbour.", "p2"),
+        para("The crew argued about turning back.", "p3"),
+        para("By nightfall the sea was calm again.", "p4"),
+        heading("Chapter 3", block_id="h3"), para("Landfall.", "p5"),
+    ]
+
+
+def outline(session, note_id="note-1") -> list:
+    """Each block as its text, or its type when it has none (images, embeds)."""
+    out = []
+    for block in blocks_of(session, note_id):
+        text = "".join(c.get("text", "") for c in (block.get("content") or []))
+        out.append(text or block["type"])
+    return out
+
+
+@pytest.fixture
+def fake_images(monkeypatch):
+    urls = iter(f"/media/img-{i}.png" for i in range(100))
+    monkeypatch.setattr(PlanExecutor, "_generate_image_url", lambda self, prompt: next(urls))
+
+
+def image(**fields) -> dict:
+    return {"type": "generate_image", "noteId": "note-1", "prompt": "a picture", **fields}
+
+
+def test_an_image_above_every_paragraph_lands_above_each_one(session, fake_images):
+    # The reported bug: "in the second chapter, add an image above every paragraph"
+    # put every image directly beneath the chapter heading, because a heading was the
+    # only thing an image could be placed against.
+    make_note(session, blocks=chapters())
+    results = executor(session).run({"actions": [
+        image(section="Chapter 2", anchorText="Storm clouds gathered", position="before"),
+        image(section="Chapter 2", anchorText="The crew argued about", position="before"),
+        image(section="Chapter 2", anchorText="By nightfall the sea", position="before"),
+    ]})
+    assert all(r.ok for r in results)
+    assert outline(session) == [
+        "Chapter 1", "The voyage began at dawn.",
+        "Chapter 2",
+        "image", "Storm clouds gathered over the harbour.",
+        "image", "The crew argued about turning back.",
+        "image", "By nightfall the sea was calm again.",
+        "Chapter 3", "Landfall.",
+    ]
+    assert "above “Storm clouds gathered”" in results[0].message
+
+
+def test_an_anchored_block_goes_below_its_paragraph_by_default(session, fake_images):
+    make_note(session, blocks=chapters())
+    executor(session).run({"actions": [image(anchorText="The crew argued")]})
+    order = outline(session)
+    assert order[order.index("The crew argued about turning back.") + 1] == "image"
+
+
+def test_the_section_scopes_the_anchor_so_repeated_wording_elsewhere_loses(session, fake_images):
+    make_note(session, blocks=[
+        heading("One", block_id="h1"), para("It was raining.", "p1"),
+        heading("Two", block_id="h2"), para("It was raining.", "p2"),
+    ])
+    executor(session).run({"actions": [
+        image(section="Two", anchorText="It was raining", position="before"),
+    ]})
+    assert outline(session) == ["One", "It was raining.", "Two", "image", "It was raining."]
+
+
+def test_a_wrong_section_does_not_cost_a_right_anchor(session, fake_images):
+    make_note(session, blocks=chapters())
+    executor(session).run({"actions": [
+        image(section="Chapter 9", anchorText="Landfall", position="before"),
+    ]})
+    assert outline(session)[-2:] == ["image", "Landfall."]
+
+
+def test_an_unfound_anchor_falls_back_under_its_section_and_says_so(session, fake_images):
+    make_note(session, blocks=chapters())
+    results = executor(session).run({"actions": [
+        image(section="Chapter 2", anchorText="Nothing like this", position="before"),
+    ]})
+    assert results[0].ok
+    order = outline(session)
+    assert order[order.index("Chapter 2") + 1] == "image"
+    assert "not found" in results[0].message
+
+
+def test_an_anchor_found_nowhere_appends_and_says_so(session, fake_images):
+    make_note(session, blocks=chapters())
+    results = executor(session).run({"actions": [image(anchorText="Nothing like this")]})
+    assert outline(session)[-1] == "image"
+    assert "added at the end" in results[0].message
+
+
+@pytest.mark.parametrize("position, expected", [
+    (None, ["Chapter 2", "image", "Storm clouds gathered over the harbour."]),
+    ("before", ["The voyage began at dawn.", "image", "Chapter 2"]),
+    ("end", ["By nightfall the sea was calm again.", "image", "Chapter 3"]),
+])
+def test_a_section_alone_places_relative_to_its_heading(session, fake_images, position, expected):
+    make_note(session, blocks=chapters())
+    fields = {"section": "Chapter 2"}
+    if position:
+        fields["position"] = position
+    executor(session).run({"actions": [image(**fields)]})
+    order = outline(session)
+    at = order.index("image")
+    assert order[at - 1:at + 2] == expected
+
+
+def test_a_diagram_can_be_placed_after_a_paragraph(session):
+    make_note(session, blocks=chapters())
+    result = executor(session).run({"actions": [{
+        "type": "create_diagram", "noteId": "note-1", "source": "flowchart TD\nA-->B",
+        "section": "Chapter 1", "anchorText": "The voyage began",
+    }]})
+    assert result[0].ok
+    assert outline(session)[:3] == ["Chapter 1", "The voyage began at dawn.", "diagram"]
+
+
+def test_a_diagram_with_no_placement_still_goes_at_the_end(session):
+    make_note(session, blocks=chapters())
+    executor(session).run({"actions": [
+        {"type": "create_diagram", "noteId": "note-1", "source": "flowchart TD\nA-->B"},
+    ]})
+    assert outline(session)[-1] == "diagram"
+
+
+def test_a_reference_can_be_placed_before_a_paragraph(session):
+    make_note(session, blocks=chapters())
+    make_note(session, note_id="note-2", title="Target")
+    executor(session, valid_note_ids={"note-1", "note-2"}).run({"actions": [{
+        "type": "add_reference", "noteId": "note-1",
+        "referenceNoteId": "note-2", "referenceTitle": "Target",
+        "insertAfterSection": "Chapter 2", "anchorText": "The crew argued", "position": "before",
+    }]})
+    order = outline(session)
+    assert order[order.index("The crew argued about turning back.") - 1] == "noteReference"
+
+
+def test_a_child_note_can_be_placed_after_a_paragraph(session):
+    make_note(session, blocks=chapters())
+    executor(session).run({"actions": [{
+        "type": "create_child_note", "parentId": "note-1", "title": "Child", "content": "Hi",
+        "anchorText": "The voyage began",
+    }]})
+    assert outline(session)[:3] == ["Chapter 1", "The voyage began at dawn.", "childNote"]
+
+
+def test_find_anchor_prefers_the_whole_block_then_its_start_then_any_part():
+    blocks = [para("Before the fox came.", "a"), para("The fox ran.", "b"), para("The fox", "c")]
+    assert find_anchor_index(blocks, "The fox") == 2
+    assert find_anchor_index(blocks[:2], "The fox") == 1
+    assert find_anchor_index(blocks[:1], "The fox") == 0
+
+
+def test_an_anchor_matches_through_the_markdown_the_model_copied():
+    # The model reads the note as Markdown and quotes it as such: emphasis markers, a
+    # link's syntax, escapes, and an ellipsis where it stopped quoting. The stored block
+    # has none of that — and its link text lives inside the link node.
+    block = {
+        "id": "b1", "type": "paragraph", "props": {}, "children": [],
+        "content": [
+            {"type": "text", "text": "Read ", "styles": {}},
+            {"type": "text", "text": "this", "styles": {"bold": True}},
+            {"type": "text", "text": " and ", "styles": {}},
+            {"type": "link", "href": "https://x.test",
+             "content": [{"type": "text", "text": "the source", "styles": {}}]},
+            {"type": "text", "text": " (1. edition) twice.", "styles": {}},
+        ],
+    }
+    blocks = [para("Elsewhere.", "b0"), block]
+    assert find_anchor_index(blocks, "Read **this** and [the source](https://x.test) \\(1\\. edition…") == 1
+    assert find_anchor_index(blocks, "- Read this and the source") == 1
+
+
+def test_an_anchor_in_a_nested_block_places_beside_its_top_level_ancestor():
+    item = {
+        "id": "li", "type": "bulletListItem", "props": {},
+        "content": [{"type": "text", "text": "Parent item", "styles": {}}],
+        "children": [para("A nested detail.", "nested")],
+    }
+    assert find_anchor_index([para("Intro.", "p0"), item], "nested detail") == 1
+
+
+def test_resolve_placement_folds_position_synonyms():
+    blocks = chapters()
+    assert resolve_placement(blocks, anchor="The crew argued", position="above").index == 4
+    assert resolve_placement(blocks, anchor="The crew argued", position="below").index == 5
 
 
 def test_an_annotation_anchors_to_the_block_holding_the_quoted_snippet(session):

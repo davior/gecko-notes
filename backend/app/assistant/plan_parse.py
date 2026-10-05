@@ -44,6 +44,16 @@ NO_VALID_PLAN = (
 # Action types that are retrieval steps: resolved before the plan runs, never executed.
 RETRIEVAL_TYPES = frozenset({"find_notes", "web_search"})
 
+# What the model may write for a block's `position`, folded onto the three the
+# executor knows. It is told "before"/"after", but "above"/"below" is how the user said
+# it, and a placement dropped for a synonym is an image back under the heading.
+# Mirrors POSITION_ALIASES in aiPlan.ts.
+POSITION_ALIASES = {
+    "before": "before", "above": "before",
+    "after": "after", "below": "after", "under": "after", "beneath": "after",
+    "end": "end",
+}
+
 
 # ─── validation ──────────────────────────────────────────────────────────────
 
@@ -51,6 +61,19 @@ RETRIEVAL_TYPES = frozenset({"find_notes", "web_search"})
 def _as_string(value: Any) -> Optional[str]:
     """`asString`: the value if it is a string, else absent."""
     return value if isinstance(value, str) else None
+
+
+def _placement(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """`anchorPlacement`: where a block-inserting action puts its block, beyond its
+    section — a quoted snippet of the block to sit next to, and which side of it."""
+    out: Dict[str, Any] = {}
+    anchor_text = _as_string(raw.get("anchorText"))
+    if anchor_text and anchor_text.strip():
+        out["anchorText"] = anchor_text
+    position = POSITION_ALIASES.get((_as_string(raw.get("position")) or "").strip().lower())
+    if position:
+        out["position"] = position
+    return out
 
 
 def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
@@ -183,6 +206,7 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
         title = _as_string(raw.get("title"))
         if not parent_id or title is None:
             return None
+        section = _as_string(raw.get("section"))
         return {
             "type": "create_child_note",
             "parentId": parent_id,
@@ -190,6 +214,8 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
             "content": _as_string(raw.get("content")) or "",
             **spec_field,
             **ref_field,
+            **({"section": section} if section else {}),
+            **_placement(raw),
             **trailer,
         }
 
@@ -259,10 +285,14 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
         }
         # The TS assigns this unconditionally, so it is `undefined` when absent —
         # which JSON.stringify drops. Omitting the key is the same thing on the wire.
+        # `section` is accepted too: every other block-inserting action calls it that,
+        # and the instructions now do for this one as well.
         insert_after = _as_string(raw.get("insertAfterSection"))
+        if insert_after is None:
+            insert_after = _as_string(raw.get("section"))
         if insert_after is not None:
             action["insertAfterSection"] = insert_after
-        return {**action, **trailer}
+        return {**action, **_placement(raw), **trailer}
 
     if kind == "add_annotation":
         note_id = _as_string(raw.get("noteId"))
@@ -307,7 +337,15 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
         source = _as_string(raw.get("source"))
         if not note_id or not source or not source.strip():
             return None
-        return {"type": "create_diagram", "noteId": note_id, "source": source, **trailer}
+        section = _as_string(raw.get("section"))
+        return {
+            "type": "create_diagram",
+            "noteId": note_id,
+            "source": source,
+            **({"section": section} if section else {}),
+            **_placement(raw),
+            **trailer,
+        }
 
     if kind == "edit_diagram":
         note_id = _as_string(raw.get("noteId"))
@@ -332,6 +370,7 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
         section = _as_string(raw.get("section"))
         if section:
             action["section"] = section
+        action.update(_placement(raw))
         alt = _as_string(raw.get("alt"))
         if alt:
             action["alt"] = alt

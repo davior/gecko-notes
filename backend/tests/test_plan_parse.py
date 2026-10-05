@@ -25,6 +25,7 @@ from app.assistant.plan_parse import (
     split_retrieval,
     validate_action,
 )
+from app.assistant.plan_prompt import default_action_label
 
 
 def envelope(*actions) -> str:
@@ -259,6 +260,55 @@ def test_empty_trailers_are_dropped_rather_than_carried_as_blanks():
         {"type": "create_note", "title": "t", "spec": "", "ref": "", "description": ""}
     )
     assert action == {"type": "create_note", "title": "t", "content": ""}
+
+
+def test_block_inserting_actions_carry_an_anchor_and_a_position():
+    for raw in (
+        {"type": "generate_image", "noteId": "n1", "prompt": "p"},
+        {"type": "create_diagram", "noteId": "n1", "source": "pie"},
+        {"type": "add_reference", "noteId": "n1", "referenceNoteId": "n2", "referenceTitle": "T"},
+        {"type": "create_child_note", "parentId": "n1", "title": "C"},
+    ):
+        action = validate_action({**raw, "anchorText": "Storm clouds", "position": "before"})
+        assert action["anchorText"] == "Storm clouds"
+        assert action["position"] == "before"
+
+
+@pytest.mark.parametrize("said, kept", [
+    ("above", "before"), ("Below", "after"), (" under ", "after"), ("beneath", "after"),
+    ("end", "end"), ("sideways", None), ("constructor", None), (3, None),
+])
+def test_a_position_is_folded_onto_the_three_the_executor_knows(said, kept):
+    action = validate_action({"type": "generate_image", "noteId": "n1", "prompt": "p", "position": said})
+    assert action.get("position") == kept
+
+
+def test_a_blank_anchor_is_dropped_rather_than_carried():
+    action = validate_action({"type": "generate_image", "noteId": "n1", "prompt": "p", "anchorText": "  "})
+    assert "anchorText" not in action
+
+
+def test_add_reference_accepts_section_for_its_heading():
+    # Every other block-inserting action calls it `section`, and so do the instructions.
+    action = validate_action({
+        "type": "add_reference", "noteId": "n1", "referenceNoteId": "n2",
+        "referenceTitle": "T", "section": "Intro",
+    })
+    assert action["insertAfterSection"] == "Intro"
+    assert "section" not in action
+
+
+@pytest.mark.parametrize("fields, suffix", [
+    ({}, ""),
+    ({"section": "Intro"}, " under “Intro”"),
+    ({"section": "Intro", "position": "before"}, " above “Intro”"),
+    ({"section": "Intro", "position": "end"}, " at the end of “Intro”"),
+    ({"section": "Intro", "anchorText": "Storm clouds", "position": "before"}, " above “Storm clouds”"),
+    ({"anchorText": "Storm clouds"}, " below “Storm clouds”"),
+])
+def test_labels_say_where_a_block_will_land(fields, suffix):
+    action = {"type": "generate_image", "noteId": "n1", "prompt": "p", **fields}
+    assert default_action_label(action, {"n1": "Note"}) == f"Generate image{suffix} in “Note”: p"
 
 
 def test_an_unknown_action_type_is_dropped():
