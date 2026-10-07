@@ -52,7 +52,7 @@ import { annotationsApi, type Annotation } from '@/api/annotations'
 import { useDictation } from '@/hooks/useDictation'
 import { insertDictationAtSelection, normalizeDictatedText } from '@/utils/dictationInsert'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
-import { extractPlainText, getEditorSelectionMarkdown } from '@/utils/blocks'
+import { extractPlainText } from '@/utils/blocks'
 import { noteToMarkdownBody, svgToPngData } from '@/utils/export'
 import { ARCHIVE_SYSTEM_KEY } from '@/utils/folderTree'
 
@@ -958,18 +958,15 @@ export default function EditorView() {
     if (!id) return
     if (hasPendingChanges.current) await doSave(true)
 
-    // Detect selected content and get selected block IDs
-    const selected = getEditorSelectionMarkdown(editor)
-    const selectedBlockIds = new Set(editor?.getSelection?.()?.blocks?.map((b) => b.id) ?? [])
-    setSelectedContent(selected || undefined)
+    // A selection renders only the blocks it spans. They go to the server as
+    // BlockNote JSON, the same form as the stored note, because that is what the
+    // segmenter parses — Markdown here segmented to nothing.
+    const selectedBlocks = editor?.getSelection?.()?.blocks ?? []
+    setSelectedContent(selectedBlocks.length ? JSON.stringify(selectedBlocks) : undefined)
 
-    // Rasterize only diagrams within selected blocks (if selection exists) or all diagrams (if no selection)
     const rasterised: Record<string, string> = {}
-    const blocks = (editor?.document ?? []) as { id?: string; type?: string; props?: { source?: string } }[]
+    const blocks = (selectedBlocks.length ? selectedBlocks : editor?.document ?? []) as { id?: string; type?: string; props?: { source?: string } }[]
     for (const block of blocks) {
-      // Skip if selection exists and this block is not in the selection
-      if (selected && !selectedBlockIds.has(block.id ?? '')) continue
-
       const source = block.type === 'diagram' ? block.props?.source : undefined
       if (!block.id || !source) continue
       try {
