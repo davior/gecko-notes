@@ -489,6 +489,31 @@ def _placement_of(action: Dict[str, Any]) -> Dict[str, Optional[str]]:
     }
 
 
+# Long enough to say what the picture is, short enough to read as a name in the Assets
+# list rather than as the whole prompt pasted in.
+IMAGE_NAME_MAX_LEN = 60
+
+
+def image_name(alt: Optional[str], prompt: str) -> str:
+    """The name a generated image block carries: the plan's `alt`, else its prompt's lead.
+
+    That name is the only label the file ever gets — on disk it is a UUID, and
+    `sync_note_assets` registers the asset under the block's name or caption. `alt` is
+    optional, and the per-paragraph example in the planner prompt never showed it, so a
+    plan could leave it out and list every image in the Assets tab by its UUID. A text-to-image
+    prompt nearly always opens on its subject, so its first sentence stands in, cut at
+    a word boundary.
+    """
+    if alt and alt.strip():
+        return alt.strip()
+    text = re.sub(r"\s+", " ", prompt or "").strip()
+    lead = re.split(r"(?<=[.!?;:])\s", text, maxsplit=1)[0].rstrip(".!?;:")
+    if len(lead) <= IMAGE_NAME_MAX_LEN:
+        return lead
+    cut = lead[:IMAGE_NAME_MAX_LEN - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{cut}…"
+
+
 def collect_embeds(blocks: Sequence[Any]) -> List[Any]:
     """Child-note, reference and diagram blocks found anywhere in `blocks`.
 
@@ -1137,8 +1162,9 @@ class PlanExecutor:
         # Generate first: it is a paid, fallible call, and a failure must leave the
         # note untouched rather than half-edited.
         self.check_cancelled()
+        prompt = action.get("prompt") or ""
         try:
-            url = self._generate_image_url(action.get("prompt") or "")
+            url = self._generate_image_url(prompt)
         except Exception as exc:
             from app.jobs.runner import readable_error
 
@@ -1149,7 +1175,7 @@ class PlanExecutor:
         block = {
             "id": str(uuid.uuid4()),
             "type": "image",
-            "props": {"url": url, "name": action.get("alt") or "", "caption": "", "showPreview": True},
+            "props": {"url": url, "name": image_name(action.get("alt"), prompt), "caption": "", "showPreview": True},
             "children": [],
         }
         placement = resolve_placement(blocks, **_placement_of(action))

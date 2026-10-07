@@ -19,11 +19,11 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.assistant.executor import (
-    ActionResult, Cancelled, ExecContext, PlanExecutor,
+    IMAGE_NAME_MAX_LEN, ActionResult, Cancelled, ExecContext, PlanExecutor,
     build_result_summary, collect_embeds, find_anchor_index, find_section_index,
-    normalize_heading, resolve_placement, section_heading,
+    image_name, normalize_heading, resolve_placement, section_heading,
 )
-from app.models import Annotation, Category, Folder, Note, NoteVersion, Recipe
+from app.models import Annotation, Category, Folder, Note, NoteAsset, NoteVersion, Recipe
 
 USER = "user-1"
 OTHER = "user-2"
@@ -499,6 +499,42 @@ def test_a_section_alone_places_relative_to_its_heading(session, fake_images, po
     order = outline(session)
     at = order.index("image")
     assert order[at - 1:at + 2] == expected
+
+
+def image_block(session) -> dict:
+    return next(b for b in blocks_of(session, "note-1") if b["type"] == "image")
+
+
+def test_a_generated_image_is_named_by_its_alt(session, fake_images):
+    make_note(session)
+    executor(session).run({"actions": [image(alt="Lighthouse at dusk")]})
+    assert image_block(session)["props"]["name"] == "Lighthouse at dusk"
+
+
+def test_a_generated_image_without_alt_is_named_from_its_prompt(session, fake_images):
+    # The reported bug: a per-paragraph plan left out the optional "alt", and every
+    # image landed in the Assets tab under its UUID filename.
+    make_note(session)
+    executor(session).run({"actions": [image(
+        prompt="A lone lighthouse on a storm-battered cliff at dusk. Oil painting, moody palette.",
+    )]})
+    assert image_block(session)["props"]["name"] == "A lone lighthouse on a storm-battered cliff at dusk"
+
+
+def test_image_name_cuts_a_long_prompt_at_a_word():
+    name = image_name(None, "A sweeping aerial view of an ancient walled city at golden hour, "
+                            "with terracotta rooftops, winding cobbled streets and distant hills")
+    assert name == "A sweeping aerial view of an ancient walled city at golden…"
+    assert len(name) <= IMAGE_NAME_MAX_LEN
+    assert image_name("   ", "Fox") == "Fox"
+
+
+def test_a_generated_image_reaches_the_assets_tab_by_name(session, monkeypatch):
+    monkeypatch.setattr(PlanExecutor, "_generate_image_url", lambda self, prompt: f"/media/{USER}/abc.jpg")
+    make_note(session)
+    executor(session).run({"actions": [image(prompt="A red fox asleep in fresh snow, soft light")]})
+    asset = session.exec(select(NoteAsset).where(NoteAsset.note_id == "note-1")).one()
+    assert asset.original_name == "A red fox asleep in fresh snow, soft light"
 
 
 def test_a_diagram_can_be_placed_after_a_paragraph(session):
