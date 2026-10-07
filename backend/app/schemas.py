@@ -714,6 +714,22 @@ class VideoRenderRequest(BaseModel):
     quality: str = "full"  # "preview" renders small and fast, reusing cached narration
     selected_content: Optional[str] = None  # If provided, render only this content instead of full note
 
+    @field_validator("selected_content")
+    @classmethod
+    def _validate_selected_content(cls, v: Optional[str]) -> Optional[str]:
+        # The segmenter reads BlockNote JSON and quietly treats anything else as an
+        # empty note, so Markdown here once produced a video with nothing in it.
+        # Refuse it up front instead. An empty selection means the whole note.
+        if v is None or not v.strip():
+            return None
+        try:
+            blocks = json.loads(v)
+        except ValueError:
+            raise ValueError("selected_content must be a JSON array of note blocks")
+        if not isinstance(blocks, list):
+            raise ValueError("selected_content must be a JSON array of note blocks")
+        return v if blocks else None
+
 
 class VideoEstimateRead(BaseModel):
     shots: int

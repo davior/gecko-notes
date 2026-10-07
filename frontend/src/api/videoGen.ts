@@ -221,8 +221,9 @@ export const videoGenApi = {
   // this module is just no longer the client for that half.
 
   /** Segment the note without rendering, so the dialog can show how long the
-   *  video will be and how much narration it needs before anything is paid for. */
-  estimate(noteId: string, options: RenderOptions): Promise<{ data: VideoEstimate }> {
-    return client.post('/video/estimate', { note_id: noteId, options }).then((r) => r.data)
+   *  video will be and how much narration it needs before anything is paid for.
+   *  Pass the same `selectedContent` as `createJob` so the numbers describe the selection. */
+  estimate(noteId: string, options: RenderOptions, selectedContent?: string): Promise<{ data: VideoEstimate }> {
+    return client.post('/video/estimate', { note_id: noteId, options, selected_content: selectedContent }).then((r) => r.data)
   },
 }

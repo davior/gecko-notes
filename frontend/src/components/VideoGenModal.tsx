@@ -252,13 +252,13 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, select
   useEffect(() => {
     let cancelled = false
     const timer = setTimeout(() => {
-      videoGenApi.estimate(noteId, payload)
+      videoGenApi.estimate(noteId, payload, selectedContent)
         .then((r) => { if (!cancelled) setEstimate(r.data) })
         .catch(() => { if (!cancelled) setEstimate(null) })
     }, 250)
     return () => { cancelled = true; clearTimeout(timer) }
   }, [
-    noteId, payload.speed, payload.title_card, payload.chapter_screens,
+    noteId, selectedContent, payload.speed, payload.title_card, payload.chapter_screens,
     payload.read_chapters,
     payload.narrate_code, payload.min_shot_seconds, payload.card_seconds,
     payload.quotes.enabled,
@@ -996,6 +996,7 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, select
           <div className="flex-1 text-xs text-gray-500 dark:text-gray-400">
             {estimate ? (
               <>
+                {selectedContent && 'Selection only · '}
                 {estimate.shots} segment{estimate.shots === 1 ? '' : 's'} ·{' '}
                 {estimate.narration_chars.toLocaleString()} characters to narrate · about{' '}
                 {formatDuration(estimate.estimated_seconds)}
