@@ -2,17 +2,19 @@
 the oracle the spec path is held to.
 
 `segment()` now imports a note as a VideoSpec and compiles it back to shots
-(app/video/importer.py, app/video/compiler.py). This is the original, verbatim,
-so test_video_spec.py can keep proving that changed nothing: every segmenter
-case, a generated corpus and real renders must come out identical. When a
-deliberate behaviour change lands (the chapter-mark fixes in
-docs/gecko-video-creator.md §3.2), it changes here too or this is retired.
+(app/video/importer.py, app/video/compiler.py). This is the original, verbatim
+but for the chapter-mark fixes (docs/gecko-video-creator.md §3.2, each marked
+"Fixed:" below), so test_video_spec.py can keep proving that the spec path
+changes nothing else: every segmenter case, a generated corpus and real
+renders must come out identical. A deliberate behaviour change lands here too,
+written independently of the importer, or this is retired.
 """
 
 import json
 from typing import Any, List, Optional
 
 from app.video.options import RenderOptions
+from app.video.pause_markup import strip_pause_markup
 from app.video.segmenter import (
     Segmentation, Shot, ShotKind, _as_sentence, _block_narration, _classify, _flatten,
     _inline_text, _media_kind, _media_url, _set_apart, _split_attribution,
@@ -61,10 +63,15 @@ def segment(
     open_shot: Optional[Shot] = None
     # A heading seen since the last boundary, to hang a chapter mark on.
     pending_chapter: Optional[str] = None
+    # Fixed: how many lines had been said in the section when that heading came.
+    said_before_chapter = 0
     pending_card: Optional[Shot] = None
 
-    def flush(next_shot: Optional[Shot]) -> None:
-        """Close the open shot with whatever narration has accumulated."""
+    def flush(next_shot: Optional[Shot]) -> Optional[str]:
+        """Close the open shot with whatever narration has accumulated.
+
+        Fixed: returns the chapter mark it would have handed to `next_shot`
+        when there is none, rather than dropping it."""
         nonlocal pending_text, open_shot, pending_chapter, pending_card
         text = "\n".join(t for t in pending_text if t).strip()
 
@@ -75,6 +82,15 @@ def segment(
             open_shot.narration = text
             if pending_chapter and not open_shot.chapter:
                 open_shot.chapter = pending_chapter
+                pending_chapter = None
+            elif (pending_chapter and not options.read_chapters
+                    and len(pending_text) == said_before_chapter):
+                # Fixed: the shot already has its mark, so this one used to be
+                # dropped. Unread, with nothing said after it, the heading sits
+                # where the next shot starts: that shot gets it, below.
+                pass
+            else:
+                pending_chapter = None
             if pending_card is not None:
                 result.shots.append(pending_card)
                 pending_card = None
@@ -85,15 +101,15 @@ def segment(
 
         # A heading with nothing spoken under it (read_chapters off) has no shot
         # to hang its mark on; hand it to the shot that starts here instead.
-        carried_chapter = None
-        if (pending_chapter and open_shot is None
-                and next_shot is not None and next_shot.kind != "card"):
-            carried_chapter = pending_chapter
+        carried_chapter = pending_chapter
         pending_text = []
         pending_chapter = None
         open_shot = next_shot
-        if carried_chapter and open_shot is not None and not open_shot.chapter:
+        if carried_chapter and open_shot is None:
+            return carried_chapter
+        if carried_chapter and not open_shot.chapter:
             open_shot.chapter = carried_chapter
+        return None
 
     for block in _flatten(blocks):
         kind = _classify(block, options)
@@ -101,8 +117,11 @@ def segment(
         if kind is None:
             btype = block.get("type")
             if btype == "heading":
+                # Fixed: the chapter list and the card show the heading without
+                # its [pause:…] markers, and one that is only markers is no chapter.
                 heading = _inline_text(block.get("content")).strip()
-                if heading:
+                mark = strip_pause_markup(heading)
+                if mark:
                     if options.chapter_screens:
                         # A chapter screen interrupts: close the current shot so
                         # the card lands between sections rather than mid-thought.
@@ -130,7 +149,7 @@ def segment(
                         # silence and then speak it over the following shot, once
                         # the words were no longer on screen.
                         pending_card = Shot(
-                            kind="card", card_title=heading, chapter=heading,
+                            kind="card", card_title=mark, chapter=mark,
                             card_kind="chapter",
                             narration=_as_sentence(heading) if options.read_chapters else "",
                             label="chapter card",
@@ -142,7 +161,8 @@ def segment(
                     # Without a chapter screen the heading is read inside the
                     # section it introduces, so that shot carries the mark.
                     if pending_chapter is None:
-                        pending_chapter = heading
+                        pending_chapter = mark
+                        said_before_chapter = len(pending_text)
 
             if btype == "quote" and options.quotes.enabled:
                 quoted = _split_attribution(_inline_text(block.get("content")))
@@ -170,6 +190,9 @@ def segment(
                         # The open shot has nothing of its own to say, so the
                         # quote takes it over rather than being preceded by a
                         # blank copy of itself held for min_shot_seconds.
+                        # Fixed: and the chapter it was to start, too.
+                        if open_shot is not None and not quote_shot.chapter:
+                            quote_shot.chapter = open_shot.chapter
                         open_shot = quote_shot
                     # Closing the quote's own shot immediately is what keeps the
                     # quotation as its narration rather than whatever follows it.
@@ -201,6 +224,8 @@ def segment(
                             or pending_chapter is not None or pending_card is not None):
                         flush(code_shot)
                     else:
+                        if open_shot is not None and not code_shot.chapter:
+                            code_shot.chapter = open_shot.chapter  # Fixed, as for a quote.
                         open_shot = code_shot
                     if options.narrate_code:
                         pending_text.append(_as_sentence(code))
@@ -244,8 +269,10 @@ def segment(
         # looped silently, so the section stays visually continuous.
         sounded = bool(has_audio(path)) if callable(has_audio) else False
         if sounded:
-            flush(None)
-            result.shots.append(Shot(kind="video_sound", background=path, label="clip with audio"))
+            # Fixed: a chapter mark with no shot before the clip starts the clip.
+            unplaced = flush(None)
+            result.shots.append(Shot(kind="video_sound", background=path, chapter=unplaced,
+                                     label="clip with audio"))
             open_shot = Shot(kind="video_muted", background=path, label="clip continued, muted")
         else:
             flush(Shot(kind="video_muted", background=path))
@@ -256,10 +283,20 @@ def segment(
     # shot with no narration is kept — it still displays for min_shot_seconds.
     # So is a silent code block (narrate_code off, nothing narrated yet) — it
     # still has its panel to show, even with no background of its own.
-    result.shots = [
-        s for s in result.shots
-        if s.kind != "still" or s.background is not None or s.narration.strip() or s.code_text
-    ]
+    # Fixed: a chapter mark on a dropped shot starts the next one kept instead.
+    # Its heading came first, so it wins over a mark that shot has of its own,
+    # as the first of two headings in a row does.
+    kept: List[Shot] = []
+    unplaced: Optional[str] = None
+    for s in result.shots:
+        if s.kind != "still" or s.background is not None or s.narration.strip() or s.code_text:
+            if unplaced:
+                s.chapter = unplaced
+            unplaced = None
+            kept.append(s)
+        elif unplaced is None:
+            unplaced = s.chapter
+    result.shots = kept
 
     # The section reopened after a quote or a code block is a continuation,
     # not a shot of its own: when nothing followed it, it would replay the

@@ -162,14 +162,21 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
     pending_blocks: List[str] = []
     open_part: Optional[_Part] = None
     pending_chapter: Optional[str] = None
+    # How much had been said in the section when that heading came, so a
+    # heading with nothing said after it is known to mark the next part.
+    said_at_chapter = 0
     pending_card: Optional[_Part] = None
 
     def spoken() -> str:
         return narration_text(pending, card=False, heading_pause_ms=heading_ms)
 
-    def flush(next_part: Optional[_Part]) -> None:
+    def flush(next_part: Optional[_Part]) -> Optional[str]:
+        """Close the open section, and open `next_part`. Returns a chapter mark
+        that was to start the next part when there is none to start: its
+        heading wasn't read, and took no time where it stood."""
         nonlocal pending, pending_blocks, open_part, pending_chapter, pending_card
         text = spoken()
+        carried_chapter: Optional[str] = None
 
         if open_part is None and text:
             open_part = _Part(kind="still", label="opening")
@@ -181,6 +188,12 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             open_part.beats = pending
             if pending_chapter and not open_part.chapter:
                 open_part.chapter = pending_chapter
+            elif (pending_chapter and not options.read_chapters
+                    and len(pending) == said_at_chapter):
+                # The section already has its mark, and this heading — not read,
+                # with nothing said after it — takes no time here: its moment
+                # is where the next part starts, so it marks that instead.
+                carried_chapter = pending_chapter
             if pending_card is not None:
                 parts.append(pending_card)
                 pending_card = None
@@ -189,15 +202,16 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             parts.append(pending_card)
             pending_card = None
 
-        carried_chapter = None
-        if (pending_chapter and open_part is None
-                and next_part is not None and next_part.kind != "card"):
+        if pending_chapter and open_part is None:
             carried_chapter = pending_chapter
         pending = []
         pending_chapter = None
         open_part = next_part
-        if carried_chapter and open_part is not None and not open_part.chapter:
+        if carried_chapter and open_part is None:
+            return carried_chapter
+        if carried_chapter and not open_part.chapter:
             open_part.chapter = carried_chapter
+        return None
 
     def carry(label: str, **extra: Any) -> _Part:
         """A part over whatever the interrupted section was showing."""
@@ -217,20 +231,25 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             btype = block.get("type")
             if btype == "heading":
                 heading = _inline_text(block.get("content")).strip()
-                if heading:
+                # The mark is what is shown, in the chapter list and on screen,
+                # so it is the heading without its [pause:…] markers — and a
+                # heading that is nothing but markers marks no chapter at all.
+                mark = strip_pause_markup(heading)
+                if mark:
                     if options.chapter_screens:
                         flush(carry("after chapter card"))
                         beats = ([Beat(id="", kind="heading", text=_as_sentence(heading), block_id=block_id)]
                                  if options.read_chapters else [])
                         pending_card = _Part(
-                            kind="card", card=Card(variant="chapter", title=heading),
-                            chapter=heading, beats=beats, label="chapter card",
+                            kind="card", card=Card(variant="chapter", title=mark),
+                            chapter=mark, beats=beats, label="chapter card",
                             block_ids=[block_id] if block_id else [],
                         )
                         pending_chapter = None
                         continue
                     if pending_chapter is None:
-                        pending_chapter = heading
+                        pending_chapter = mark
+                        said_at_chapter = len(pending)
 
             if btype == "quote" and options.quotes.enabled:
                 quoted = _split_attribution(_inline_text(block.get("content")))
@@ -292,9 +311,11 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
 
         sounded = bool(has_audio(path)) if callable(has_audio) else False
         if sounded:
-            flush(None)
+            # A chapter whose heading wasn't read has no section of its own
+            # before the clip, so the clip is where it starts.
+            unplaced = flush(None)
             parts.append(_Part(kind="video_sound", media=(url, "video"), path=path,
-                               label="clip with audio", block_ids=ids))
+                               chapter=unplaced, label="clip with audio", block_ids=ids))
             open_part = _Part(kind="video_muted", media=(url, "video"), path=path,
                               label="clip continued, muted")
         else:
@@ -302,9 +323,21 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
 
     flush(None)
 
-    parts = [p for p in parts
-             if p.kind != "still" or p.path is not None or p.narration(heading_ms)
-             or isinstance(p.overlay, CodeOverlay)]
+    kept: List[_Part] = []
+    unplaced: Optional[str] = None
+    for part in parts:
+        if (part.kind == "still" and part.path is None and not part.narration(heading_ms)
+                and not isinstance(part.overlay, CodeOverlay)):
+            # Nothing to show or say, so no screen time — and a chapter mark it
+            # carried starts whatever comes next instead. Marks that land on the
+            # same moment keep the first, as two headings in a row do.
+            unplaced = unplaced or part.chapter
+            continue
+        if unplaced:
+            part.chapter = unplaced
+        unplaced = None
+        kept.append(part)
+    parts = kept
 
     trimmed: List[_Part] = []
     for part in parts:
@@ -332,9 +365,11 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
 
 def _take_over(section: Optional[_Part], part: _Part) -> None:
     """A quote or code block replacing a section that had nothing to say keeps
-    that section's picture, so it keeps the blocks the picture came from too."""
+    that section's picture, so it keeps the blocks the picture came from too,
+    and the chapter mark the section was to start."""
     if section is not None:
         part.block_ids = section.block_ids + part.block_ids
+        part.chapter = part.chapter or section.chapter
 
 
 def _bumper(which, options, user_id, media_dir, warnings) -> Optional[_Part]:

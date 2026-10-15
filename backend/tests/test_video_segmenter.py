@@ -791,6 +791,146 @@ def test_markers_are_not_counted_as_narration_characters():
     assert marked.narration_chars == plain.narration_chars
 
 
+def test_a_marker_in_a_section_heading_is_not_in_its_chapter_mark():
+    """A section's mark used to be set after its shot was built, so it kept the
+    markers the card's mark lost — and the chapter list showed them."""
+    root = _media("a.png")
+    for read in (True, False):
+        plan = _run([
+            {"type": "heading", "content": _text("Chapter One [pause:2s]")},
+            {"type": "image", "props": {"url": "/media/u1/a.png"}},
+            _para("Words."),
+        ], media_root=root, options=RenderOptions(title_card=False, read_chapters=read))
+        assert _marks(plan) == ["Chapter One"]
+    assert "[pause:2s]" in _run([
+        {"type": "heading", "content": _text("Chapter One [pause:2s]")},
+    ], media_root=root).shots[0].narration
+
+
+def test_a_heading_of_nothing_but_markers_marks_no_chapter():
+    """It is a pause, not a chapter: no blank card, no blank entry in the list."""
+    root = _media("a.png")
+    for screens in (False, True):
+        plan = _run([
+            {"type": "image", "props": {"url": "/media/u1/a.png"}},
+            _para("Before."),
+            {"type": "heading", "content": _text("[pause:2s]")},
+            _para("After."),
+        ], media_root=root, options=RenderOptions(title_card=False, chapter_screens=screens))
+        assert [s.kind for s in plan.shots] == ["still"]
+        assert _marks(plan) == []
+        assert "[pause:2s]" in plan.shots[0].narration
+
+
+# ── chapter marks reach the chapter list ─────────────────────────────────────
+# With read_chapters off a heading takes no time of its own, so its mark has to
+# start whatever comes where it stands. These are the places it used to be
+# dropped instead (docs/gecko-video-creator.md §3.2).
+
+def _unread():
+    return RenderOptions(title_card=False, read_chapters=False, quotes={"enabled": True})
+
+
+def _marks(plan):
+    return [s.chapter for s in plan.shots if s.chapter]
+
+
+def test_a_quote_taking_over_a_section_keeps_its_chapter_mark():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("Opening")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _quote("A quotation."),
+    ], media_root=root, options=_unread())
+    assert plan.shots[0].quote_text == "A quotation."
+    assert _marks(plan) == ["Opening"]
+
+
+def test_a_code_block_taking_over_a_section_keeps_its_chapter_mark():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("Opening")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"type": "codeBlock", "content": _text("print(1)")},
+    ], media_root=root, options=_unread())
+    assert plan.shots[0].code_text == "print(1)"
+    assert _marks(plan) == ["Opening"]
+
+
+def test_an_unread_heading_at_the_end_of_a_section_marks_the_next_one():
+    """The commonest shape of all: a heading above each picture. The section
+    above already has its mark, and this heading took no time in it."""
+    root = _media("a.png", "b.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        {"type": "image", "props": {"url": "/media/u1/b.png"}},
+        _para("Second."),
+    ], media_root=root, options=_unread())
+    assert [(os.path.basename(s.background), s.chapter) for s in plan.shots] == [
+        ("a.png", "One"), ("b.png", "Two")]
+
+
+def test_an_unread_heading_above_a_sounded_clip_marks_the_clip():
+    root = _media("a.png", "loud.mp4")
+    clip = {"type": "videoFile", "props": {"url": "/media/u1/loud.mp4"}}
+    alone = _run([{"type": "heading", "content": _text("One")}, clip, _para("Over it.")],
+                 media_root=root, options=_unread(), loud=("loud.mp4",))
+    assert alone.shots[0].kind == "video_sound"
+    assert _marks(alone) == ["One"]
+
+    after = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        clip,
+    ], media_root=root, options=_unread(), loud=("loud.mp4",))
+    assert [(s.kind, s.chapter) for s in after.shots[:2]] == [("still", "One"), ("video_sound", "Two")]
+    assert _marks(after) == ["One", "Two"]
+
+
+def test_a_chapter_mark_on_missing_media_starts_what_comes_next():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/gone.png"}},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert [(os.path.basename(s.background), s.chapter) for s in plan.shots] == [("a.png", "One")]
+    assert any("missing" in w for w in plan.warnings)
+
+
+def test_a_chapter_mark_on_an_empty_continuation_starts_what_comes_next():
+    """After a quote with no picture behind it, the section it reopens shows
+    nothing and is dropped — but the heading in it still starts a chapter."""
+    root = _media("a.png")
+    plan = _run([
+        _quote("A quotation."),
+        {"type": "heading", "content": _text("Next")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert [s.chapter for s in plan.shots] == [None, "Next"]
+
+
+def test_two_marks_at_the_same_moment_keep_the_first():
+    """Both headings come before anything is shown or said, so only one
+    entry can start there; the first, as with two headings in a row."""
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/gone.png"}},
+        {"type": "heading", "content": _text("Two")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert _marks(plan) == ["One"]
+
+
 # ── intro and outro ──────────────────────────────────────────────────────────
 
 def _bracketed(**overrides):

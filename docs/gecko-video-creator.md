@@ -175,23 +175,33 @@ Seven existing defects should be fixed on the way in rather than carried over:
   maxes out at 10 versus 30, and there are a few more.
 - **Some settings have no UI at all:** `fps`, `fallback.angle`, waveform opacity and
   scrim, watermark opacity and margin, overlay margin and shadow.
-- **A chapter mark can vanish.** With headings not read aloud, a heading followed by a
-  picture and then straight away a quote loses its chapter: the mark is carried onto the
-  picture's shot, and the quote then takes that shot over (the takeover in `importer._walk`, as in the
-  original walk kept in `tests/segment_reference.py`).
-- **Pause markers leak into chapter marks.** `Shot.__post_init__` strips `[pause:…]`
-  from drawn fields set when a shot is built, but a section's chapter is set afterwards
-  (`compiler._segment_shots`, as in the original walk), so `The Road [pause:2s]` lands in the MP4's chapter list
-  and the "title + chapter" overlay as typed.
-
+- ~~**A chapter mark can vanish.**~~ **Fixed.** With headings not read aloud, a heading
+  takes no time of its own, and its mark was dropped wherever it had no shot to start:
+  when a quote or code block took over the picture's shot, before a clip with sound, on a
+  missing picture or an empty continuation that was then left out, and at the end of a
+  section that already had a mark. That last one is the commonest note shape there is, a
+  heading above each picture. Each now starts whatever comes where the heading stands
+  (`importer._walk`). A scan of every note up to five blocks long, under each chapter
+  setting, found 7,203 marks dropped this way. Apart from a heading with nothing after
+  it, only two kinds are still dropped. When two marks fall on the same moment, the first
+  is kept, as with two headings in a row. A second heading inside one section is open
+  decision 15.
+- ~~**Pause markers leak into chapter marks.**~~ **Fixed.** A section's chapter was set
+  after its shot was built, so `Shot.__post_init__` never stripped it, and
+  `The Road [pause:2s]` reached the MP4's chapter list and the "title + chapter" overlay
+  as typed. Now the importer takes the mark without its markers, and the compiler builds
+  it into the shot, so markers in a hand-written spec are stripped too. A heading that is
+  nothing but markers is a pause, not a chapter, and no longer makes a blank card or a
+  blank entry.
 - **A sounded clip leaves an empty, muted copy of itself behind** when nothing is said
   under it (it ends the note, or another picture follows): a `scene` with no beats over
   the same clip, held for `min_segment_seconds`.
 
-Phase 0 reproduces all of these exactly, so its parity tests can hold the spec path to
-the original output. The spec path is now the only one, so each is a small follow-up fix,
-made in the importer and in `tests/segment_reference.py` together (or that oracle is
-retired).
+Phase 0 reproduced all of these exactly, so its parity tests could hold the spec path to
+the original output. The spec path is now the only one, so each is a small follow-up fix.
+Each is made in the importer and again, written independently, in
+`tests/segment_reference.py`, so the parity tests still compare two implementations (or
+that oracle is retired). The voice and chapter fixes were made that way.
 
 ---
 
@@ -1015,7 +1025,7 @@ bug fixes only, each logged so it can be ported.
 
 | Phase | What | Done when |
 |---|---|---|
-| **0 — Spec inside Notes** | **In progress.** Done: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). The dialog's Voice choice now reaches the render. Still to do: the chapter-mark quirks (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept verbatim as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py)), with no real encodes |
+| **0 — Spec inside Notes** | **Done.** The VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). The dialog's Voice choice now reaches the render, and chapter marks are no longer dropped or drawn with their pause markers (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py), verbatim but for the §3.2 fixes), with no real encodes |
 | **1 — GVC renders what Notes renders** | New repo `davior/gvc` from GAM's skeleton. The engine copied from the Phase 0 merge, SSO, project storage and history, import from Notes over HTTP, speech through Notes, preview and full render, download. Output to GAM and back into the note follow once those are designed. | Any note renders in GVC the same as in Notes |
 | **2 — The new capabilities** | Timed overlays, multiple audio tracks, trims, per-segment voice/motion/transition, GAM search and picker, `generate` / `search` placeholders, credits | The §6 example renders |
 | **3 — AI editing** | The operations of §8.2, the suggestions tray, chat, staged review | "Make a video from this note" produces a reviewed, rendered video |
@@ -1096,6 +1106,17 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
     `audio_tracks` by list index, so a staged suggestion or a selective undo can hit
     the wrong item after a reorder. The §8.2 operations address by id; store those, or
     patches resolved by id, rather than raw index paths.
+15. **A chapter mark inside a section.** A mark starts a segment, and a section is one
+    segment, so it holds one mark. With `chapter_screens` off, a second heading inside a
+    section (`## A`, text, `## B`, more text, all over one picture) gets no entry, whether
+    or not it is read. A note of text alone with three headings has one chapter. There
+    are two ways to fix it:
+    - cut the section into a new segment at each later heading, with the same picture
+      and no transition;
+    - let a mark sit on the beat where its heading is read, timed by the compile step
+      the way overlay anchors are.
+
+    The recommendation is the beat, because it changes nothing on screen.
 
 ---
 

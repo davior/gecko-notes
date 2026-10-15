@@ -529,6 +529,15 @@ def test_a_clip_whose_file_has_gone_is_skipped_not_left_without_a_picture(tmp_pa
     assert plan.warnings == ["Skipped missing media: /media/u1/loud.mp4"]
 
 
+def test_a_chapter_written_into_a_spec_is_drawn_without_its_markers(tmp_path):
+    """The importer strips them; a spec written by hand, or by the AI, may not."""
+    spec = _spec(segments=[{"id": "s1", "kind": "scene", "chapter": "Salt [pause:1s]",
+                            "visual": {"asset": "a1"},
+                            "narration": {"beats": [{"id": "b1", "text": "One."}]}}])
+    plan = compile_spec(spec, user_id="u1", media_dir=_media_root(tmp_path)).segmentation
+    assert [s.chapter for s in plan.shots] == ["Salt"]
+
+
 # ── POST /api/video/spec ─────────────────────────────────────────────────────
 
 _SPEC_NOTE = [

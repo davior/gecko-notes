@@ -145,20 +145,17 @@ def _segment_shots(segment: Segment, spec: VideoSpec, resolve, heading_ms: int) 
             label = overlay.type
         else:
             label = f"after {runs[index - 1][0].type}"
-        shot = Shot(
+        shots.append(Shot(
             kind=kind, background=path,
             narration=narration_text(beats, card=False, heading_pause_ms=heading_ms),
             quote_text=overlay.text if isinstance(overlay, QuoteOverlay) else None,
             quote_attribution=overlay.attribution if isinstance(overlay, QuoteOverlay) else None,
             code_text=overlay.text if isinstance(overlay, CodeOverlay) else None,
+            # Built in, like every other drawn field, so pause markers in a
+            # hand-written chapter are stripped too.
+            chapter=segment.chapter if index == 0 else None,
             label=label,
-        )
-        if index == 0 and segment.chapter:
-            # Set after construction, as the walk always has for a section, so
-            # the mark is exactly what it was — pause markers included, which
-            # nothing strips from a section's chapter today.
-            shot.chapter = segment.chapter
-        shots.append(shot)
+        ))
     return shots
 
 
