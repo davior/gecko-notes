@@ -84,7 +84,11 @@ def compile_spec(spec: VideoSpec, *, user_id: str, media_dir: str) -> Compiled:
 
     heading_ms = spec.voice.pauses.heading_ms
     for segment in spec.segments:
-        for shot in _segment_shots(segment, spec, resolve, heading_ms):
+        made = _segment_shots(segment, spec, resolve, heading_ms)
+        if made and segment.transition_in is not None:
+            # Validated above to be "none": no transition into this segment.
+            made[0].cut_in = True
+        for shot in made:
             shots.append(shot)
             owners.append(segment.id)
 
@@ -145,20 +149,17 @@ def _segment_shots(segment: Segment, spec: VideoSpec, resolve, heading_ms: int) 
             label = overlay.type
         else:
             label = f"after {runs[index - 1][0].type}"
-        shot = Shot(
+        shots.append(Shot(
             kind=kind, background=path,
             narration=narration_text(beats, card=False, heading_pause_ms=heading_ms),
             quote_text=overlay.text if isinstance(overlay, QuoteOverlay) else None,
             quote_attribution=overlay.attribution if isinstance(overlay, QuoteOverlay) else None,
             code_text=overlay.text if isinstance(overlay, CodeOverlay) else None,
+            # Built in, like every other drawn field, so pause markers in a
+            # hand-written chapter are stripped too.
+            chapter=segment.chapter if index == 0 else None,
             label=label,
-        )
-        if index == 0 and segment.chapter:
-            # Set after construction, as the walk always has for a section, so
-            # the mark is exactly what it was — pause markers included, which
-            # nothing strips from a section's chapter today.
-            shot.chapter = segment.chapter
-        shots.append(shot)
+        ))
     return shots
 
 
@@ -268,7 +269,8 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
     for segment in spec.segments:
         where = f"segment {segment.id!r}"
         bumper = segment.role in ("intro", "outro")
-        if segment.transition_in is not None:
+        if segment.transition_in is not None and segment.transition_in.style != "none":
+            # A straight cut into one segment is all the renderer does per join.
             problems.append(f"{where}: per-segment transition_in")
         if segment.duration is not None:
             problems.append(f"{where}: duration overrides")

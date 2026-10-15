@@ -620,16 +620,19 @@ def _heading(value):
 
 def test_a_heading_read_in_its_section_is_set_apart_by_blank_lines():
     """The blank line is what chunk_narration turns into an actual gap; without
-    it the voice has only a full stop between the paragraph and the heading."""
+    it the voice has only a full stop between the heading and what follows.
+    Partway through a section the heading opens a shot of its own, whose end
+    holds the gap before it."""
     root = _media()
     shots = _run([
         _para("The first section ends here"),
         _heading("A New Chapter"),
         _para("And the next section begins"),
     ], media_root=root).shots
-    assert shots[0].narration == (
-        "The first section ends here.\n\nA New Chapter.\n\nAnd the next section begins."
-    )
+    assert [s.narration for s in shots] == [
+        "The first section ends here.",
+        "A New Chapter.\n\nAnd the next section begins.",
+    ]
 
 
 def test_ordinary_paragraphs_are_not_set_apart_from_each_other():
@@ -643,7 +646,7 @@ def test_turning_the_heading_pause_off_leaves_the_narration_as_it_was():
     options = RenderOptions(title_card=False, heading_pause_ms=0)
     shots = _run([_para("Before"), _heading("A Heading"), _para("After")],
                  media_root=root, options=options).shots
-    assert shots[0].narration == "Before.\nA Heading.\nAfter."
+    assert [s.narration for s in shots] == ["Before.", "A Heading.\nAfter."]
 
 
 def test_a_leading_or_trailing_break_is_trimmed_off_the_shot():
@@ -789,6 +792,223 @@ def test_markers_are_not_counted_as_narration_characters():
     marked = _run([{"type": "paragraph", "content": _text("Hello [pause:2s] world.")}],
                   media_root=root)
     assert marked.narration_chars == plain.narration_chars
+
+
+def test_a_marker_in_a_section_heading_is_not_in_its_chapter_mark():
+    """A section's mark used to be set after its shot was built, so it kept the
+    markers the card's mark lost — and the chapter list showed them."""
+    root = _media("a.png")
+    for read in (True, False):
+        plan = _run([
+            {"type": "heading", "content": _text("Chapter One [pause:2s]")},
+            {"type": "image", "props": {"url": "/media/u1/a.png"}},
+            _para("Words."),
+        ], media_root=root, options=RenderOptions(title_card=False, read_chapters=read))
+        assert _marks(plan) == ["Chapter One"]
+    assert "[pause:2s]" in _run([
+        {"type": "heading", "content": _text("Chapter One [pause:2s]")},
+    ], media_root=root).shots[0].narration
+
+
+def test_a_heading_of_nothing_but_markers_marks_no_chapter():
+    """It is a pause, not a chapter: no blank card, no blank entry in the list."""
+    root = _media("a.png")
+    for screens in (False, True):
+        plan = _run([
+            {"type": "image", "props": {"url": "/media/u1/a.png"}},
+            _para("Before."),
+            {"type": "heading", "content": _text("[pause:2s]")},
+            _para("After."),
+        ], media_root=root, options=RenderOptions(title_card=False, chapter_screens=screens))
+        assert [s.kind for s in plan.shots] == ["still"]
+        assert _marks(plan) == []
+        assert "[pause:2s]" in plan.shots[0].narration
+
+
+# ── chapter marks reach the chapter list ─────────────────────────────────────
+# With read_chapters off a heading takes no time of its own, so its mark has to
+# start whatever comes where it stands. These are the places it used to be
+# dropped instead (docs/gecko-video-creator.md §3.2).
+
+def _unread():
+    return RenderOptions(title_card=False, read_chapters=False, quotes={"enabled": True})
+
+
+def _marks(plan):
+    return [s.chapter for s in plan.shots if s.chapter]
+
+
+def test_a_quote_taking_over_a_section_keeps_its_chapter_mark():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("Opening")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _quote("A quotation."),
+    ], media_root=root, options=_unread())
+    assert plan.shots[0].quote_text == "A quotation."
+    assert _marks(plan) == ["Opening"]
+
+
+def test_a_code_block_taking_over_a_section_keeps_its_chapter_mark():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("Opening")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"type": "codeBlock", "content": _text("print(1)")},
+    ], media_root=root, options=_unread())
+    assert plan.shots[0].code_text == "print(1)"
+    assert _marks(plan) == ["Opening"]
+
+
+def test_an_unread_heading_at_the_end_of_a_section_marks_the_next_one():
+    """The commonest shape of all: a heading above each picture. The section
+    above already has its mark, and this heading took no time in it."""
+    root = _media("a.png", "b.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        {"type": "image", "props": {"url": "/media/u1/b.png"}},
+        _para("Second."),
+    ], media_root=root, options=_unread())
+    assert [(os.path.basename(s.background), s.chapter) for s in plan.shots] == [
+        ("a.png", "One"), ("b.png", "Two")]
+
+
+def test_an_unread_heading_above_a_sounded_clip_marks_the_clip():
+    root = _media("a.png", "loud.mp4")
+    clip = {"type": "videoFile", "props": {"url": "/media/u1/loud.mp4"}}
+    alone = _run([{"type": "heading", "content": _text("One")}, clip, _para("Over it.")],
+                 media_root=root, options=_unread(), loud=("loud.mp4",))
+    assert alone.shots[0].kind == "video_sound"
+    assert _marks(alone) == ["One"]
+
+    after = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        clip,
+    ], media_root=root, options=_unread(), loud=("loud.mp4",))
+    assert [(s.kind, s.chapter) for s in after.shots[:2]] == [("still", "One"), ("video_sound", "Two")]
+    assert _marks(after) == ["One", "Two"]
+
+
+def test_a_chapter_mark_on_missing_media_starts_what_comes_next():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/gone.png"}},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert [(os.path.basename(s.background), s.chapter) for s in plan.shots] == [("a.png", "One")]
+    assert any("missing" in w for w in plan.warnings)
+
+
+def test_a_chapter_mark_on_an_empty_continuation_starts_what_comes_next():
+    """After a quote with no picture behind it, the section it reopens shows
+    nothing and is dropped — but the heading in it still starts a chapter."""
+    root = _media("a.png")
+    plan = _run([
+        _quote("A quotation."),
+        {"type": "heading", "content": _text("Next")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert [s.chapter for s in plan.shots] == [None, "Next"]
+
+
+# ── a heading partway through a section ─────────────────────────────────────
+# A section is one shot, which can hold one chapter mark at its start, so a
+# heading after something has been said there opens a shot of its own over the
+# same picture, joined to the one before by a straight cut.
+
+def test_a_heading_partway_through_a_section_starts_a_shot_over_the_same_picture():
+    root = _media("a.png")
+    blocks = [
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        _para("Second."),
+    ]
+    a = os.path.join(root, "u1", "a.png")
+    for read, said in ((True, "Two.\n\nSecond."), (False, "Second.")):
+        plan = _run(blocks, media_root=root,
+                    options=RenderOptions(title_card=False, read_chapters=read))
+        assert [(s.kind, s.background, s.chapter, s.narration, s.cut_in) for s in plan.shots] == [
+            ("still", a, None, "First.", False),
+            ("still", a, "Two", said, True),
+        ]
+
+
+def test_a_note_of_text_alone_has_a_chapter_for_every_heading():
+    root = _media()
+    plan = _run([
+        {"type": "heading", "content": _text("One")}, _para("Words."),
+        {"type": "heading", "content": _text("Two")}, _para("More words."),
+        {"type": "heading", "content": _text("Three")}, _para("The last words."),
+    ], media_root=root)
+    assert _marks(plan) == ["One", "Two", "Three"]
+    assert [s.background for s in plan.shots] == [None, None, None]
+    assert [s.cut_in for s in plan.shots] == [False, True, True]
+
+
+def test_a_heading_over_a_silent_clip_carries_on_over_the_clip():
+    root = _media("quiet.mp4")
+    plan = _run([
+        {"type": "videoFile", "props": {"url": "/media/u1/quiet.mp4"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        _para("Second."),
+    ], media_root=root)
+    assert [(s.kind, os.path.basename(s.background), s.chapter) for s in plan.shots] == [
+        ("video_muted", "quiet.mp4", None), ("video_muted", "quiet.mp4", "Two")]
+
+
+def test_a_heading_right_above_a_picture_marks_the_picture():
+    """Nothing is said under it before the picture changes, so it opens no shot
+    of its own: read aloud it still ends the section above, and its mark starts
+    the picture below."""
+    root = _media("a.png", "b.png")
+    plan = _run([
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        {"type": "image", "props": {"url": "/media/u1/b.png"}},
+        _para("Second."),
+    ], media_root=root)
+    assert [(os.path.basename(s.background), s.chapter, s.narration) for s in plan.shots] == [
+        ("a.png", None, "First.\n\nTwo."), ("b.png", "Two", "Second.")]
+    assert not any(s.cut_in for s in plan.shots)
+
+
+def test_back_to_back_headings_partway_through_a_section_keep_the_first():
+    root = _media("a.png")
+    plan = _run([
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("First."),
+        {"type": "heading", "content": _text("Two")},
+        {"type": "heading", "content": _text("Two and a half")},
+        _para("Second."),
+    ], media_root=root)
+    assert _marks(plan) == ["Two"]
+    assert plan.shots[1].narration.startswith("Two.")
+
+
+def test_two_marks_at_the_same_moment_keep_the_first():
+    """Both headings come before anything is shown or said, so only one
+    entry can start there; the first, as with two headings in a row."""
+    root = _media("a.png")
+    plan = _run([
+        {"type": "heading", "content": _text("One")},
+        {"type": "image", "props": {"url": "/media/u1/gone.png"}},
+        {"type": "heading", "content": _text("Two")},
+        {"type": "image", "props": {"url": "/media/u1/a.png"}},
+        _para("Words."),
+    ], media_root=root, options=_unread())
+    assert _marks(plan) == ["One"]
 
 
 # ── intro and outro ──────────────────────────────────────────────────────────

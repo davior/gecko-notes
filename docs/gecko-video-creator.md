@@ -167,31 +167,43 @@ Seven existing defects should be fixed on the way in rather than carried over:
   dialog lists the voices of the engine that will read the video, the worker passes the
   choice on (`video/worker.py:_render_voice`), and the speech core honours a Flux voice id
   for Deepgram. A choice saved under the other engine falls back to the account's voice.
-- **A heading placed above its image** attaches to the *previous* shot, not the image
-  (pinned by `backend/tests/test_video_segmenter.py`). That's correct for the
-  "text below the picture" model, but surprising.
+- **A heading placed above its image** is read at the end of the *previous* section,
+  not over the image (pinned by `backend/tests/test_video_segmenter.py`). That's correct
+  for the "text below the picture" model, but surprising. Its chapter mark now starts the
+  image's segment (open decision 15), so only where it is *read* is left to
+  `heading_attaches` (§7, open decision 5).
 - **The frontend and backend clamp differently.** Speed is 0.75–1.5 in the UI and
   0.5–2.0 on the server. The longest transition is 2 s versus 3 s. `min_shot_seconds`
   maxes out at 10 versus 30, and there are a few more.
 - **Some settings have no UI at all:** `fps`, `fallback.angle`, waveform opacity and
   scrim, watermark opacity and margin, overlay margin and shadow.
-- **A chapter mark can vanish.** With headings not read aloud, a heading followed by a
-  picture and then straight away a quote loses its chapter: the mark is carried onto the
-  picture's shot, and the quote then takes that shot over (the takeover in `importer._walk`, as in the
-  original walk kept in `tests/segment_reference.py`).
-- **Pause markers leak into chapter marks.** `Shot.__post_init__` strips `[pause:…]`
-  from drawn fields set when a shot is built, but a section's chapter is set afterwards
-  (`compiler._segment_shots`, as in the original walk), so `The Road [pause:2s]` lands in the MP4's chapter list
-  and the "title + chapter" overlay as typed.
-
+- ~~**A chapter mark can vanish.**~~ **Fixed.** With headings not read aloud, a heading
+  takes no time of its own, and its mark was dropped wherever it had no shot to start:
+  when a quote or code block took over the picture's shot, before a clip with sound, on a
+  missing picture or an empty continuation that was then left out, and at the end of a
+  section that already had a mark. That last one is the commonest note shape there is, a
+  heading above each picture. Each now starts whatever comes where the heading stands
+  (`importer._walk`). A scan of every note up to five blocks long, under each chapter
+  setting, found 7,203 marks dropped this way. A heading partway through a section now
+  starts a segment of its own (open decision 15). The only marks still dropped are a
+  heading with nothing after it, and the second of two marks that fall on the same
+  moment: the first is kept, as with two headings in a row.
+- ~~**Pause markers leak into chapter marks.**~~ **Fixed.** A section's chapter was set
+  after its shot was built, so `Shot.__post_init__` never stripped it, and
+  `The Road [pause:2s]` reached the MP4's chapter list and the "title + chapter" overlay
+  as typed. Now the importer takes the mark without its markers, and the compiler builds
+  it into the shot, so markers in a hand-written spec are stripped too. A heading that is
+  nothing but markers is a pause, not a chapter, and no longer makes a blank card or a
+  blank entry.
 - **A sounded clip leaves an empty, muted copy of itself behind** when nothing is said
   under it (it ends the note, or another picture follows): a `scene` with no beats over
   the same clip, held for `min_segment_seconds`.
 
-Phase 0 reproduces all of these exactly, so its parity tests can hold the spec path to
-the original output. The spec path is now the only one, so each is a small follow-up fix,
-made in the importer and in `tests/segment_reference.py` together (or that oracle is
-retired).
+Phase 0 reproduced all of these exactly, so its parity tests could hold the spec path to
+the original output. The spec path is now the only one, so each is a small follow-up fix.
+Each is made in the importer and again, written independently, in
+`tests/segment_reference.py`, so the parity tests still compare two implementations (or
+that oracle is retired). The voice and chapter fixes were made that way.
 
 ---
 
@@ -798,6 +810,7 @@ spec for any note that renders exactly as Notes renders it now.
 | Video block with audio (`video_sound` + `video_muted` pair) | a `clip` segment, then a `scene` reusing the same asset muted and looped (even with nothing said under it, a quirk kept for parity, §3.2) |
 | Missing or remote media | `scene` with no visual, plus an import warning (same as today's warning) |
 | Heading, `chapter_screens` off | beat `kind: "heading"`; `chapter` set on the segment that carries the mark |
+| Heading partway through a section, `chapter_screens` off | a new `scene` over the same `visual`, with that `chapter`, the beats from the heading on, and `transition_in: { style: "none" }` (a straight cut, the one per-segment transition Phase 0 renders). With only headings after it before the picture changes, it opens nothing and marks the next segment instead |
 | Heading, `chapter_screens` on | `card` segment (`variant: "chapter"`), then a continuation `scene` |
 | `read_chapters` off | heading beat with `speak: false`; card with no narration |
 | `title_card` | `card` segment, `role: "title"`, subtitle = author |
@@ -828,7 +841,8 @@ continuing shot, with its own `fade`, as a separate choice.
 
 **Importer options** fix the surprises noted in §3.2 without breaking parity:
 - `heading_attaches: "previous" | "next_media"` (**planned**, not in Phase 0, which
-  always behaves as `"previous"`, today's behaviour). The recommended default in GVC is
+  always reads such a heading as `"previous"` does, today's behaviour, though its
+  chapter mark already starts the image's segment). The recommended default in GVC is
   `"next_media"`, where a heading above an image opens that image's segment.
 - `chapter_screens`, `read_chapters`, `quotes`, `narrate_code` stay as **import-time**
   choices, because they decide the *shape* of the spec. Once imported, the spec just
@@ -1015,7 +1029,7 @@ bug fixes only, each logged so it can be ported.
 
 | Phase | What | Done when |
 |---|---|---|
-| **0 — Spec inside Notes** | **In progress.** Done: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). The dialog's Voice choice now reaches the render. Still to do: the chapter-mark quirks (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept verbatim as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py)), with no real encodes |
+| **0 — Spec inside Notes** | **Done.** The VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). The dialog's Voice choice now reaches the render, and chapter marks are no longer dropped or drawn with their pause markers (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py), verbatim but for the §3.2 fixes), with no real encodes |
 | **1 — GVC renders what Notes renders** | New repo `davior/gvc` from GAM's skeleton. The engine copied from the Phase 0 merge, SSO, project storage and history, import from Notes over HTTP, speech through Notes, preview and full render, download. Output to GAM and back into the note follow once those are designed. | Any note renders in GVC the same as in Notes |
 | **2 — The new capabilities** | Timed overlays, multiple audio tracks, trims, per-segment voice/motion/transition, GAM search and picker, `generate` / `search` placeholders, credits | The §6 example renders |
 | **3 — AI editing** | The operations of §8.2, the suggestions tray, chat, staged review | "Make a video from this note" produces a reviewed, rendered video |
@@ -1096,6 +1110,19 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
     `audio_tracks` by list index, so a staged suggestion or a selective undo can hit
     the wrong item after a reorder. The §8.2 operations address by id; store those, or
     patches resolved by id, rather than raw index paths.
+15. ~~**A chapter mark inside a section.**~~ **Decided: cut a segment at each heading.**
+    A mark starts a segment, and a section was one segment, so it held one mark. With
+    `chapter_screens` off, a second heading inside a section (`## A`, text, `## B`, more
+    text, all over one picture) got no entry, whether or not it was read, and a note of
+    text alone with three headings had one chapter. Now a heading after something has
+    been said in its section starts a new `scene` there, over the same picture, joined to
+    the one before by a straight cut: `transition_in: { style: "none" }`. The renderer
+    honours that on both the dip and the blend paths. The costs:
+    - each new segment is held for at least `min_shot_seconds`;
+    - a looping clip, or a Ken Burns drift, starts again at the cut.
+
+    The alternative, a mark on the beat where the heading is read, would have changed
+    nothing on screen.
 
 ---
 

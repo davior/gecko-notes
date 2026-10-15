@@ -473,11 +473,15 @@ def build_shot_command(
     subtitle_file: Optional[str] = None,
     background_has_audio: bool = False,
     index: int = 0,
+    dip_in: bool = True,
+    dip_out: bool = True,
 ) -> List[str]:
     """Full argv for rendering one shot to its own MP4.
 
     Paths are expected to be relative to the working directory the caller runs
     this in, which keeps the `subtitles=` filter free of any escaping.
+    `dip_in`/`dip_out` False leave a dip transition off that end of the shot,
+    where it joins a neighbour by a straight cut (see `Shot.cut_in`).
     """
     width, height = frame_size(options.aspect, options.resolution, preview)
     argv: List[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
@@ -557,12 +561,14 @@ def build_shot_command(
     # unchanged and the stitch stays a `concat -c copy` remux. A blending
     # transition cannot be expressed here at all — see build_xfade_command.
     dip = dip_seconds(options.transition.style, options.transition.duration, duration)
-    if dip > 0:
-        colour = transition_colour(options.transition.style)
-        chains.append(
-            f"[{stage}]fade=t=in:st=0:d={dip:.3f}:color={colour},"
-            f"fade=t=out:st={duration - dip:.3f}:d={dip:.3f}:color={colour}[fd]"
-        )
+    colour = transition_colour(options.transition.style)
+    fades = []
+    if dip > 0 and dip_in:
+        fades.append(f"fade=t=in:st=0:d={dip:.3f}:color={colour}")
+    if dip > 0 and dip_out:
+        fades.append(f"fade=t=out:st={duration - dip:.3f}:d={dip:.3f}:color={colour}")
+    if fades:
+        chains.append(f"[{stage}]{','.join(fades)}[fd]")
         stage = "fd"
 
     chains.append(f"[{stage}]setsar=1,format=yuv420p[v]")
@@ -570,7 +576,7 @@ def build_shot_command(
     # Pad the audio so a shot always reaches its target length even when the
     # narration is shorter (a media block with little text under it).
     audio_chain = f"[{audio_main}]aresample=48000,aformat=channel_layouts=stereo,apad"
-    if dip > 0:
+    if dip > 0 and dip_out:
         # Only the tail is faded, to match the picture dipping to colour there —
         # and it lands in the trailing hold `shot_end_pause_ms` leaves after the
         # last word, not on speech itself. The start has no equivalent lead-in
@@ -600,6 +606,7 @@ def build_concat_command(list_file: str, output: str) -> List[str]:
 def build_xfade_command(
     shot_files: Sequence[str], durations: Sequence[float], output: str,
     *, options: RenderOptions, preview: bool, style: str, overlap: float,
+    cuts: Sequence[bool] = (),
 ) -> List[str]:
     """Stitch the shots with a blending transition instead of a plain concat.
 
@@ -622,6 +629,10 @@ def build_xfade_command(
     shot's track is appended untouched: a clean cut under a blended
     picture, eating the same `overlap` seconds the video xfade does so the
     two streams stay in sync without the words ever overlapping.
+
+    A shot whose `cuts` entry is True joins by a straight cut instead: it
+    carries on over the same picture, so it is appended whole, picture and
+    sound, with nothing eaten.
     """
     argv = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     for name in shot_files:
@@ -632,6 +643,12 @@ def build_xfade_command(
     video, audio = "0:v", "0:a"
     total = durations[0]
     for index in range(1, len(shot_files)):
+        if index < len(cuts) and cuts[index]:
+            chains.append(f"[{video}][{index}:v]concat=n=2:v=1:a=0[vx{index}]")
+            chains.append(f"[{audio}][{index}:a]concat=n=2:v=0:a=1[ax{index}]")
+            video, audio = f"vx{index}", f"ax{index}"
+            total += durations[index]
+            continue
         offset = max(0.0, total - overlap)
         chains.append(
             f"[{video}][{index}:v]xfade=transition={transition}:"
@@ -649,11 +666,15 @@ def build_xfade_command(
     return argv
 
 
-def crossfade_total(durations: Sequence[float], overlap: float) -> float:
-    """Length of an xfade stitch: every join eats `overlap` seconds."""
+def crossfade_total(durations: Sequence[float], overlap: float,
+                    cuts: Sequence[bool] = ()) -> float:
+    """Length of an xfade stitch: every join eats `overlap` seconds, except
+    where a shot cuts straight in (see `build_xfade_command`)."""
     if not durations:
         return 0.0
-    return max(0.0, sum(durations) - overlap * (len(durations) - 1))
+    blends = sum(1 for index in range(1, len(durations))
+                 if not (index < len(cuts) and cuts[index]))
+    return max(0.0, sum(durations) - overlap * blends)
 
 
 def build_music_command(
