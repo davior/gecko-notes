@@ -238,6 +238,20 @@ def video_spec(payload: VideoRenderRequest, request: Request, session: Session =
         note_id=note.id,
     )
     return DataResponse(data=VideoSpecRead(
-        spec=imported.spec.model_dump(mode="json", by_alias=True, exclude_none=True),
-        warnings=imported.warnings,
+        spec=_utf8_safe(imported.spec.model_dump(mode="json", by_alias=True, exclude_none=True)),
+        warnings=_utf8_safe(imported.warnings),
     ))
+
+
+def _utf8_safe(value):
+    """Replace lone UTF-16 surrogates — what a half-deleted emoji leaves in a
+    note — which a Python string can hold but a UTF-8 response cannot, so one
+    stray character would otherwise fail the whole response. Rendering keeps
+    the text as it is; only this document's copy is touched."""
+    if isinstance(value, str):
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, list):
+        return [_utf8_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _utf8_safe(v) for k, v in value.items()}
+    return value
