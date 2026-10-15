@@ -6,7 +6,10 @@ with the account's TTS voice, and the resulting shots are stitched into one file
 
 Module layout:
     options.py    RenderOptions + the aspect/resolution/quality tables
-    segmenter.py  BlockNote JSON -> [Shot]                       (pure)
+    spec.py       the VideoSpec: a video described as data       (pure)
+    importer.py   BlockNote JSON -> VideoSpec                    (pure)
+    compiler.py   VideoSpec -> [Shot] + RenderOptions            (pure)
+    segmenter.py  the Shot model; segment() = compile(import())  (pure)
     compose.py    Pillow: title cards, overlay PNGs, backgrounds
     narration.py  chunking, TTS, silence padding, durations, SRT
     ffmpeg.py     argv + filtergraph builders, run/probe helpers  (pure builders)

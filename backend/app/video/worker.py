@@ -60,26 +60,48 @@ def _media_dir() -> str:
     return resolved
 
 
-def _tts_caller(user_id: str):
+def _render_voice(session: Session, user_id: str, provider: str, chosen: Optional[str]) -> Optional[str]:
+    """The voice to read a render in: the one picked in the video dialog when
+    it is a voice of the engine doing the reading, otherwise the account's.
+
+    The dialog lists the voices of whichever engine the render will use, but a
+    choice saved while the account used the other engine can still arrive here;
+    it falls back to the account's voice rather than to whatever the model
+    happens to list first.
+    """
+    from app.routers.settings import (
+        _DEEPGRAM_TTS_VOICE_IDS, get_voices_for_model, load_selected_voice, load_speech_config,
+    )
+
+    if chosen:
+        if provider == "deepgram" and chosen in _DEEPGRAM_TTS_VOICE_IDS:
+            return chosen
+        if provider == "fal":
+            cfg = load_speech_config(session, user_id)
+            if chosen in get_voices_for_model(session, cfg["tts_model"], cfg["custom_tts_models"]):
+                return chosen
+    # Read-aloud gets the user's chosen voice from the request body; a render
+    # has no request, so without this the fal.ai path fell back to the selected
+    # model's first listed voice for every render, silently ignoring whatever
+    # voice (e.g. a non-default one like "Rex") the user picked in Settings ->
+    # Speech. (Deepgram ignores a fal.ai name and reads its own setting.)
+    return load_selected_voice(session, user_id)
+
+
+def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
     """A sync `text -> mp3 bytes` callable for the renderer.
 
     Wraps the same synthesis core the read-aloud endpoint uses, including its
     disk cache — which is what makes a preview render followed by a full render
     bill for the narration only once. Each call opens its own session because
-    this runs on a worker thread, not in a request.
+    this runs on a worker thread, not in a request. `chosen_voice` is the video
+    dialog's voice (`RenderOptions.voice`); None means the account's.
     """
     from app.routers.settings import (
-        load_deepgram_api_key, load_selected_voice, load_speech_config, synthesize_tts_bytes,
+        load_deepgram_api_key, load_speech_config, synthesize_tts_bytes,
     )
 
     with Session(engine) as session:
-        # Read-aloud gets the user's chosen voice from the request body; a
-        # render has no request, so without this the fal.ai path fell back to
-        # the selected model's first listed voice for every render, silently
-        # ignoring whatever voice (e.g. a non-default one like "Rex") the user
-        # picked in Settings -> Speech.
-        voice = load_selected_voice(session, user_id)
-
         # Resolve "auto" to a concrete provider once, up front, and pin it for
         # every chunk of this render. Left as "auto" per chunk, a transient
         # Deepgram hiccup partway through a narration would silently fall back
@@ -90,6 +112,7 @@ def _tts_caller(user_id: str):
         tts_provider = load_speech_config(session, user_id)["tts_provider"]
         if tts_provider == "auto":
             tts_provider = "deepgram" if load_deepgram_api_key(session, user_id) else "fal"
+        voice = _render_voice(session, user_id, tts_provider, chosen_voice)
 
     def call(text: str) -> bytes:
         with Session(engine) as session:
@@ -215,7 +238,7 @@ def _run_job(job_id: str) -> None:
                 author=author,
                 options=options,
                 preview=(job.quality == "preview"),
-                tts=_tts_caller(job.user_id),
+                tts=_tts_caller(job.user_id, options.voice),
                 progress=progress,
                 max_shots=MAX_SHOTS,
                 max_narration_chars=MAX_NARRATION_CHARS,

@@ -2129,7 +2129,11 @@ async def synthesize_tts_bytes(
 
     # ── Deepgram (Flux) path ──────────────────────────────────────────────────
     if use_deepgram:
-        dg_voice = speech_cfg["deepgram_tts_model"] or DEFAULT_DEEPGRAM_TTS_MODEL
+        # A caller may name a Flux voice (the video dialog's voice choice does);
+        # anything else — read-aloud passes a fal.ai voice name — means the
+        # account's Deepgram voice.
+        dg_voice = (voice if voice in _DEEPGRAM_TTS_VOICE_IDS
+                    else speech_cfg["deepgram_tts_model"] or DEFAULT_DEEPGRAM_TTS_MODEL)
         dg_expressivity = speech_cfg["deepgram_tts_expressivity"]
         dg_speed = speech_cfg["deepgram_tts_speed"]
         # Expressivity and speed both change the audio itself, so both are part

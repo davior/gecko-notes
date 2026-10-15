@@ -142,7 +142,7 @@ narrated text **below** it, up to the next media block, is that shot's narration
 - **Pause markup** such as `[pause]`, `[pause:long]` and `[pause:1.5s]`, plus ellipses
   and blank lines, controls the gaps in the speech.
 
-The `Shot` dataclass (`segmenter.py:38`) is the closest thing to a data model today:
+The `Shot` dataclass (`segmenter.py`) was the closest thing to a data model:
 `kind`, `background`, `narration`, `card_title`/`card_subtitle`/`card_kind`, `chapter`,
 `quote_text`/`quote_attribution`, `code_text`, `bumper`. Everything else (motion, music,
 transitions, watermark, waveform, voice) is a **global** field on `RenderOptions`.
@@ -159,11 +159,14 @@ transitions, watermark, waveform, voice) is a **global** field on `RenderOptions
 | Structure is **re-inferred every render** | Nothing to edit, version or hand to an AI. The only way to change the video is to change the note |
 | Media must be in the note's own `/media/` | No library search, no generation inside the video workflow |
 
-Six existing defects should be fixed on the way in rather than carried over:
+Seven existing defects should be fixed on the way in rather than carried over:
 
-- **The Voice picker does nothing.** `VideoGenModal.tsx` offers one and writes
-  `options.voice`, but no backend code reads it. The voice always comes from the account
-  setting (`video/worker.py:81`).
+- ~~**The Voice picker does nothing.**~~ **Fixed.** `VideoGenModal.tsx` offered one and
+  wrote `options.voice`, but no backend code read it, and it only ever listed fal.ai
+  voices, so on an account reading with Deepgram no choice could have mattered. Now the
+  dialog lists the voices of the engine that will read the video, the worker passes the
+  choice on (`video/worker.py:_render_voice`), and the speech core honours a Flux voice id
+  for Deepgram. A choice saved under the other engine falls back to the account's voice.
 - **A heading placed above its image** attaches to the *previous* shot, not the image
   (pinned by `backend/tests/test_video_segmenter.py`). That's correct for the
   "text below the picture" model, but surprising.
@@ -174,11 +177,16 @@ Six existing defects should be fixed on the way in rather than carried over:
   scrim, watermark opacity and margin, overlay margin and shadow.
 - **A chapter mark can vanish.** With headings not read aloud, a heading followed by a
   picture and then straight away a quote loses its chapter: the mark is carried onto the
-  picture's shot, and the quote then takes that shot over (`segmenter.py:461`).
+  picture's shot, and the quote then takes that shot over (the takeover in `importer._walk`, as in the
+  original walk kept in `tests/segment_reference.py`).
 - **Pause markers leak into chapter marks.** `Shot.__post_init__` strips `[pause:…]`
   from drawn fields set when a shot is built, but a section's chapter is set afterwards
-  (`segmenter.py:365`, `:384`), so `The Road [pause:2s]` lands in the MP4's chapter list
+  (`compiler._segment_shots`, as in the original walk), so `The Road [pause:2s]` lands in the MP4's chapter list
   and the "title + chapter" overlay as typed.
+
+- **A sounded clip leaves an empty, muted copy of itself behind** when nothing is said
+  under it (it ends the note, or another picture follows): a `scene` with no beats over
+  the same clip, held for `min_segment_seconds`.
 
 Phase 0 reproduces all of these exactly, so its parity tests can hold the spec path to
 the original output. The spec path is now the only one, so each is a small follow-up fix,
@@ -242,7 +250,8 @@ interface VideoSpec {
   source?: {                          // where the script came from
     note_id: string;
     note_version_id?: string;         // the NoteVersion the import read
-    imported_at: string;              // ISO 8601, used for re-sync (§9.1)
+    imported_at?: string;             // ISO 8601, used for re-sync (§9.1)
+    selection?: boolean;              // only part of the note was imported
   };
   output: Output;
   voice: Voice;
@@ -303,7 +312,7 @@ interface Style {
 type Background =
   | { type: "gradient"; colors: string[]; angle: number }    // ["#1e293b","#0f172a"], 135
   | { type: "solid"; colors: [string] }
-  | { type: "asset"; asset: AssetKey };
+  | { type: "image"; asset: AssetKey };
 
 interface Motion {
   effect: "none" | "zoom_in" | "zoom_out" | "pan_left" | "pan_right"
@@ -374,9 +383,12 @@ interface Beat {                      // one spoken unit, usually one block of t
   text: string;                       // supports [pause:…] markup and the ellipsis rules
   kind?: "prose" | "heading" | "quote" | "code";   // provenance; sets default pauses
   speak?: boolean;                    // false = timed but silent (e.g. code with narrate_code off)
-  hold?: number;                      // seconds a silent beat lasts
+  hold?: number;                      // seconds a silent beat lasts; unset = the minimum (§5.8)
   pause_after_ms?: number;            // overrides the default pause after this beat
+  block_id?: string;                  // the note block it was read from, for re-sync
 }
+// A silent beat with empty text holds the picture: the importer writes one where a
+// picture shows for a moment before a quote or code block takes over its section.
 ```
 
 **Why beats exist.** Today a quote has to become its own shot because the only unit of
@@ -490,7 +502,8 @@ An asset that is used but has no attribution is flagged before render.
   before its `start`. These cases are **warnings** (the element is dropped), not errors,
   so a deleted segment never blocks a render.
 - Removing a segment that something is anchored to is allowed. The editor and the AI
-  are told which anchors it orphaned and offered a re-anchor.
+  are told which anchors it orphaned and offered a re-anchor. The Notes compiler, which
+  has no editor to ask, refuses such a spec and names the orphaned anchor.
 
 ### 5.8 Compiling: spec → timeline
 
@@ -498,13 +511,18 @@ The renderer never reads anchors directly. A compile step resolves them:
 
 1. **Narrate.** Synthesize every spoken beat (cached exactly as today, keyed on
    provider, voice and text). This yields each beat's duration.
-2. **Size segments.** Use `duration.fixed`, or the sum of beats and pauses, raised to
-   `duration.min` / `min_segment_seconds` / `cards.seconds`. For a clip, use its trimmed
-   length.
-3. **Lay out.** Place segments end to end, overlapping by the length of each blend
-   transition.
-4. **Resolve anchors** into absolute seconds for every overlay span and audio track.
-5. **Emit a timeline**: a flat, absolute-time list that the existing ffmpeg stages
+2. **Cut scenes at their overlays.** A beat carrying a quote or code overlay is a
+   *unit* of its own, and the beats between overlays run together as one unit. This is
+   how Notes has always drawn a quote (as a screen of its own), and Phase 0's parity
+   tests showed it is what exact parity needs. A segment with no overlays is one unit.
+3. **Size units.** Use `duration.fixed`, or the sum of the unit's beats and pauses plus
+   the segment-end pause, raised to `duration.min` / `min_segment_seconds` /
+   `cards.seconds`. A silent beat lasts its `hold`, or when it has none, the unit's
+   minimum. For a clip, use its trimmed length.
+4. **Lay out.** Place units end to end, `style.transition` between each pair (a blend
+   overlaps them by its length), so a quote dips or blends in and out like any cut.
+5. **Resolve anchors** into absolute seconds for every overlay span and audio track.
+6. **Emit a timeline**: a flat, absolute-time list that the existing ffmpeg stages
    consume. In effect it's today's `Shot` list plus timed overlay and audio events.
 
 The timeline is derived output. It is cached for previews, but never stored as the
@@ -777,7 +795,7 @@ spec for any note that renders exactly as Notes renders it now.
 | Text below a media block | that segment's `narration.beats`, one beat per block |
 | Text before the first media block ("opening" shot) | `scene` with no `visual` (uses `style.background`) |
 | Video block without audio | `scene`, `visual: { audio: "mute", loop: true }` |
-| Video block with audio (`video_sound` + `video_muted` pair) | a `clip` segment, then a `scene` reusing the same asset muted and looped (only if text follows) |
+| Video block with audio (`video_sound` + `video_muted` pair) | a `clip` segment, then a `scene` reusing the same asset muted and looped (even with nothing said under it, a quirk kept for parity, §3.2) |
 | Missing or remote media | `scene` with no visual, plus an import warning (same as today's warning) |
 | Heading, `chapter_screens` off | beat `kind: "heading"`; `chapter` set on the segment that carries the mark |
 | Heading, `chapter_screens` on | `card` segment (`variant: "chapter"`), then a continuation `scene` |
@@ -802,15 +820,16 @@ spec for any note that renders exactly as Notes renders it now.
 | `selected_content` (render a selection) | an import option: import a block range |
 | `insert_into_note` | not part of the spec. It's an export action ("send back to the note") |
 
-**The one visible difference to watch:** today a quote is its own shot, so a *blend*
-transition plays into and out of it. As an overlay it simply appears. The overlay's
-`fade` covers the common case. Phase 0's golden tests will show whether exact parity
-needs more than that.
+**A quote is an overlay, but still its own screen.** Today a quote is its own shot, so a
+*blend* transition plays into and out of it. Phase 0 kept that exactly: compiling cuts
+a scene at each overlaid beat (§5.8, step 2), so the quote is drawn, timed and
+transitioned as before. GVC can later offer an overlay that just appears over a
+continuing shot, with its own `fade`, as a separate choice.
 
 **Importer options** fix the surprises noted in §3.2 without breaking parity:
-- `heading_attaches: "previous" | "next_media"`. The default is `"previous"` (today's
-  behaviour) in Phase 0. The recommended default in GVC is `"next_media"`, where a
-  heading above an image opens that image's segment.
+- `heading_attaches: "previous" | "next_media"` (**planned**, not in Phase 0, which
+  always behaves as `"previous"`, today's behaviour). The recommended default in GVC is
+  `"next_media"`, where a heading above an image opens that image's segment.
 - `chapter_screens`, `read_chapters`, `quotes`, `narrate_code` stay as **import-time**
   choices, because they decide the *shape* of the spec. Once imported, the spec just
   says what it is, and any of them can be changed afterwards by editing.
@@ -996,7 +1015,7 @@ bug fixes only, each logged so it can be ported.
 
 | Phase | What | Done when |
 |---|---|---|
-| **0 — Spec inside Notes** | **In progress.** Done: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). Still to do: the voice bug and the chapter-mark quirks (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept verbatim as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py)), with no real encodes |
+| **0 — Spec inside Notes** | **In progress.** Done: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). The dialog's Voice choice now reaches the render. Still to do: the chapter-mark quirks (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept verbatim as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py)), with no real encodes |
 | **1 — GVC renders what Notes renders** | New repo `davior/gvc` from GAM's skeleton. The engine copied from the Phase 0 merge, SSO, project storage and history, import from Notes over HTTP, speech through Notes, preview and full render, download. Output to GAM and back into the note follow once those are designed. | Any note renders in GVC the same as in Notes |
 | **2 — The new capabilities** | Timed overlays, multiple audio tracks, trims, per-segment voice/motion/transition, GAM search and picker, `generate` / `search` placeholders, credits | The §6 example renders |
 | **3 — AI editing** | The operations of §8.2, the suggestions tray, chat, staged review | "Make a video from this note" produces a reviewed, rendered video |
@@ -1010,7 +1029,7 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
 ## 11. Key touchpoints (for whoever implements this)
 
 **In gecko-notes, lifted into GVC or replaced:**
-- [`backend/app/video/segmenter.py`](../backend/app/video/segmenter.py): becomes the importer. `Shot`, `segment()`, `_split_attribution`, `_bumper_shot`.
+- [`backend/app/video/segmenter.py`](../backend/app/video/segmenter.py): the `Shot` model and the block-reading helpers (`_split_attribution`, …); its walk is now [`importer.py`](../backend/app/video/importer.py) (`_walk`, `_bumper`).
 - [`backend/app/video/options.py`](../backend/app/video/options.py): `RenderOptions`, the source of every default in §5.
 - [`backend/app/video/renderer.py`](../backend/app/video/renderer.py): the pipeline; `build_timeline` is the seed of the compiler.
 - [`backend/app/video/narration.py`](../backend/app/video/narration.py), [`pause_markup.py`](../backend/app/video/pause_markup.py) and its twin [`frontend/src/utils/pauseMarkup.ts`](../frontend/src/utils/pauseMarkup.ts), sharing [`backend/tests/fixtures/pause_cases.json`](../backend/tests/fixtures/pause_cases.json).
@@ -1064,6 +1083,19 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
     the note and the open editor reconciles it. From another app that needs a Notes
     endpoint that can't race the editor's autosave, or a different gesture: the note
     links to the GVC project, and the user inserts the video themselves.
+12. **Where limits live (principle 9).** Today the spec stores what it is given and
+    `RenderOptions` clamps at compile time, so the schema carries no ranges a UI could
+    read. Before GVC builds sliders: move the ranges into the spec as `Field(ge=…, le=…)`
+    (refusing out-of-range values instead of clamping them), and generate the UI's limits
+    from that schema.
+13. **Partial overrides.** `transition_in` and a visual's `motion` are whole objects, so
+    overriding one field restates the rest; `VoiceOverride` is already a true partial.
+    Decide one rule (whole-object or field-by-field inheritance) before the editor
+    exposes per-segment overrides.
+14. **Addressing edits.** JSON Patch addresses `segments`, `beats`, `overlays` and
+    `audio_tracks` by list index, so a staged suggestion or a selective undo can hit
+    the wrong item after a reorder. The §8.2 operations address by id; store those, or
+    patches resolved by id, rather than raw index paths.
 
 ---
 

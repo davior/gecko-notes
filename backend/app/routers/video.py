@@ -9,7 +9,7 @@ refresh, which a dropped SSE stream cannot.
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -236,6 +236,8 @@ def video_spec(payload: VideoRenderRequest, request: Request, session: Session =
         author=(user.username if user else "") or "",
         has_audio=F.probe_has_audio,
         note_id=note.id,
+        imported_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        selection=bool(payload.selected_content),
     )
     return DataResponse(data=VideoSpecRead(
         spec=_utf8_safe(imported.spec.model_dump(mode="json", by_alias=True, exclude_none=True)),
