@@ -738,6 +738,13 @@ class VideoEstimateRead(BaseModel):
     warnings: List[str] = []
 
 
+class VideoSpecRead(BaseModel):
+    # The VideoSpec as JSON, under its own field names ("from", "in") — see
+    # app/video/spec.py and docs/gecko-video-creator.md §5.
+    spec: Dict[str, Any]
+    warnings: List[str] = []
+
+
 class ActivityJobRead(BaseModel):
     """One running (or recently finished) background job, whatever kind it is.
 
