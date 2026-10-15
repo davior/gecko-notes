@@ -484,3 +484,17 @@ def test_the_spec_route_refuses_another_users_note_and_bad_options(notes):
         _spec_route(notes, options={"aspect": "4:3"})
     assert invalid.value.status_code == 400
 
+
+def test_the_spec_route_survives_half_of_a_deleted_emoji(notes):
+    # JSON.stringify writes a lone surrogate as \ud83d; decoded, it is a valid
+    # Python string but not valid UTF-8, so the response could not be encoded.
+    note = notes.get(Note, "mine")
+    note.content = json.dumps([
+        {"id": "p", "type": "paragraph", "content": [{"type": "text", "text": "Hi \ud83d there \U0001f98e"}]},
+    ])
+    notes.add(note)
+    notes.commit()
+    data = _spec_route(notes, options={"title_card": False})
+    encoded = json.dumps(data.model_dump(), ensure_ascii=False).encode("utf-8")
+    assert "Hi \ufffd there \U0001f98e." in encoded.decode("utf-8")
+
