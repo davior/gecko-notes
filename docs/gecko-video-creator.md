@@ -1,6 +1,6 @@
 # Gecko Video Creator (GVC) — Product & Data Model Spec
 
-**Status:** Draft for discussion
+**Status:** Draft for discussion · Phase 0 in progress (§10)
 **Date:** 2026-10-07
 **Scope:** What GVC is, the JSON document a video is described by (the **VideoSpec**),
 how an AI builds and edits one, and how GVC pulls scripts from Gecko Notes and media
@@ -159,7 +159,7 @@ transitions, watermark, waveform, voice) is a **global** field on `RenderOptions
 | Structure is **re-inferred every render** | Nothing to edit, version or hand to an AI. The only way to change the video is to change the note |
 | Media must be in the note's own `/media/` | No library search, no generation inside the video workflow |
 
-Four existing defects should be fixed on the way in rather than carried over:
+Six existing defects should be fixed on the way in rather than carried over:
 
 - **The Voice picker does nothing.** `VideoGenModal.tsx` offers one and writes
   `options.voice`, but no backend code reads it. The voice always comes from the account
@@ -172,6 +172,16 @@ Four existing defects should be fixed on the way in rather than carried over:
   maxes out at 10 versus 30, and there are a few more.
 - **Some settings have no UI at all:** `fps`, `fallback.angle`, waveform opacity and
   scrim, watermark opacity and margin, overlay margin and shadow.
+- **A chapter mark can vanish.** With headings not read aloud, a heading followed by a
+  picture and then straight away a quote loses its chapter: the mark is carried onto the
+  picture's shot, and the quote then takes that shot over (`segmenter.py:461`).
+- **Pause markers leak into chapter marks.** `Shot.__post_init__` strips `[pause:…]`
+  from drawn fields set when a shot is built, but a section's chapter is set afterwards
+  (`segmenter.py:365`, `:384`), so `The Road [pause:2s]` lands in the MP4's chapter list
+  and the "title + chapter" overlay as typed.
+
+Phase 0 reproduces all of these exactly, so its parity tests can hold the spec path to
+today's output; each is a small follow-up fix once the spec path is the only one.
 
 ---
 
@@ -214,9 +224,11 @@ Four existing defects should be fixed on the way in rather than carried over:
 
 ## 5. The VideoSpec (draft schema)
 
-Written as TypeScript-style types because they're the most readable form. The real
-source of truth will be Pydantic (principle 9). Defaults shown are today's
-`RenderOptions` defaults.
+Written as TypeScript-style types because they're the most readable form. The
+canonical definition is now Pydantic, in
+[`backend/app/video/spec.py`](../backend/app/video/spec.py) (principle 9). Where the two
+differ, the code wins. Defaults shown are today's `RenderOptions` defaults. Not yet
+modelled: per-overlay style overrides.
 
 ### 5.1 Top level
 
@@ -343,7 +355,7 @@ interface Segment {
   transition_in?: Transition;         // overrides style.transition for the cut INTO this segment
   duration?: { min?: number; fixed?: number };              // default: automatic
   chrome?: boolean;                   // false = no watermark, overlay text or waveform
-  source?: { note_id: string; block_ids: string[] };        // provenance, for re-sync
+  source?: { block_ids: string[] };   // provenance, for re-sync (the note is spec.source)
 }
 
 interface Visual {
@@ -420,7 +432,9 @@ what the current renderer does around intro/outro bumpers.
 ```ts
 type AssetRef = { label?: string } & (    // label: a readable name for people and the AI
   | { from: "gam";   id: string }                       // an asset or clip in GAM
-  | { from: "notes"; url: string }                      // "/media/<user>/<uuid>.png" from a note
+  | { from: "notes"; url: string;                       // "/media/<user>/<uuid>.png" from a note
+      type: "image" | "video" | "audio" }               // as the note used it: a videoFile block
+                                                        //   is a video whatever its extension
   | { from: "generate";                                 // to be generated, via GAM
       type: "image" | "video" | "music" | "sfx";
       prompt: string; model?: string; base_assets?: AssetKey[];
@@ -572,7 +586,7 @@ bell sound effect lands on one line.
     "a_logo":    { "from": "gam", "id": "0b6f6c3e-2d1a-4e8b-9c55-7a3e1f0d2b44", "label": "Gecko logo" },
     "a_intro":   { "from": "gam", "id": "5d2e9a17-6b3c-4f80-a1d4-c8e7f2b0961a", "label": "Channel intro sting" },
     "a_outro":   { "from": "gam", "id": "e41c7b90-3a2d-4f6e-8b15-92d0c4a7f3e8", "label": "Channel outro" },
-    "a_map":     { "from": "notes", "url": "/media/9c41e2f0-1b7d-4a3e-8f62-d05a7c3b1e98/2f8a6c1d-4e3b-4b7a-9e0f-5c2d1a8b7e6f.png", "label": "Hand-drawn route map" },
+    "a_map":     { "from": "notes", "url": "/media/9c41e2f0-1b7d-4a3e-8f62-d05a7c3b1e98/2f8a6c1d-4e3b-4b7a-9e0f-5c2d1a8b7e6f.png", "type": "image", "label": "Hand-drawn route map" },
     "a_caravan": { "from": "gam", "id": "8e3b7c21-4d5f-4a90-b6e2-1c7d9f0a3b58", "label": "Archive interview reel, 1971" },
     "a_market":  {
       "from": "generate",
@@ -620,7 +634,7 @@ bell sound effect lands on one line.
           { "id": "b3", "text": "One route carried more of it than any other." }
         ]
       },
-      "source": { "note_id": "6b1e0c2a-4f7d-4c1e-9a55-3f0d2b8e7a10", "block_ids": ["blk-01", "blk-02", "blk-03", "blk-04"] }
+      "source": { "block_ids": ["blk-01", "blk-02", "blk-03", "blk-04"] }
     },
     {
       "id": "s_caravan",
@@ -888,12 +902,15 @@ or extract.
 | Media embedded in the note | `GET /api/notes/{id}/assets`; files at `/media/{user}/{uuid}.ext` | ✅ |
 | Note as Markdown for the AI | expose `note_to_markdown`, e.g. `GET /api/notes/{id}?format=markdown` | ➕ small |
 | "Make video" in Notes | a button / slash-menu item → `https://gvc.geckopico.com/new?note={id}` (replaces today's dialog) | ➕ small |
-| Cross-origin calls | add `https://gvc.geckopico.com` to `CORS_ORIGIN` and the CSP in [`frontend/nginx.conf`](../frontend/nginx.conf) | ➕ config |
+| Cross-origin calls | add `https://gvc.geckopico.com` to `CORS_ORIGIN` and the CSP in [`frontend/nginx.conf`](../frontend/nginx.conf), only where GVC's browser code calls Notes directly (server-side calls with a Bearer token need neither, as in GAM) | ➕ config |
+| Speech for GVC's renders | `POST /api/settings/speech/tts`, plus a `provider` field passed through to `synthesize_tts_bytes(provider_override=…)`, so one video can't switch voices partway | ➕ small |
+| Put the finished video back in the note | No endpoint can write `Note.content` safely against the editor's autosave (`routers/assets.py:174`), and today's auto-insert relies on Notes' own job registry | ➕ needs design (open decision 11) |
 
-**Re-sync.** Every imported segment records the `block_ids` it came from. When the note's
+**Re-sync.** Every imported segment records the `block_ids` it came from, and every beat
+the block it was read from (`Beat.block_id`). When the note's
 `modified_at` is newer than the spec's `imported_at`, GVC shows a per-segment diff:
 - **Changed text** updates the matching beats in place. Overlays anchored to those beats
-  keep working, because beat IDs follow block IDs.
+  keep working, because a beat keeps its ID and is matched to its block by `block_id`.
 - **New blocks** are offered as new beats or segments.
 - **Deleted blocks** are flagged, not removed.
 
@@ -910,7 +927,7 @@ A segment edited in GVC is never silently overwritten by a re-sync (open decisio
 | Credits | structured attribution fields on every asset | ✅ (GAM M10) |
 | Generate images / video / audio | fal.ai through GAM, with prompt and base assets recorded | 🟡 planned (GAM M8) |
 | Read media bytes for rendering | signed `/media/{key}?exp=…&sig=…` URLs | ✅ (open decision 2) |
-| Store the render | upload with `source: "gvc_export"`, `origin_project_id` = spec `id` | 🟡 fields exist on the model; the upload path needs wiring |
+| Store the render | upload with `source: "gvc_export"`, `origin_project_id` = spec `id` | 🟡 `gvc_export` is a known source, but `origin_project_id` / `origin_reference_id` are only planned (GAM's `plan-of-attack.md`), not on the model yet; they need a migration, plus the upload path |
 
 GVC is what unblocks GAM's M8 and M9. Both were deliberately left waiting for a real
 consumer.
@@ -924,7 +941,11 @@ consumer.
 - React 18 + Vite + TypeScript + Zustand + Tailwind
 - Docker Compose + Nginx
 - served at `gvc.geckopico.com` behind Caddy on the shared `web` network, exactly like
-  Notes' `docker-compose.prod.yml`
+  Notes' `docker-compose.prod.yml`. Only the frontend joins `web`, and the backend
+  service is named `gvc-backend`: Notes and GAM both already put a service called
+  `backend` on `web`, and each app's nginx proxies to `backend:8000`, so a third would
+  make that name more ambiguous still. (Check the live host before adding GVC:
+  `docker compose exec frontend getent hosts backend` should return one address.)
 
 **Data:**
 - `Project`: the current VideoSpec as JSON, plus title, source note and owner
@@ -949,15 +970,35 @@ consumer.
 - the AI chat alongside, with a suggestions tray
 - a raw JSON tab for power use
 
+### Where the code lives
+
+Decided after weighing the three options against the code (2026-10-14): **Phase 0
+happens here, in gecko-notes; GVC itself starts in its own repo, `davior/gvc`**, built
+from GAM's skeleton (its `config.py`, auth with a shadow user, Alembic, three-job CI,
+Python 3.13). The reasons, briefly:
+
+- About 75% of the video code (3,441 of 4,582 lines) imports nothing from Notes and can
+  be copied as it is. The rest (`worker.py`, `routers/video.py`, the segmenter's media
+  seams) has to be rewritten against HTTP wherever GVC lives, so building it inside
+  Notes saves nothing and makes reaching into Notes' database too easy.
+- Notes' repo is set up for one app: its CLAUDE.md deploy steps, CI without path
+  filters, one `main`, one rollback, and a backup of `notes.db` only.
+- The video engine is still changing (six commits in the three weeks before the spec).
+  Copying it once, after Phase 0 has made it spec-driven, keeps the period with two
+  copies short.
+
+From the day the engine is copied into GVC, **new video features in Notes are frozen**:
+bug fixes only, each logged so it can be ported.
+
 ### Phases
 
 | Phase | What | Done when |
 |---|---|---|
-| **0 — Spec inside Notes** | Define the VideoSpec in Pydantic. `segmenter.py` emits it, a compiler turns it into today's `Shot` list, and `renderer.py` is untouched. Expose `GET /api/video/spec?note_id=` for inspection. | Golden tests: a corpus of notes renders byte-identical (or frame-identical) through the spec path |
-| **1 — GVC renders what Notes renders** | New repo `davior/gvc`. SSO, project storage and history, import from Notes, the lifted engine, preview and full render, output to GAM. | Any note renders in GVC the same as in Notes |
+| **0 — Spec inside Notes** | **In progress.** First, alongside today's code: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)), an importer that walks a note exactly as `segment()` does ([`importer.py`](../backend/app/video/importer.py)), and a compiler back to today's `Shot`s and `RenderOptions` ([`compiler.py`](../backend/app/video/compiler.py)), with `renderer.py` and `segment()` untouched. Then, separately: `segment()` switches to the spec path, `GET /api/video/spec?note_id=` exposes it, and the voice bug is fixed. | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical through the spec path, with no real encodes |
+| **1 — GVC renders what Notes renders** | New repo `davior/gvc` from GAM's skeleton. The engine copied from the Phase 0 merge, SSO, project storage and history, import from Notes over HTTP, speech through Notes, preview and full render, download. Output to GAM and back into the note follow once those are designed. | Any note renders in GVC the same as in Notes |
 | **2 — The new capabilities** | Timed overlays, multiple audio tracks, trims, per-segment voice/motion/transition, GAM search and picker, `generate` / `search` placeholders, credits | The §6 example renders |
 | **3 — AI editing** | The operations of §8.2, the suggestions tray, chat, staged review | "Make a video from this note" produces a reviewed, rendered video |
-| **4 — Notes hands over** | Notes' dialog becomes "Open in GVC"; `backend/app/video/` and `VideoGenModal.tsx` are removed from Notes; existing render jobs and outputs keep working | No video code left in Notes |
+| **4 — Notes hands over** | Notes' dialog becomes "Open in GVC"; `VideoGenModal.tsx` and the render pipeline are removed from Notes; existing render jobs and outputs keep working. The speech pieces read-aloud export shares (`ffmpeg.py`'s helpers, `narration.py`'s stitching, `pause_markup.py`, imported at `routers/settings.py:26-28`) move to an `app/speech/` package and stay | No render code left in Notes |
 
 Phase 0 is the cheap insurance. If the schema can't faithfully describe what Notes
 already renders, it's wrong, and finding that out costs a branch, not a new app.
@@ -982,7 +1023,7 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
 **In GAM** (`davior/gam`):
 - `GET /api/assets`, `GET /api/assets/{id}`, `GET /api/assets/{id}/clips`, `GET /api/search`, signed `/media/{key}`.
 - M8 (generation) and M9 (GVC surface, embeddable picker): both waiting on GVC.
-- `Asset.source = "gvc_export"`, `origin_project_id`, `origin_reference_id`: already on the model.
+- `Asset.source = "gvc_export"` is already a known source. `origin_project_id` and `origin_reference_id` are planned in GAM's `plan-of-attack.md` but not on the model yet: a migration GVC needs before it can store renders there.
 
 ---
 
@@ -1017,8 +1058,12 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
    block a render or only warn? Should the credits card be on by default?
 10. **Per-beat voice.** Is a voice per segment enough, or are interview-style videos
     with several voices within one segment a near-term need?
+11. **Putting the render back in the note.** Today the worker appends a video block to
+    the note and the open editor reconciles it. From another app that needs a Notes
+    endpoint that can't race the editor's autosave, or a different gesture: the note
+    links to the GVC project, and the user inserts the video themselves.
 
 ---
 
-*This document is a product and data-model spec, not an implementation. No application
-behaviour has changed.*
+*This document is a product and data-model spec. Phase 0's spec, importer and compiler
+are in `backend/app/video/`; nothing a user sees has changed.*
