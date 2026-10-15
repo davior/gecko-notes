@@ -83,11 +83,11 @@ def import_note(
 ) -> ImportResult:
     """Same arguments as `segment()`, plus the note's id for provenance."""
     warnings: List[str] = []
-    parts = _walk(content, user_id=user_id, media_dir=media_dir, options=options,
-                  note_title=note_title, author=author, has_audio=has_audio,
-                  warnings=warnings)
+    parts, order = _walk(content, user_id=user_id, media_dir=media_dir, options=options,
+                         note_title=note_title, author=author, has_audio=has_audio,
+                         warnings=warnings)
     assets = _Assets()
-    segments = _group(parts, assets, options.heading_pause_ms)
+    segments = _group(parts, assets, options.heading_pause_ms, order)
     spec = VideoSpec(
         title=note_title,
         source=SpecSource(note_id=note_id) if note_id else None,
@@ -133,7 +133,7 @@ def segment_via_spec(
 # ── the walk ──────────────────────────
 
 def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio,
-          warnings) -> List[_Part]:
+          warnings) -> Tuple[List[_Part], Dict[str, int]]:
     parts: List[_Part] = []
     heading_ms = options.heading_pause_ms
 
@@ -196,7 +196,9 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             return _Part(kind=kind, label=label, **extra)
         return _Part(kind=kind, media=open_part.media, path=open_part.path, label=label, **extra)
 
-    for block in _flatten(blocks):
+    flat = _flatten(blocks)
+    order = {b["id"]: i for i, b in enumerate(flat) if isinstance(b.get("id"), str)}
+    for block in flat:
         kind = _classify(block, options)
         block_id = block.get("id") if isinstance(block.get("id"), str) else None
 
@@ -228,6 +230,7 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
                     if spoken() or pending_chapter is not None or pending_card is not None:
                         flush(quote_part)
                     else:
+                        _take_over(open_part, quote_part)
                         open_part = quote_part
                     pending.append(Beat(id="", kind="quote", text=_as_sentence(quoted[0]), block_id=block_id))
                     flush(after)
@@ -241,6 +244,7 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
                     if spoken() or pending_chapter is not None or pending_card is not None:
                         flush(code_part)
                     else:
+                        _take_over(open_part, code_part)
                         open_part = code_part
                     # Kept even when it isn't read, so the panel has a beat to
                     # hang on; `speak` decides whether it is heard.
@@ -297,6 +301,8 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
                 and part.chapter is None
                 and part.kind == previous.kind
                 and part.path == previous.path):
+            # Its blocks are still on screen, in the part it continued.
+            previous.block_ids.extend(part.block_ids)
             continue
         trimmed.append(part)
     parts = trimmed
@@ -308,7 +314,14 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             parts.insert(0, intro)
         if outro is not None:
             parts.append(outro)
-    return parts
+    return parts, order
+
+
+def _take_over(section: Optional[_Part], part: _Part) -> None:
+    """A quote or code block replacing a section that had nothing to say keeps
+    that section's picture, so it keeps the blocks the picture came from too."""
+    if section is not None:
+        part.block_ids = section.block_ids + part.block_ids
 
 
 def _bumper(which, options, user_id, media_dir, warnings) -> Optional[_Part]:
@@ -362,7 +375,8 @@ def _joins(segment_parts: List[_Part], part: _Part) -> bool:
     return last.overlay is not None and part.label == f"after {last.overlay.type}"
 
 
-def _group(parts: List[_Part], assets: _Assets, heading_ms: int) -> List[Segment]:
+def _group(parts: List[_Part], assets: _Assets, heading_ms: int,
+           order: Dict[str, int]) -> List[Segment]:
     groups: List[List[_Part]] = []
     for part in parts:
         if groups and _joins(groups[-1], part):
@@ -412,7 +426,8 @@ def _group(parts: List[_Part], assets: _Assets, heading_ms: int) -> List[Segment
             narration=Narration(beats=beats) if beats else None,
             overlays=overlays,
             chrome=False if first.role in ("intro", "outro") else None,
-            source=SegmentSource(block_ids=_dedupe(block_ids)) if block_ids else None,
+            source=(SegmentSource(block_ids=sorted(_dedupe(block_ids), key=order.__getitem__))
+                    if block_ids else None),
         ))
     return segments
 

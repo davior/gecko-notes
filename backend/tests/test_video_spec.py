@@ -385,6 +385,29 @@ def test_a_quote_is_an_overlay_on_its_own_beat_not_a_segment(tmp_path):
     assert [b.block_id for b in scene.beats] == ["p1", "q1", "p2"]
 
 
+def test_a_section_taken_over_by_a_quote_or_code_keeps_its_blocks(tmp_path):
+    # The quote or code block replaces a section that had nothing to say, but
+    # it is drawn over that section's picture, so the picture's block is still
+    # where the segment came from. Re-sync relies on every block being found.
+    root = _media_root(tmp_path)
+    text = lambda t: [{"type": "text", "text": t}]
+    note = json.dumps([
+        {"id": "img-a", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "p1", "type": "paragraph", "content": text("Under a.")},
+        {"id": "img-b", "type": "image", "props": {"url": "/media/u1/b.png"}},
+        {"id": "q1", "type": "quote", "content": text("Salt is gold")},
+        {"id": "p2", "type": "paragraph", "content": text("After.")},
+        {"id": "img-c", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "c1", "type": "codeBlock", "content": text("print(1)")},
+        {"id": "img-d", "type": "image", "props": {"url": "/media/u1/a.png"}},
+    ])
+    spec = import_note(note, user_id="u1", media_dir=root,
+                       options=RenderOptions(title_card=False, quotes={"enabled": True})).spec
+    assert [s.source.block_ids for s in spec.segments] == [
+        ["img-a", "p1"], ["img-b", "q1", "p2"], ["img-c", "c1", "img-d"],
+    ]
+
+
 def _spec(**changes):
     base = {
         "assets": {"a1": {"from": "notes", "url": "/media/u1/a.png", "type": "image"},
