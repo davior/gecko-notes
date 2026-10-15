@@ -3,8 +3,8 @@ the oracle the spec path is held to.
 
 `segment()` now imports a note as a VideoSpec and compiles it back to shots
 (app/video/importer.py, app/video/compiler.py). This is the original, verbatim
-but for the chapter-mark fixes (docs/gecko-video-creator.md §3.2, each marked
-"Fixed:" below), so test_video_spec.py can keep proving that the spec path
+but for the chapter-mark fixes (docs/gecko-video-creator.md §3.2 and open
+decision 15, each marked "Fixed:" below), so test_video_spec.py can keep proving that the spec path
 changes nothing else: every segmenter case, a generated corpus and real
 renders must come out identical. A deliberate behaviour change lands here too,
 written independently of the importer, or this is retired.
@@ -63,8 +63,12 @@ def segment(
     open_shot: Optional[Shot] = None
     # A heading seen since the last boundary, to hang a chapter mark on.
     pending_chapter: Optional[str] = None
-    # Fixed: how many lines had been said in the section when that heading came.
-    said_before_chapter = 0
+    # Fixed: a heading after something was said splits the section there, so
+    # its mark is where it stands: (lines before it, its mark) for each.
+    splits: List[tuple] = []
+    # Whether anything but a heading was said since the section began or the
+    # last split — if not, a heading now is the same moment as the last one.
+    said_plain = False
     pending_card: Optional[Shot] = None
 
     def flush(next_shot: Optional[Shot]) -> Optional[str]:
@@ -72,21 +76,24 @@ def segment(
 
         Fixed: returns the chapter mark it would have handed to `next_shot`
         when there is none, rather than dropping it."""
-        nonlocal pending_text, open_shot, pending_chapter, pending_card
+        nonlocal pending_text, open_shot, pending_chapter, pending_card, splits, said_plain
         text = "\n".join(t for t in pending_text if t).strip()
 
         if open_shot is None and text:
             # Text before the first media block: give it the fallback background.
             open_shot = Shot(kind="still", background=None, label="opening")
+        # Fixed: a last split with only headings after it has nothing to show
+        # under its mark; that heading stays here and marks the next shot.
+        late_mark = splits.pop()[1] if splits and not said_plain else None
         if open_shot is not None:
-            open_shot.narration = text
+            ends = [at for at, _ in splits] + [len(pending_text)]
+            open_shot.narration = "\n".join(t for t in pending_text[:ends[0]] if t).strip()
             if pending_chapter and not open_shot.chapter:
                 open_shot.chapter = pending_chapter
                 pending_chapter = None
-            elif (pending_chapter and not options.read_chapters
-                    and len(pending_text) == said_before_chapter):
+            elif pending_chapter and not pending_text:
                 # Fixed: the shot already has its mark, so this one used to be
-                # dropped. Unread, with nothing said after it, the heading sits
+                # dropped. Unread, with nothing said under it, the heading sits
                 # where the next shot starts: that shot gets it, below.
                 pass
             else:
@@ -95,15 +102,24 @@ def segment(
                 result.shots.append(pending_card)
                 pending_card = None
             result.shots.append(open_shot)
+            carry_kind: ShotKind = "video_muted" if open_shot.kind.startswith("video") else "still"
+            for (at, mark), end in zip(splits, ends[1:]):
+                result.shots.append(Shot(
+                    kind=carry_kind, background=open_shot.background,
+                    narration="\n".join(t for t in pending_text[at:end] if t).strip(),
+                    chapter=mark, label="after heading", cut_in=True,
+                ))
         elif pending_card is not None:
             result.shots.append(pending_card)
             pending_card = None
 
         # A heading with nothing spoken under it (read_chapters off) has no shot
         # to hang its mark on; hand it to the shot that starts here instead.
-        carried_chapter = pending_chapter
+        carried_chapter = pending_chapter or late_mark
         pending_text = []
         pending_chapter = None
+        splits = []
+        said_plain = False
         open_shot = next_shot
         if carried_chapter and open_shot is None:
             return carried_chapter
@@ -160,9 +176,13 @@ def segment(
                         continue
                     # Without a chapter screen the heading is read inside the
                     # section it introduces, so that shot carries the mark.
-                    if pending_chapter is None:
+                    if said_plain:
+                        # Fixed: partway through the section, where this used
+                        # to mark its start or nothing at all.
+                        splits.append((len(pending_text), mark))
+                        said_plain = False
+                    elif pending_chapter is None and not splits:
                         pending_chapter = mark
-                        said_before_chapter = len(pending_text)
 
             if btype == "quote" and options.quotes.enabled:
                 quoted = _split_attribution(_inline_text(block.get("content")))
@@ -246,6 +266,7 @@ def segment(
                 if btype == "heading" and options.heading_pause_ms > 0:
                     spoken = _set_apart(spoken)
                 pending_text.append(spoken)
+                said_plain = said_plain or btype != "heading"
             continue
 
         url = _media_url(block, options)

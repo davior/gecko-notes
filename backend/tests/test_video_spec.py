@@ -305,6 +305,8 @@ _RENDER_NOTE = json.dumps([
     {"id": "2", "type": "heading", "content": [{"type": "text", "text": "The road [pause]"}]},
     {"id": "3", "type": "image", "props": {"url": "/media/u1/a.png"}},
     {"id": "4", "type": "paragraph", "content": [{"type": "text", "text": "Under the map."}]},
+    {"id": "4a", "type": "heading", "content": [{"type": "text", "text": "The market"}]},
+    {"id": "4b", "type": "paragraph", "content": [{"type": "text", "text": "Stalls of salt."}]},
     {"id": "5", "type": "quote", "content": [{"type": "text", "text": "Salt was gold — A Trader"}]},
     {"id": "6", "type": "paragraph", "content": [{"type": "text", "text": "After the quote."}]},
     {"id": "7", "type": "videoFile", "props": {"url": "/media/u1/loud.mp4"}},
@@ -339,6 +341,18 @@ def test_the_renderer_issues_the_same_ffmpeg_commands_either_way(tmp_path, monke
     got = _render_commands(monkeypatch, media, _RENDER_NOTE, options, via_spec=True)
     assert got == want
     assert len(want[0]) > 5
+
+
+def test_a_heading_partway_through_a_section_is_joined_by_a_straight_cut(tmp_path, monkeypatch):
+    """Over the same picture a dip to black and back would show nothing changing."""
+    media = _media_root(tmp_path)
+    options = RenderOptions(quotes={"enabled": True}, transition={"style": "fade"})
+    calls, _warnings = _render_commands(monkeypatch, media, _RENDER_NOTE, options, via_spec=True)
+    graphs = [call[call.index("-filter_complex") + 1] for call in calls
+              if call[-1].startswith("shot_")]
+    no_in = [i for i, graph in enumerate(graphs) if "fade=t=in" not in graph]
+    no_out = [i for i, graph in enumerate(graphs) if "fade=t=out" not in graph]
+    assert len(no_in) == 1 and no_out == [no_in[0] - 1]
 
 
 def test_music_switched_on_with_no_track_is_not_part_of_the_video(tmp_path, monkeypatch):
@@ -527,6 +541,26 @@ def test_a_clip_whose_file_has_gone_is_skipped_not_left_without_a_picture(tmp_pa
     plan = compile_spec(spec, user_id="u1", media_dir=root).segmentation
     assert [s.kind for s in plan.shots] == ["still"]
     assert plan.warnings == ["Skipped missing media: /media/u1/loud.mp4"]
+
+
+def test_a_heading_partway_through_a_section_is_a_segment_that_cuts_in(tmp_path):
+    root = _media_root(tmp_path)
+    note = json.dumps([
+        {"id": "img", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "p1", "type": "paragraph", "content": [{"type": "text", "text": "Under the map."}]},
+        {"id": "h", "type": "heading", "content": [{"type": "text", "text": "The market"}]},
+        {"id": "p2", "type": "paragraph", "content": [{"type": "text", "text": "Stalls of salt."}]},
+    ])
+    spec = import_note(note, user_id="u1", media_dir=root,
+                       options=RenderOptions(title_card=False, read_chapters=False)).spec
+    first, second = spec.segments
+    assert (second.kind, second.chapter, second.visual.asset) == ("scene", "The market", first.visual.asset)
+    assert first.transition_in is None and second.transition_in.style == "none"
+    # The heading isn't read, but it is where the second segment came from.
+    assert first.source.block_ids == ["img", "p1"]
+    assert second.source.block_ids == ["h", "p2"]
+    shots = compile_spec(spec, user_id="u1", media_dir=root).segmentation.shots
+    assert [s.cut_in for s in shots] == [False, True]
 
 
 def test_a_chapter_written_into_a_spec_is_drawn_without_its_markers(tmp_path):

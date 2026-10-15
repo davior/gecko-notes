@@ -167,9 +167,11 @@ Seven existing defects should be fixed on the way in rather than carried over:
   dialog lists the voices of the engine that will read the video, the worker passes the
   choice on (`video/worker.py:_render_voice`), and the speech core honours a Flux voice id
   for Deepgram. A choice saved under the other engine falls back to the account's voice.
-- **A heading placed above its image** attaches to the *previous* shot, not the image
-  (pinned by `backend/tests/test_video_segmenter.py`). That's correct for the
-  "text below the picture" model, but surprising.
+- **A heading placed above its image** is read at the end of the *previous* section,
+  not over the image (pinned by `backend/tests/test_video_segmenter.py`). That's correct
+  for the "text below the picture" model, but surprising. Its chapter mark now starts the
+  image's segment (open decision 15), so only where it is *read* is left to
+  `heading_attaches` (§7, open decision 5).
 - **The frontend and backend clamp differently.** Speed is 0.75–1.5 in the UI and
   0.5–2.0 on the server. The longest transition is 2 s versus 3 s. `min_shot_seconds`
   maxes out at 10 versus 30, and there are a few more.
@@ -182,10 +184,10 @@ Seven existing defects should be fixed on the way in rather than carried over:
   section that already had a mark. That last one is the commonest note shape there is, a
   heading above each picture. Each now starts whatever comes where the heading stands
   (`importer._walk`). A scan of every note up to five blocks long, under each chapter
-  setting, found 7,203 marks dropped this way. Apart from a heading with nothing after
-  it, only two kinds are still dropped. When two marks fall on the same moment, the first
-  is kept, as with two headings in a row. A second heading inside one section is open
-  decision 15.
+  setting, found 7,203 marks dropped this way. A heading partway through a section now
+  starts a segment of its own (open decision 15). The only marks still dropped are a
+  heading with nothing after it, and the second of two marks that fall on the same
+  moment: the first is kept, as with two headings in a row.
 - ~~**Pause markers leak into chapter marks.**~~ **Fixed.** A section's chapter was set
   after its shot was built, so `Shot.__post_init__` never stripped it, and
   `The Road [pause:2s]` reached the MP4's chapter list and the "title + chapter" overlay
@@ -808,6 +810,7 @@ spec for any note that renders exactly as Notes renders it now.
 | Video block with audio (`video_sound` + `video_muted` pair) | a `clip` segment, then a `scene` reusing the same asset muted and looped (even with nothing said under it, a quirk kept for parity, §3.2) |
 | Missing or remote media | `scene` with no visual, plus an import warning (same as today's warning) |
 | Heading, `chapter_screens` off | beat `kind: "heading"`; `chapter` set on the segment that carries the mark |
+| Heading partway through a section, `chapter_screens` off | a new `scene` over the same `visual`, with that `chapter`, the beats from the heading on, and `transition_in: { style: "none" }` (a straight cut, the one per-segment transition Phase 0 renders). With only headings after it before the picture changes, it opens nothing and marks the next segment instead |
 | Heading, `chapter_screens` on | `card` segment (`variant: "chapter"`), then a continuation `scene` |
 | `read_chapters` off | heading beat with `speak: false`; card with no narration |
 | `title_card` | `card` segment, `role: "title"`, subtitle = author |
@@ -838,7 +841,8 @@ continuing shot, with its own `fade`, as a separate choice.
 
 **Importer options** fix the surprises noted in §3.2 without breaking parity:
 - `heading_attaches: "previous" | "next_media"` (**planned**, not in Phase 0, which
-  always behaves as `"previous"`, today's behaviour). The recommended default in GVC is
+  always reads such a heading as `"previous"` does, today's behaviour, though its
+  chapter mark already starts the image's segment). The recommended default in GVC is
   `"next_media"`, where a heading above an image opens that image's segment.
 - `chapter_screens`, `read_chapters`, `quotes`, `narrate_code` stay as **import-time**
   choices, because they decide the *shape* of the spec. Once imported, the spec just
@@ -1106,17 +1110,19 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
     `audio_tracks` by list index, so a staged suggestion or a selective undo can hit
     the wrong item after a reorder. The §8.2 operations address by id; store those, or
     patches resolved by id, rather than raw index paths.
-15. **A chapter mark inside a section.** A mark starts a segment, and a section is one
-    segment, so it holds one mark. With `chapter_screens` off, a second heading inside a
-    section (`## A`, text, `## B`, more text, all over one picture) gets no entry, whether
-    or not it is read. A note of text alone with three headings has one chapter. There
-    are two ways to fix it:
-    - cut the section into a new segment at each later heading, with the same picture
-      and no transition;
-    - let a mark sit on the beat where its heading is read, timed by the compile step
-      the way overlay anchors are.
+15. ~~**A chapter mark inside a section.**~~ **Decided: cut a segment at each heading.**
+    A mark starts a segment, and a section was one segment, so it held one mark. With
+    `chapter_screens` off, a second heading inside a section (`## A`, text, `## B`, more
+    text, all over one picture) got no entry, whether or not it was read, and a note of
+    text alone with three headings had one chapter. Now a heading after something has
+    been said in its section starts a new `scene` there, over the same picture, joined to
+    the one before by a straight cut: `transition_in: { style: "none" }`. The renderer
+    honours that on both the dip and the blend paths. The costs:
+    - each new segment is held for at least `min_shot_seconds`;
+    - a looping clip, or a Ken Burns drift, starts again at the cut.
 
-    The recommendation is the beat, because it changes nothing on screen.
+    The alternative, a mark on the beat where the heading is read, would have changed
+    nothing on screen.
 
 ---
 

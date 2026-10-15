@@ -84,7 +84,11 @@ def compile_spec(spec: VideoSpec, *, user_id: str, media_dir: str) -> Compiled:
 
     heading_ms = spec.voice.pauses.heading_ms
     for segment in spec.segments:
-        for shot in _segment_shots(segment, spec, resolve, heading_ms):
+        made = _segment_shots(segment, spec, resolve, heading_ms)
+        if made and segment.transition_in is not None:
+            # Validated above to be "none": no transition into this segment.
+            made[0].cut_in = True
+        for shot in made:
             shots.append(shot)
             owners.append(segment.id)
 
@@ -265,7 +269,8 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
     for segment in spec.segments:
         where = f"segment {segment.id!r}"
         bumper = segment.role in ("intro", "outro")
-        if segment.transition_in is not None:
+        if segment.transition_in is not None and segment.transition_in.style != "none":
+            # A straight cut into one segment is all the renderer does per join.
             problems.append(f"{where}: per-segment transition_in")
         if segment.duration is not None:
             problems.append(f"{where}: duration overrides")

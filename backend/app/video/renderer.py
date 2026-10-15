@@ -80,28 +80,28 @@ def build_timeline(
     """Lay the rendered shots out on the finished video's timeline.
 
     Returns the chapter marks, every subtitle cue shifted onto that timeline,
-    and the total length. `overlap` is how much a crossfade eats at each join;
-    at zero this is the plain-concat timeline, which is why both stitch paths
-    can share one piece of arithmetic instead of drifting apart.
+    and the total length. `overlap` is how much a crossfade eats at each join
+    but a straight cut (`Shot.cut_in`); at zero this is the plain-concat
+    timeline, which is why both stitch paths can share one piece of arithmetic
+    instead of drifting apart.
     """
     chapters: List[Tuple[float, float, str]] = []
     cues: List[Cue] = []
     timeline = 0.0
-    for shot, duration, shot_cue in zip(shots, durations, shot_cues):
+    count = min(len(shots), len(durations))
+    for index, (shot, duration, shot_cue) in enumerate(zip(shots, durations, shot_cues)):
         start = timeline
         cues.extend(shift_cues(shot_cue, start))
-        # A shot starts `overlap` seconds before its predecessor ends, and a
+        # The next shot starts `overlap` seconds before this one ends, and a
         # chapter ends where the next one begins — so the marks stay contiguous
         # rather than overlapping each other by the length of the transition.
-        timeline += duration - overlap
+        # Nothing overlaps the last shot, or a shot the next one cuts into.
+        following = shots[index + 1] if index + 1 < count else None
+        timeline += duration - (overlap if following is not None and not following.cut_in else 0.0)
         if shot.chapter:
             chapters.append((start, timeline, shot.chapter))
         elif chapters:
             chapters[-1] = (chapters[-1][0], timeline, chapters[-1][2])
-    # Nothing overlaps the last shot, so it plays to its full length.
-    timeline += overlap
-    if chapters:
-        chapters[-1] = (chapters[-1][0], timeline, chapters[-1][2])
     return chapters, cues, timeline
 
 
@@ -349,6 +349,9 @@ def render(
                     duration=duration, output=output, options=with_options,
                     preview=preview, overlay_png=shot_overlay, subtitle_file=shot_srt,
                     background_has_audio=has_audio, index=index,
+                    # No dip where this shot and a neighbour join by a straight cut.
+                    dip_in=not shot.cut_in,
+                    dip_out=not (index + 1 < len(shots) and shots[index + 1].cut_in),
                 )
 
             def _encode(with_options: RenderOptions) -> None:
@@ -426,6 +429,7 @@ def render(
                     F.build_xfade_command(
                         shot_files, durations, "stitched.mp4", options=options,
                         preview=preview, style=options.transition.style, overlap=overlap,
+                        cuts=[shot.cut_in for shot in shots],
                     ),
                     cwd=work_dir, timeout=F.shot_timeout(sum(durations)),
                 )
@@ -586,4 +590,5 @@ def estimate(
         options.transition.style, durations, options.transition.duration,
         filters=frozenset({"xfade", "concat"}),
     ) or 0.0
-    return len(plan.shots), plan.narration_chars, F.crossfade_total(durations, overlap), plan.warnings
+    cuts = [shot.cut_in for shot in plan.shots]
+    return len(plan.shots), plan.narration_chars, F.crossfade_total(durations, overlap, cuts), plan.warnings

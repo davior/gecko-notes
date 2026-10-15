@@ -452,6 +452,24 @@ def test_no_transition_leaves_the_graph_as_it_was():
     assert graph.endswith("aresample=48000,aformat=channel_layouts=stereo,apad[a]")
 
 
+def test_a_dip_is_left_off_the_end_that_joins_by_a_straight_cut():
+    """Where a heading carries a section on over the same picture, dipping to
+    black and back would show nothing changing."""
+    options = RenderOptions(transition={"style": "fade", "duration": 0.6})
+    into = _graph(F.build_shot_command(
+        kind="still", background="bg.png", audio="n.wav", duration=6.0, output="s.mp4",
+        options=options, preview=False, dip_in=False))
+    assert "fade=t=in" not in into
+    assert "fade=t=out:st=5.400:d=0.600:color=black" in into
+    assert "afade=t=out:st=5.400:d=0.600" in into
+
+    out_of = _graph(F.build_shot_command(
+        kind="still", background="bg.png", audio="n.wav", duration=6.0, output="s.mp4",
+        options=options, preview=False, dip_out=False))
+    assert "fade=t=in:st=0:d=0.600:color=black[fd]" in out_of
+    assert "fade=t=out" not in out_of and "afade" not in out_of
+
+
 # ── the crossfade stitch ─────────────────────────────────────────────────────
 
 ALL = frozenset({"xfade", "concat"})
@@ -492,6 +510,21 @@ def test_a_crossfade_shortens_the_video_by_one_overlap_per_join():
     assert F.crossfade_total([5.0, 4.0, 6.0], 0.6) == pytest.approx(13.8)
     assert F.crossfade_total([5.0, 4.0, 6.0], 0.0) == pytest.approx(15.0)
     assert F.crossfade_total([], 0.6) == 0.0
+
+
+def test_a_shot_that_cuts_in_is_appended_whole_with_no_blend():
+    argv = F.build_xfade_command(
+        ["a.mp4", "b.mp4", "c.mp4"], [5.0, 4.0, 6.0], "out.mp4",
+        options=RenderOptions(), preview=False, style="dissolve", overlap=0.6,
+        cuts=[False, True, False],
+    )
+    graph = _graph(argv)
+    assert "[0:v][1:v]concat=n=2:v=1:a=0[vx1]" in graph
+    assert "[0:a][1:a]concat=n=2:v=0:a=1[ax1]" in graph
+    # Nothing was eaten at the cut, so the blend into c starts at 9 - 0.6.
+    assert "[vx1][2:v]xfade=transition=dissolve:duration=0.600:offset=8.400[vx2]" in graph
+    assert "[ax1]atrim=end=8.400,asetpts=PTS-STARTPTS[at2]" in graph
+    assert F.crossfade_total([5.0, 4.0, 6.0], 0.6, [False, True, False]) == pytest.approx(14.4)
 
 
 def test_an_overlap_can_never_exceed_half_the_shortest_shot():
@@ -932,6 +965,18 @@ def test_subtitle_cues_are_shifted_onto_the_overlapped_timeline():
     _marks, cues, _total = _timeline([5.0, 4.0], overlap=0.6, cues=per_shot)
     assert cues[0].start == pytest.approx(0.0)
     assert cues[1].start == pytest.approx(4.4)   # the second shot starts early
+
+
+def test_a_shot_that_cuts_in_starts_where_the_one_before_ends():
+    shots = [Shot(kind="still", chapter="One"), Shot(kind="still", chapter="Two", cut_in=True),
+             Shot(kind="still", chapter="Three")]
+    marks, _cues, total = build_timeline(shots, [5.0, 4.0, 6.0], [[], [], []], 0.6)
+    assert total == pytest.approx(14.4)          # one blend, one straight cut
+    assert [m[:2] for m in marks] == [
+        (pytest.approx(0.0), pytest.approx(5.0)),
+        (pytest.approx(5.0), pytest.approx(8.4)),
+        (pytest.approx(8.4), pytest.approx(14.4)),
+    ]
 
 
 def test_a_video_with_no_chapters_still_reports_its_length():

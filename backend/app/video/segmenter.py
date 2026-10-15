@@ -65,6 +65,10 @@ class Shot:
     bumper: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
     label: str = ""
+    # Joined to the shot before by a straight cut, whatever the video's
+    # transition: it carries on over the same picture (a heading partway
+    # through a section), so a dip or blend would show nothing changing.
+    cut_in: bool = False
 
     def __post_init__(self) -> None:
         # A pause marker is an instruction to the voice, not something to look
