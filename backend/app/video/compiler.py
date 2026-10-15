@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from app.video.options import (
-    BackgroundSpec, BumperSpec, KenBurnsSpec, MusicSpec, OverlayTextSpec, QuoteSpec,
-    RenderOptions, WatermarkSpec, WaveformSpec,
+    BackgroundSpec, BumperSpec, CardTextSpec, CodeSpec, KenBurnsSpec, MusicSpec,
+    OverlayTextSpec, QuoteSpec, RenderOptions, TransitionSpec, WatermarkSpec, WaveformSpec,
 )
 from app.video.segmenter import (
     Segmentation, Shot, ShotKind, _set_apart, resolve_media_path,
@@ -110,6 +110,10 @@ def _segment_shots(segment: Segment, spec: VideoSpec, resolve, heading_ms: int) 
         )]
 
     if segment.kind == "clip":
+        if path is None:
+            # Its file has gone since the import: skipped, as the warning says,
+            # since a sounded clip is nothing without its own picture and sound.
+            return []
         bumper = segment.role if segment.role in ("intro", "outro") else None
         return [Shot(kind="video_sound", background=path, chapter=segment.chapter,
                      bumper=bumper, label=segment.label)]
@@ -163,6 +167,11 @@ def _overlay_beat(segment: Segment, overlay) -> str:
     show = overlay.show
     start = show.from_ if show is not None else None
     end = show.to if show is not None else None
+    for anchor in (start, end):
+        if (isinstance(anchor, AnchorRef) and anchor.beat is not None
+                and not any(b.id == anchor.beat for b in segment.beats)):
+            raise UnsupportedSpec(f"overlay {overlay.id!r} in segment {segment.id!r} is anchored "
+                                  f"to beat {anchor.beat!r}, which is no longer there")
     if (isinstance(start, AnchorRef) and isinstance(end, AnchorRef)
             and start.beat is not None and start.beat == end.beat
             and start.edge == "start" and end.edge == "end"
@@ -194,16 +203,16 @@ def _options(spec: VideoSpec) -> RenderOptions:
             type=style.background.type, colors=list(style.background.colors),
             angle=style.background.angle, url=url(style.background.asset),
         ),
-        title_card_text=style.cards.title.model_copy(),
-        chapter_card_text=style.cards.chapter.model_copy(),
-        transition=style.transition.model_copy(),
+        title_card_text=CardTextSpec(**style.cards.title.model_dump()),
+        chapter_card_text=CardTextSpec(**style.cards.chapter.model_dump()),
+        transition=TransitionSpec(**style.transition.model_dump()),
         ken_burns=KenBurnsSpec(effect=style.motion.effect, amount=style.motion.amount,
                                include_cards=style.cards.motion),
         quotes=QuoteSpec(
             enabled=any(isinstance(o, QuoteOverlay) for s in spec.segments for o in s.overlays),
             **style.quote.model_dump(),
         ),
-        code=style.code.model_copy(),
+        code=CodeSpec(**style.code.model_dump()),
         min_shot_seconds=style.min_segment_seconds,
         card_seconds=style.cards.seconds,
         voice=voice.voice,
@@ -247,6 +256,10 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
         if not isinstance(spec.assets[key], NotesAsset):
             problems.append(f"asset {key!r} is not a file in the note's media "
                             f"({spec.assets[key].from_} assets need Gecko Video Creator)")
+    for where, key in (("style.background", spec.style.background.asset),
+                       ("chrome.watermark", spec.chrome.watermark.asset if spec.chrome.watermark else None)):
+        if key is not None and spec.assets[key].type != "image":
+            problems.append(f"{where}: must be an image")
     if spec.voice.provider is not None or spec.voice.expressivity is not None:
         problems.append("voice.provider and voice.expressivity come from the account here")
     if spec.credits is not None:
@@ -286,6 +299,8 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
             problems.append(f"{where}: a clip carries no narration or overlays")
         if segment.kind == "clip" and visual is not None and spec.assets[visual.asset].type != "video":
             problems.append(f"{where}: a clip must be a video")
+        if segment.kind == "scene" and visual is not None and spec.assets[visual.asset].type == "audio":
+            problems.append(f"{where}: a scene's picture can't be an audio file")
         if segment.kind == "card" and segment.overlays:
             problems.append(f"{where}: overlays on a card")
         anchored = []
@@ -302,6 +317,15 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
         if len(anchored) != len(set(anchored)):
             problems.append(f"{where}: two overlays on one beat")
 
+    # The renderer finds the intro and outro by position, to keep the music and
+    # its drawing off them, so that is the only place either can be.
+    roles = [s.role for s in spec.segments]
+    if "intro" in roles[1:] or roles.count("intro") > 1:
+        problems.append("an intro can only be the first segment")
+    if "outro" in roles[:-1] or roles.count("outro") > 1:
+        problems.append("an outro can only be the last segment")
+
+    ids = {s.id for s in spec.segments}
     content = [s.id for s in spec.segments if s.role not in ("intro", "outro")]
     if len(spec.audio_tracks) > 1:
         problems.append("more than one audio track")
@@ -313,6 +337,10 @@ def _refuse_unsupported(spec: VideoSpec) -> None:
             problems.append(f"{where}: trim / loop off")
         if spec.assets[track.asset].type != "audio":
             problems.append(f"{where}: must be an audio file")
+        for anchor in (track.start, track.end):
+            if isinstance(anchor, AnchorRef) and anchor.segment not in ids:
+                problems.append(f"{where}: anchored to segment {anchor.segment!r}, "
+                                f"which is no longer there")
         if not content or not (_at(track.start, spec, content[0], "start")
                                and track.end is not None
                                and _at(track.end, spec, content[-1], "end")):

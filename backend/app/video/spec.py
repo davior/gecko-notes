@@ -33,8 +33,9 @@ SPEC_VERSION = "0.1"
 class _Model(BaseModel):
     # A spec is edited by hand and by an AI, so a misspelt field is an error
     # rather than something silently ignored. `from` and `in` are Python
-    # keywords, hence the aliases below and populate_by_name.
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    # keywords, hence the aliases below: accepted either way, always written
+    # as the spec spells them.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
 
 # ── assets ──────────────────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ MediaType = Literal["image", "video", "audio"]
 class NotesAsset(_Model):
     """A file in a note's own /media/<user_id>/ directory."""
 
-    from_: Literal["notes"] = Field("notes", alias="from")
+    from_: Literal["notes"] = Field(alias="from")
     url: str
     # How the note used it, which is not always what the extension says: a
     # `videoFile` block is a video whatever its URL ends in.
@@ -56,7 +57,7 @@ class NotesAsset(_Model):
 class GamAsset(_Model):
     """An asset or clip in Gecko Asset Manager."""
 
-    from_: Literal["gam"] = Field("gam", alias="from")
+    from_: Literal["gam"] = Field(alias="from")
     id: str
     type: Optional[MediaType] = None
     label: Optional[str] = None
@@ -65,7 +66,7 @@ class GamAsset(_Model):
 class GeneratedAsset(_Model):
     """A placeholder for media still to be generated (through GAM)."""
 
-    from_: Literal["generate"] = Field("generate", alias="from")
+    from_: Literal["generate"] = Field(alias="from")
     type: Literal["image", "video", "music", "sfx"]
     prompt: str
     model: Optional[str] = None
@@ -78,7 +79,7 @@ class GeneratedAsset(_Model):
 class SearchAsset(_Model):
     """A placeholder for footage still to be found in GAM."""
 
-    from_: Literal["search"] = Field("search", alias="from")
+    from_: Literal["search"] = Field(alias="from")
     query: str
     type: Optional[MediaType] = None
     status: Literal["unresolved", "resolved"] = "unresolved"
@@ -129,6 +130,19 @@ class VoiceOverride(_Model):
     expressivity: Optional[int] = None
 
 
+class Transition(TransitionSpec):
+    # The option model's fields and clamps, but strict about unknown keys.
+    model_config = ConfigDict(extra="forbid")
+
+
+class CardText(CardTextSpec):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CodeStyle(CodeSpec):
+    model_config = ConfigDict(extra="forbid")
+
+
 class Background(_Model):
     """Shown behind a segment that has no visual of its own."""
 
@@ -146,8 +160,8 @@ class Motion(_Model):
 class Cards(_Model):
     seconds: float = 3.5
     motion: bool = False                # Ken Burns on cards (zoom only)
-    title: CardTextSpec = Field(default_factory=CardTextSpec)
-    chapter: CardTextSpec = Field(default_factory=CardTextSpec)
+    title: CardText = Field(default_factory=CardText)
+    chapter: CardText = Field(default_factory=CardText)
 
 
 class QuoteStyle(_Model):
@@ -162,11 +176,11 @@ class Style(_Model):
     background: Background = Field(default_factory=Background)
     fit: Fit = "blur"
     motion: Motion = Field(default_factory=Motion)
-    transition: TransitionSpec = Field(default_factory=TransitionSpec)
+    transition: Transition = Field(default_factory=Transition)
     min_segment_seconds: float = 2.5
     cards: Cards = Field(default_factory=Cards)
     quote: QuoteStyle = Field(default_factory=QuoteStyle)
-    code: CodeSpec = Field(default_factory=CodeSpec)
+    code: CodeStyle = Field(default_factory=CodeStyle)
 
 
 class Watermark(_Model):
@@ -268,19 +282,19 @@ class _OverlayBase(_Model):
 
 
 class QuoteOverlay(_OverlayBase):
-    type: Literal["quote"] = "quote"
+    type: Literal["quote"]
     text: str
     attribution: Optional[str] = None
 
 
 class CodeOverlay(_OverlayBase):
-    type: Literal["code"] = "code"
+    type: Literal["code"]
     text: str
     language: Optional[str] = None
 
 
 class TextOverlay(_OverlayBase):
-    type: Literal["text"] = "text"
+    type: Literal["text"]
     text: str
     position: Position = "center"
     size_pct: Optional[float] = None
@@ -288,13 +302,13 @@ class TextOverlay(_OverlayBase):
 
 
 class LowerThirdOverlay(_OverlayBase):
-    type: Literal["lower_third"] = "lower_third"
+    type: Literal["lower_third"]
     title: str
     subtitle: Optional[str] = None
 
 
 class ImageOverlay(_OverlayBase):
-    type: Literal["image"] = "image"
+    type: Literal["image"]
     asset: str
     position: Position = "center"
     scale_pct: Optional[float] = None
@@ -336,7 +350,7 @@ class Segment(_Model):
     card: Optional[Card] = None
     narration: Optional[Narration] = None
     overlays: List[Overlay] = Field(default_factory=list)
-    transition_in: Optional[TransitionSpec] = None
+    transition_in: Optional[Transition] = None
     duration: Optional[Duration] = None
     # None: the default, which is on except for an intro or outro.
     chrome: Optional[bool] = None
@@ -371,7 +385,8 @@ class Credits(_Model):
 class SpecSource(_Model):
     note_id: Optional[str] = None
     note_version_id: Optional[str] = None
-    imported_at: Optional[str] = None
+    imported_at: Optional[str] = None   # ISO 8601; re-sync compares the note against it
+    selection: bool = False             # only part of the note was imported
 
 
 class VideoSpec(_Model):
@@ -390,8 +405,10 @@ class VideoSpec(_Model):
 
     @model_validator(mode="after")
     def _well_formed(self) -> "VideoSpec":
-        """The structural rules (§5.7). Anchors are checked at compile time:
-        one left pointing at a removed segment is a warning, not an error."""
+        """The structural rules (§5.7). Anchors are deliberately not checked
+        here: an edit may leave one pointing at a removed segment (§5.7), and
+        what that means is the renderer's call — the Notes compiler refuses
+        such a spec and says which anchor is orphaned."""
         problems: List[str] = []
 
         def unique(ids: List[str], what: str) -> None:

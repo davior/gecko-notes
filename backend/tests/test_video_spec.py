@@ -189,6 +189,8 @@ def test_unreadable_content_imports_as_an_empty_video(tmp_path):
     root = _media_root(tmp_path)
     for content in ("", "not json", "{}", "[1, null, \"x\"]"):
         _assert_same(content, user_id="u1", media_dir=root, options=RenderOptions())
+        spec = import_note(content, user_id="u1", media_dir=root, options=RenderOptions()).spec
+        assert spec.segments == [] and spec.audio_tracks == []
 
 
 # ── the options survive the trip ────────────────────────────────────────────
@@ -430,6 +432,27 @@ def _spec(**changes):
     ({"voice": {"provider": "fal"}}, "voice.provider"),
     ({"audio_tracks": [{"id": "t1", "asset": "a1", "start": "video_start", "end": "video_end"}]},
      "audio file"),
+    ({"assets": {"a1": {"from": "notes", "url": "/media/u1/a.mp3", "type": "audio"}}},
+     "can't be an audio file"),
+    ({"chrome": {"watermark": {"asset": "v1"}},
+      "assets": {"a1": {"from": "notes", "url": "/media/u1/a.png", "type": "image"},
+                 "v1": {"from": "notes", "url": "/media/u1/v.mp4", "type": "video"}}},
+     "watermark: must be an image"),
+    ({"assets": {"a1": {"from": "notes", "url": "/media/u1/a.png", "type": "image"},
+                 "v1": {"from": "notes", "url": "/media/u1/v.mp4", "type": "video"}},
+      "segments": [{"id": "s1", "kind": "scene", "visual": {"asset": "a1"}},
+                   {"id": "s2", "kind": "clip", "role": "intro", "visual": {"asset": "v1", "audio": "play"}}]},
+     "intro can only be the first"),
+    ({"assets": {"a1": {"from": "notes", "url": "/media/u1/a.png", "type": "image"},
+                 "m1": {"from": "notes", "url": "/media/u1/m.mp3", "type": "audio"}},
+      "audio_tracks": [{"id": "t1", "asset": "m1", "start": {"segment": "gone", "edge": "start"},
+                        "end": {"segment": "s1", "edge": "end"}}]},
+     "segment 'gone', which is no longer there"),
+    ({"segments": [{"id": "s1", "kind": "scene", "narration": {"beats": [{"id": "b1", "text": "x"}]},
+                    "overlays": [{"id": "o1", "type": "quote", "text": "x",
+                                  "show": {"from": {"beat": "b9", "edge": "start"},
+                                           "to": {"beat": "b9", "edge": "end"}}}]}]},
+     "beat 'b9', which is no longer there"),
 ])
 def test_what_the_notes_renderer_cannot_draw_is_refused(change, message):
     with pytest.raises(UnsupportedSpec, match=message):
@@ -442,10 +465,68 @@ def test_what_the_notes_renderer_cannot_draw_is_refused(change, message):
     ({"segments": [{"id": "s1", "kind": "card"}]}, "card with no card"),
     ({"segments": [{"id": "s1", "kind": "clip"}]}, "clip with no visual"),
     ({"segments": [{"id": "s1", "kind": "scene", "colour": "red"}]}, "Extra inputs"),
+    # A misspelt key inside a nested setting is refused too, not quietly
+    # dropped in favour of the default.
+    ({"style": {"transition": {"styl": "dissolve"}}}, "Extra inputs"),
+    ({"style": {"cards": {"title": {"title_size": 9}}}}, "Extra inputs"),
+    ({"style": {"code": {"positon": "top"}}}, "Extra inputs"),
+    ({"segments": [{"id": "s1", "kind": "scene", "transition_in": {"duraton": 2}}]}, "Extra inputs"),
+    # The tag is what says which kind of asset or overlay this is.
+    ({"assets": {"a1": {"url": "/media/u1/a.png", "type": "image"}}}, "discriminator"),
 ])
 def test_a_malformed_spec_is_rejected(change, message):
     with pytest.raises(ValidationError, match=message):
         _spec(**change)
+
+
+def test_a_spec_dumps_in_its_own_spelling_and_compact_dumps_load_back(tmp_path):
+    root = _media_root(tmp_path)
+    note = json.dumps([
+        {"id": "img", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "q1", "type": "quote", "content": [{"type": "text", "text": "Salt is gold"}]},
+    ])
+    spec = import_note(note, user_id="u1", media_dir=root,
+                       options=RenderOptions(quotes={"enabled": True})).spec
+    assert '"from":"notes"' in spec.model_dump_json() and "from_" not in spec.model_dump_json()
+    for compact in (dict(exclude_defaults=True), dict(exclude_unset=True), dict(exclude_none=True)):
+        assert VideoSpec.model_validate(spec.model_dump(**compact)) == spec, compact
+    schema = VideoSpec.model_json_schema()["$defs"]
+    assert "from" in schema["NotesAsset"]["required"] and "type" in schema["QuoteOverlay"]["required"]
+
+
+def test_a_heading_that_is_not_read_still_belongs_to_its_section(tmp_path):
+    root = _media_root(tmp_path)
+    text = lambda t: [{"type": "text", "text": t}]
+    note = json.dumps([
+        {"id": "img", "type": "image", "props": {"url": "/media/u1/a.png"}},
+        {"id": "h1", "type": "heading", "content": text("The market")},
+        {"id": "q1", "type": "quote", "content": text("Salt is gold")},
+        {"id": "img2", "type": "image", "props": {"url": "/media/u1/b.png"}},
+        {"id": "h2", "type": "heading", "content": text("Ruins")},
+        {"id": "p1", "type": "paragraph", "content": text("Nothing left.")},
+    ])
+    spec = import_note(note, user_id="u1", media_dir=root, options=RenderOptions(
+        title_card=False, read_chapters=False, quotes={"enabled": True})).spec
+    first, second = spec.segments
+    assert first.source.block_ids == ["img", "h1", "q1"]
+    assert second.source.block_ids == ["img2", "h2", "p1"]
+    # The picture held in silence before the quote says which picture it is.
+    assert (first.beats[0].text, first.beats[0].speak, first.beats[0].block_id) == ("", False, "img")
+
+
+def test_a_clip_whose_file_has_gone_is_skipped_not_left_without_a_picture(tmp_path):
+    root = _media_root(tmp_path)
+    note = json.dumps([
+        {"id": "v", "type": "videoFile", "props": {"url": "/media/u1/loud.mp4"}},
+        {"id": "p", "type": "paragraph", "content": [{"type": "text", "text": "After the clip."}]},
+    ])
+    spec = import_note(note, user_id="u1", media_dir=root, options=RenderOptions(title_card=False),
+                       has_audio=lambda path: True).spec
+    assert [s.kind for s in spec.segments] == ["clip", "scene"]
+    os.remove(os.path.join(root, "u1", "loud.mp4"))
+    plan = compile_spec(spec, user_id="u1", media_dir=root).segmentation
+    assert [s.kind for s in plan.shots] == ["still"]
+    assert plan.warnings == ["Skipped missing media: /media/u1/loud.mp4"]
 
 
 # ── POST /api/video/spec ─────────────────────────────────────────────────────
@@ -481,6 +562,7 @@ def test_the_spec_route_returns_the_note_as_a_spec(notes):
     data = _spec_route(notes, options={"title_card": False, "quotes": {"enabled": True}})
     spec = VideoSpec.model_validate(data.spec)
     assert spec.source.note_id == "mine"
+    assert spec.source.imported_at and not spec.source.selection
     assert spec.title == "Salt"
     [scene] = spec.segments
     assert [b.block_id for b in scene.beats] == ["p1", "q1"]
@@ -493,6 +575,7 @@ def test_the_spec_route_shapes_the_spec_as_a_render_would(notes):
     selection = json.dumps(_SPEC_NOTE[2:])
     data = _spec_route(notes, options={"title_card": True}, selected_content=selection)
     spec = VideoSpec.model_validate(data.spec)
+    assert spec.source.selection
     assert [s.kind for s in spec.segments] == ["card", "scene"]
     assert spec.segments[0].card.title == "Salt"
     # Quotes are off by default, so the quotation is read as plain prose.

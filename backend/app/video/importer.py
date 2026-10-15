@@ -27,10 +27,10 @@ from app.video.segmenter import (
     _media_kind, _media_url, _split_attribution, resolve_media_path,
 )
 from app.video.spec import (
-    AnchorRef, AudioTrack, Background, Beat, Card, Cards, Chrome, CodeOverlay, Motion,
-    Narration, NotesAsset, Output, OverlayText, Pauses, QuoteOverlay, QuoteStyle,
-    Segment, SegmentSource, Span, SpecSource, Style, VideoSpec, Visual, Voice,
-    Waveform, Watermark,
+    AnchorRef, AudioTrack, Background, Beat, Card, CardText, Cards, Chrome, CodeOverlay,
+    CodeStyle, Motion, Narration, NotesAsset, Output, OverlayText, Pauses, QuoteOverlay,
+    QuoteStyle, Segment, SegmentSource, Span, SpecSource, Style, Transition, VideoSpec,
+    Visual, Voice, Waveform, Watermark,
 )
 
 
@@ -80,17 +80,21 @@ def import_note(
     author: str = "",
     has_audio: Optional[Callable[[str], Any]] = None,
     note_id: Optional[str] = None,
+    imported_at: Optional[str] = None,
+    selection: bool = False,
 ) -> ImportResult:
-    """Same arguments as `segment()`, plus the note's id for provenance."""
+    """Same arguments as `segment()`, plus provenance: the note's id, when it was
+    read, and whether `content` is only a selection of it."""
     warnings: List[str] = []
     parts, order = _walk(content, user_id=user_id, media_dir=media_dir, options=options,
                          note_title=note_title, author=author, has_audio=has_audio,
                          warnings=warnings)
     assets = _Assets()
-    segments = _group(parts, assets, options.heading_pause_ms, order)
+    segments = _group(parts, assets, order)
     spec = VideoSpec(
         title=note_title,
-        source=SpecSource(note_id=note_id) if note_id else None,
+        source=(SpecSource(note_id=note_id, imported_at=imported_at, selection=selection)
+                if note_id or imported_at else None),
         output=Output(
             aspect=options.aspect, resolution=options.resolution, quality=options.quality,
             fps=options.fps, subtitles=options.subtitles, chapters=options.embed_chapters,
@@ -153,6 +157,9 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
         ))
 
     pending: List[Beat] = []
+    # Blocks read in this section that leave no beat (a heading not read
+    # aloud), recorded on whichever part the section's beats would go to.
+    pending_blocks: List[str] = []
     open_part: Optional[_Part] = None
     pending_chapter: Optional[str] = None
     pending_card: Optional[_Part] = None
@@ -161,11 +168,15 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
         return narration_text(pending, card=False, heading_pause_ms=heading_ms)
 
     def flush(next_part: Optional[_Part]) -> None:
-        nonlocal pending, open_part, pending_chapter, pending_card
+        nonlocal pending, pending_blocks, open_part, pending_chapter, pending_card
         text = spoken()
 
         if open_part is None and text:
             open_part = _Part(kind="still", label="opening")
+        holder = open_part if open_part is not None else next_part
+        if holder is not None:
+            holder.block_ids.extend(pending_blocks)
+        pending_blocks = []
         if open_part is not None:
             open_part.beats = pending
             if pending_chapter and not open_part.chapter:
@@ -225,7 +236,7 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
                 quoted = _split_attribution(_inline_text(block.get("content")))
                 if quoted[0]:
                     quote_part = carry("quote", overlay=QuoteOverlay(
-                        id="", text=quoted[0], attribution=quoted[1] or None))
+                        id="", type="quote", text=quoted[0], attribution=quoted[1] or None))
                     after = carry("after quote")
                     if spoken() or pending_chapter is not None or pending_card is not None:
                         flush(quote_part)
@@ -239,7 +250,7 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
             if btype == "codeBlock":
                 code = _inline_text(block.get("content"))
                 if code.strip():
-                    code_part = carry("code", overlay=CodeOverlay(id="", text=code))
+                    code_part = carry("code", overlay=CodeOverlay(id="", type="code", text=code))
                     after = carry("after code")
                     if spoken() or pending_chapter is not None or pending_card is not None:
                         flush(code_part)
@@ -254,6 +265,8 @@ def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio
                 continue
 
             if btype == "heading" and not options.read_chapters:
+                if block_id:
+                    pending_blocks.append(block_id)
                 continue
 
             text = _block_narration(block, options)
@@ -353,7 +366,7 @@ class _Assets:
         if found is None:
             found = f"a{len(self._keys) + 1}"
             self._keys[(url, media_type)] = found
-            self.registry[found] = NotesAsset(url=url, type=media_type, label=label or None)
+            self.registry[found] = NotesAsset(from_="notes", url=url, type=media_type, label=label or None)
         return found
 
 
@@ -375,8 +388,7 @@ def _joins(segment_parts: List[_Part], part: _Part) -> bool:
     return last.overlay is not None and part.label == f"after {last.overlay.type}"
 
 
-def _group(parts: List[_Part], assets: _Assets, heading_ms: int,
-           order: Dict[str, int]) -> List[Segment]:
+def _group(parts: List[_Part], assets: _Assets, order: Dict[str, int]) -> List[Segment]:
     groups: List[List[_Part]] = []
     for part in parts:
         if groups and _joins(groups[-1], part):
@@ -404,7 +416,8 @@ def _group(parts: List[_Part], assets: _Assets, heading_ms: int,
             if not part_beats and part.overlay is None and len(group) > 1:
                 # A section with nothing to say, interrupted at once by a quote
                 # or code block, is still its own moment on screen.
-                part_beats = [Beat(id="", text="", speak=False)]
+                part_beats = [Beat(id="", text="", speak=False,
+                                   block_id=part.block_ids[0] if part.block_ids else None)]
             for beat in part_beats:
                 beats.append(beat.model_copy(update={"id": f"b{len(beats) + 1}"}))
             if part.overlay is not None:
@@ -452,15 +465,15 @@ def _style(options: RenderOptions, assets: _Assets) -> Style:
         ),
         fit=options.fit,
         motion=Motion(effect=options.ken_burns.effect, amount=options.ken_burns.amount),
-        transition=options.transition.model_copy(),
+        transition=Transition(**options.transition.model_dump()),
         min_segment_seconds=options.min_shot_seconds,
         cards=Cards(
             seconds=options.card_seconds, motion=options.ken_burns.include_cards,
-            title=options.title_card_text.model_copy(),
-            chapter=options.chapter_card_text.model_copy(),
+            title=CardText(**options.title_card_text.model_dump()),
+            chapter=CardText(**options.chapter_card_text.model_dump()),
         ),
         quote=QuoteStyle(**options.quotes.model_dump(exclude={"enabled"})),
-        code=options.code.model_copy(),
+        code=CodeStyle(**options.code.model_dump()),
     )
 
 
