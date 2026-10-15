@@ -11,6 +11,7 @@ import {
 } from '@/api/videoGen'
 import { useSettingsStore } from '@/stores/settings'
 import { apiErrorMessage } from '@/utils/format'
+import { renderVoices, type VoiceChoice } from '@/utils/renderVoices'
 
 const OPTIONS_KEY = 'gecko-video-gen-options'
 /** The account setting the options are saved under. Saved there rather than only
@@ -192,7 +193,8 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, select
   const [options, setOptions] = useState<RenderOptions>(loadStoredOptions)
   const [tab, setTab] = useState<TabId>('format')
   const [estimate, setEstimate] = useState<VideoEstimate | null>(null)
-  const [voices, setVoices] = useState<string[]>([])
+  const [voices, setVoices] = useState<VoiceChoice[]>([])
+  const [accountVoice, setAccountVoice] = useState<string | null>(null)
   const [busy, setBusy] = useState<'preview' | 'full' | null>(null)
   const [uploading, setUploading] = useState<UploadKind | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -241,7 +243,13 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, select
   useEffect(() => {
     let cancelled = false
     settingsApi.getSpeechSettings()
-      .then((s) => { if (!cancelled) setVoices(s.voices || []) })
+      .then((s) => {
+        if (cancelled) return
+        // The voices of the engine that will read this video, not always fal.ai's.
+        const listed = renderVoices(s, useSettingsStore.getState().voice)
+        setVoices(listed.choices)
+        setAccountVoice(listed.accountVoice)
+      })
       .catch(() => { /* the account's default voice is used when this is unavailable */ })
     return () => { cancelled = true }
   }, [])
@@ -424,10 +432,13 @@ export default function VideoGenModal({ noteId, noteTitle, diagramImages, select
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label">Voice</label>
-                  <select className="input" value={options.voice ?? ''}
+                  {/* A voice saved for the other engine isn't listed; the render
+                      falls back to the account's voice, and so does the picker. */}
+                  <select className="input"
+                          value={voices.some((v) => v.id === options.voice) ? options.voice ?? '' : ''}
                           onChange={(e) => patch({ voice: e.target.value || null })}>
-                    <option value="">Account default</option>
-                    {voices.map((v) => <option key={v} value={v}>{v}</option>)}
+                    <option value="">{accountVoice ? `Account default (${accountVoice})` : 'Account default'}</option>
+                    {voices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
                   </select>
                 </div>
                 <div>
