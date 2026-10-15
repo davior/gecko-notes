@@ -1,6 +1,6 @@
 # Gecko Video Creator (GVC) — Product & Data Model Spec
 
-**Status:** Draft for discussion · Phase 0 in progress (§10)
+**Status:** Draft for discussion · Phase 0 in progress: renders now go through a VideoSpec (§10)
 **Date:** 2026-10-07
 **Scope:** What GVC is, the JSON document a video is described by (the **VideoSpec**),
 how an AI builds and edits one, and how GVC pulls scripts from Gecko Notes and media
@@ -181,7 +181,9 @@ Six existing defects should be fixed on the way in rather than carried over:
   and the "title + chapter" overlay as typed.
 
 Phase 0 reproduces all of these exactly, so its parity tests can hold the spec path to
-today's output; each is a small follow-up fix once the spec path is the only one.
+the original output. The spec path is now the only one, so each is a small follow-up fix,
+made in the importer and in `tests/segment_reference.py` together (or that oracle is
+retired).
 
 ---
 
@@ -994,7 +996,7 @@ bug fixes only, each logged so it can be ported.
 
 | Phase | What | Done when |
 |---|---|---|
-| **0 — Spec inside Notes** | **In progress.** First, alongside today's code: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)), an importer that walks a note exactly as `segment()` does ([`importer.py`](../backend/app/video/importer.py)), and a compiler back to today's `Shot`s and `RenderOptions` ([`compiler.py`](../backend/app/video/compiler.py)), with `renderer.py` and `segment()` untouched. Then, separately: `segment()` switches to the spec path, `GET /api/video/spec?note_id=` exposes it, and the voice bug is fixed. | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical through the spec path, with no real encodes |
+| **0 — Spec inside Notes** | **In progress.** Done: the VideoSpec in Pydantic ([`spec.py`](../backend/app/video/spec.py)); an importer that walks a note as the segmenter always has ([`importer.py`](../backend/app/video/importer.py)); a compiler back to the `Shot`s and `RenderOptions` the renderer uses ([`compiler.py`](../backend/app/video/compiler.py)); and `segment()` now going through them, so every render is built from a spec. `POST /api/video/spec` returns that spec for a note (same body as `/estimate`). Still to do: the voice bug and the chapter-mark quirks (§3.2). | [`tests/test_video_spec.py`](../backend/tests/test_video_spec.py): every segmenter test case, a few thousand generated notes and the renderer's ffmpeg commands come out identical to the original walk, kept verbatim as an oracle ([`segment_reference.py`](../backend/tests/segment_reference.py)), with no real encodes |
 | **1 — GVC renders what Notes renders** | New repo `davior/gvc` from GAM's skeleton. The engine copied from the Phase 0 merge, SSO, project storage and history, import from Notes over HTTP, speech through Notes, preview and full render, download. Output to GAM and back into the note follow once those are designed. | Any note renders in GVC the same as in Notes |
 | **2 — The new capabilities** | Timed overlays, multiple audio tracks, trims, per-segment voice/motion/transition, GAM search and picker, `generate` / `search` placeholders, credits | The §6 example renders |
 | **3 — AI editing** | The operations of §8.2, the suggestions tray, chat, staged review | "Make a video from this note" produces a reviewed, rendered video |
@@ -1066,4 +1068,5 @@ already renders, it's wrong, and finding that out costs a branch, not a new app.
 ---
 
 *This document is a product and data-model spec. Phase 0's spec, importer and compiler
-are in `backend/app/video/`; nothing a user sees has changed.*
+are in `backend/app/video/`, and every render now goes through them; nothing a user sees
+has changed.*

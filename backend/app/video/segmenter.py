@@ -3,7 +3,10 @@
 A "shot" is one continuous piece of screen time: a background (still image,
 looping video, or a Pillow-composed card) plus the narration heard over it. The
 document is walked in order and every image/video acts as a boundary — the text
-between one media block and the next becomes that media's narration.
+between one media block and the next becomes that media's narration. The walk
+itself is in `importer`, which records it as a VideoSpec; `segment()` compiles
+that spec back to shots. This module keeps the shot model and the reading of
+blocks — what counts as media, what text a block speaks — that both share.
 
 Flattening to shots rather than nesting segments is what keeps the renderer
 simple: a clip that carries its own audio is not a special case inside a segment,
@@ -12,7 +15,6 @@ under the text that follows it), and title/chapter cards are shots too. One
 ffmpeg invocation per shot, one progress tick per shot.
 """
 
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -56,9 +58,9 @@ class Shot:
     quote_attribution: Optional[str] = None
     # A code block drawn over this shot's background. Always drawn when set;
     # `narration` above only carries its text when narrate_code is on — see
-    # segment()'s codeBlock branch.
+    # the importer's codeBlock branch.
     code_text: Optional[str] = None
-    # "intro" or "outro" for a clip bracketing the article (see _bumper_shot).
+    # "intro" or "outro" for a clip bracketing the article (see importer._bumper).
     # The renderer draws nothing of its own over one of these.
     bumper: Optional[str] = None
     # Set on the second half of a sounded-clip pair, purely for readable logs.
@@ -318,282 +320,19 @@ def segment(
     author: str = "",
     has_audio: Optional[Any] = None,
 ) -> Segmentation:
-    """Turn note content into shots.
+    """Turn note content into shots, by way of a VideoSpec.
 
-    `has_audio` is a callable(path) -> bool used to decide whether a video clip
-    carries its own audio track; the renderer passes an ffprobe-backed one, and
-    tests pass a stub. When it is None every clip is treated as silent.
+    The note is imported as a spec (app/video/importer.py) and compiled back to
+    the shots the renderer works from (app/video/compiler.py), so what a render
+    does is always something a spec can say. `has_audio` is a callable(path) ->
+    bool used to decide whether a video clip carries its own audio track; the
+    renderer passes an ffprobe-backed one, and tests pass a stub. When it is
+    None every clip is treated as silent.
     """
-    result = Segmentation()
+    # Imported here: the importer is built on this module's helpers.
+    from app.video.importer import segment_via_spec
 
-    try:
-        blocks = json.loads(content or "[]")
-    except (ValueError, TypeError):
-        blocks = []
-    if not isinstance(blocks, list):
-        blocks = []
-
-    if options.title_card and (note_title or author):
-        result.shots.append(Shot(
-            kind="card",
-            card_title=note_title or "Untitled",
-            card_subtitle=author,
-            card_kind="title",
-            chapter=note_title or None,
-            label="title card",
-        ))
-
-    # Text accumulated since the last media boundary, plus the shot it belongs to.
-    pending_text: List[str] = []
-    # The shot that pending_text will be attached to when the next boundary lands.
-    open_shot: Optional[Shot] = None
-    # A heading seen since the last boundary, to hang a chapter mark on.
-    pending_chapter: Optional[str] = None
-    pending_card: Optional[Shot] = None
-
-    def flush(next_shot: Optional[Shot]) -> None:
-        """Close the open shot with whatever narration has accumulated."""
-        nonlocal pending_text, open_shot, pending_chapter, pending_card
-        text = "\n".join(t for t in pending_text if t).strip()
-
-        if open_shot is None and text:
-            # Text before the first media block: give it the fallback background.
-            open_shot = Shot(kind="still", background=None, label="opening")
-        if open_shot is not None:
-            open_shot.narration = text
-            if pending_chapter and not open_shot.chapter:
-                open_shot.chapter = pending_chapter
-            if pending_card is not None:
-                result.shots.append(pending_card)
-                pending_card = None
-            result.shots.append(open_shot)
-        elif pending_card is not None:
-            result.shots.append(pending_card)
-            pending_card = None
-
-        # A heading with nothing spoken under it (read_chapters off) has no shot
-        # to hang its mark on; hand it to the shot that starts here instead.
-        carried_chapter = None
-        if (pending_chapter and open_shot is None
-                and next_shot is not None and next_shot.kind != "card"):
-            carried_chapter = pending_chapter
-        pending_text = []
-        pending_chapter = None
-        open_shot = next_shot
-        if carried_chapter and open_shot is not None and not open_shot.chapter:
-            open_shot.chapter = carried_chapter
-
-    for block in _flatten(blocks):
-        kind = _classify(block, options)
-
-        if kind is None:
-            btype = block.get("type")
-            if btype == "heading":
-                heading = _inline_text(block.get("content")).strip()
-                if heading:
-                    if options.chapter_screens:
-                        # A chapter screen interrupts: close the current shot so
-                        # the card lands between sections rather than mid-thought.
-                        # Nothing from this heading is recorded before the flush,
-                        # or the section *above* it would be labelled with the
-                        # chapter this heading is opening.
-                        #
-                        # The section after the card resumes on the same picture
-                        # — cutting to the plain fallback for one screen and back
-                        # again would read as a mistake, the same reasoning the
-                        # quote handler below uses. A card interrupting a sounded
-                        # clip resumes muted, matching how the clip is carried
-                        # elsewhere; only a genuinely new image or video changes
-                        # the background from here.
-                        carry_kind: ShotKind = (
-                            "video_muted"
-                            if open_shot is not None and open_shot.kind.startswith("video")
-                            else "still"
-                        )
-                        carry_background = open_shot.background if open_shot is not None else None
-                        flush(Shot(kind=carry_kind, background=carry_background,
-                                   label="after chapter card"))
-                        # The card reads its own heading. Letting the heading fall
-                        # through to the next section instead would show it in
-                        # silence and then speak it over the following shot, once
-                        # the words were no longer on screen.
-                        pending_card = Shot(
-                            kind="card", card_title=heading, chapter=heading,
-                            card_kind="chapter",
-                            narration=_as_sentence(heading) if options.read_chapters else "",
-                            label="chapter card",
-                        )
-                        # The card carries the chapter mark, so the section after
-                        # it must not claim the same one and duplicate the entry.
-                        pending_chapter = None
-                        continue
-                    # Without a chapter screen the heading is read inside the
-                    # section it introduces, so that shot carries the mark.
-                    if pending_chapter is None:
-                        pending_chapter = heading
-
-            if btype == "quote" and options.quotes.enabled:
-                quoted = _split_attribution(_inline_text(block.get("content")))
-                if quoted[0]:
-                    # A quote gets its own screen time so the words can be on
-                    # screen while they are read, but it keeps the background of
-                    # the section it interrupts — cutting to a different picture
-                    # for one sentence would read as a mistake. A sounded clip is
-                    # carried muted, or it would replay its audio underneath.
-                    carry_kind: ShotKind = (
-                        "video_muted"
-                        if open_shot is not None and open_shot.kind.startswith("video")
-                        else "still"
-                    )
-                    carry_background = open_shot.background if open_shot is not None else None
-                    quote_shot = Shot(
-                        kind=carry_kind, background=carry_background,
-                        quote_text=quoted[0], quote_attribution=quoted[1] or None,
-                        label="quote",
-                    )
-                    if (any(t.strip() for t in pending_text)
-                            or pending_chapter is not None or pending_card is not None):
-                        flush(quote_shot)
-                    else:
-                        # The open shot has nothing of its own to say, so the
-                        # quote takes it over rather than being preceded by a
-                        # blank copy of itself held for min_shot_seconds.
-                        open_shot = quote_shot
-                    # Closing the quote's own shot immediately is what keeps the
-                    # quotation as its narration rather than whatever follows it.
-                    pending_text.append(_as_sentence(quoted[0]))
-                    flush(Shot(kind=carry_kind, background=carry_background,
-                               label="after quote"))
-                    continue
-
-            if btype == "codeBlock":
-                code = _inline_text(block.get("content"))
-                if code.strip():
-                    # A code block gets its own screen time the same way a
-                    # quote does — its own shot, over whatever background the
-                    # section it interrupts was already showing — but unlike a
-                    # quote it is drawn unconditionally: only whether it is
-                    # *narrated* depends on narrate_code, not whether it shows
-                    # up at all.
-                    carry_kind: ShotKind = (
-                        "video_muted"
-                        if open_shot is not None and open_shot.kind.startswith("video")
-                        else "still"
-                    )
-                    carry_background = open_shot.background if open_shot is not None else None
-                    code_shot = Shot(
-                        kind=carry_kind, background=carry_background,
-                        code_text=code, label="code",
-                    )
-                    if (any(t.strip() for t in pending_text)
-                            or pending_chapter is not None or pending_card is not None):
-                        flush(code_shot)
-                    else:
-                        open_shot = code_shot
-                    if options.narrate_code:
-                        pending_text.append(_as_sentence(code))
-                    flush(Shot(kind=carry_kind, background=carry_background,
-                               label="after code"))
-                continue
-
-            if btype == "heading" and not options.read_chapters:
-                # The chapter mark was taken above; the words are just not read.
-                continue
-
-            text = _block_narration(block, options)
-            if text.strip():
-                spoken = _as_sentence(text)
-                # A heading is a section boundary, not another sentence of the
-                # paragraph above it, so it gets a pause on both sides. A card
-                # already has the boundary of its own shot and needs no marking.
-                if btype == "heading" and options.heading_pause_ms > 0:
-                    spoken = _set_apart(spoken)
-                pending_text.append(spoken)
-            continue
-
-        url = _media_url(block, options)
-        path = resolve_media_path(url, user_id, media_dir) if url else None
-        if path is None:
-            if url and not url.startswith("/media/"):
-                result.warnings.append(f"Skipped remote media: {url[:120]}")
-            elif url:
-                result.warnings.append(f"Skipped missing media: {url[:120]}")
-            # Not usable as a background — but it is still a boundary, so close
-            # the current shot and open a fallback-background one in its place.
-            flush(Shot(kind="still", background=None, label="fallback"))
-            continue
-
-        if kind == "image":
-            flush(Shot(kind="still", background=path))
-            continue
-
-        # A video clip. If it carries audio it plays whole with its own sound and
-        # the narration waits; the text below it then runs over the same clip
-        # looped silently, so the section stays visually continuous.
-        sounded = bool(has_audio(path)) if callable(has_audio) else False
-        if sounded:
-            flush(None)
-            result.shots.append(Shot(kind="video_sound", background=path, label="clip with audio"))
-            open_shot = Shot(kind="video_muted", background=path, label="clip continued, muted")
-        else:
-            flush(Shot(kind="video_muted", background=path))
-
-    flush(None)
-
-    # Drop a trailing shot that ended up with nothing to show or say. A media
-    # shot with no narration is kept — it still displays for min_shot_seconds.
-    # So is a silent code block (narrate_code off, nothing narrated yet) — it
-    # still has its panel to show, even with no background of its own.
-    result.shots = [
-        s for s in result.shots
-        if s.kind != "still" or s.background is not None or s.narration.strip() or s.code_text
-    ]
-
-    # The section reopened after a quote or a code block is a continuation,
-    # not a shot of its own: when nothing followed it, it would replay the
-    # same background in silence, so drop it.
-    trimmed: List[Shot] = []
-    for shot in result.shots:
-        previous = trimmed[-1] if trimmed else None
-        if (previous is not None and (previous.quote_text is not None or previous.code_text is not None)
-                and shot.quote_text is None and shot.code_text is None
-                and not shot.narration.strip()
-                and shot.chapter is None
-                and shot.kind == previous.kind
-                and shot.background == previous.background):
-            continue
-        trimmed.append(shot)
-    result.shots = trimmed
-
-    # The intro and outro bracket the article rather than stand in for it, so a
-    # note with nothing of its own to show still renders nothing.
-    if result.shots:
-        intro = _bumper_shot("intro", options, user_id, media_dir, result.warnings)
-        outro = _bumper_shot("outro", options, user_id, media_dir, result.warnings)
-        if intro is not None:
-            result.shots.insert(0, intro)
-        if outro is not None:
-            result.shots.append(outro)
-    return result
-
-
-def _bumper_shot(
-    which: str, options: RenderOptions, user_id: str, media_dir: str, warnings: List[str],
-) -> Optional[Shot]:
-    """The intro or outro clip as a shot, or None when it is off or unusable.
-
-    It is a sounded clip like any other in a note: played whole, with its own
-    audio when it has some and silence when it doesn't, which the renderer
-    probes for itself.
-    """
-    spec = options.intro if which == "intro" else options.outro
-    if not spec.enabled or not spec.url:
-        return None
-    path = resolve_media_path(spec.url, user_id, media_dir)
-    if path is None or _media_kind(spec.url) != "video":
-        warnings.append(f"The {which} was skipped: that clip could not be read.")
-        return None
-    return Shot(
-        kind="video_sound", background=path,
-        chapter=which.capitalize(), bumper=which, label=which,
+    return segment_via_spec(
+        content, user_id=user_id, media_dir=media_dir, options=options,
+        note_title=note_title, author=author, has_audio=has_audio,
     )

@@ -1,16 +1,18 @@
 """A note (BlockNote JSON) -> a VideoSpec.
 
-The walk is `segmenter.segment()`'s, step for step, so that compiling what this
-produces gives back exactly the shots `segment()` would have made — that
-equivalence is what tests/test_video_spec.py holds it to, and what lets
-`segment()` later become `compile_spec(import_note(...))`. What it records is
-richer: the text under a picture is kept as one beat per block rather than one
-joined string, a quote or code block is an overlay on its own beat rather than a
-shot of its own, and every segment remembers which blocks it came from.
+This is the walk every render starts from: `segmenter.segment()` is
+`compile_spec(import_note(...))`. It reads a note the way the segmenter always
+has — every image or video a boundary, the text below it that section's
+narration — but records more than shots: the text under a picture is kept as one
+beat per block rather than one joined string, a quote or code block is an
+overlay on its own beat rather than a shot of its own, and every segment and
+beat remembers which blocks it came from.
 
-Until the switch, the two walks must change together. Anything the import
-decides — whether headings become chapter screens, whether quotes are drawn —
-is settled here, from `RenderOptions`, and the spec only records the outcome.
+The walk is the original segmenter's, step for step, quirks included, and
+tests/test_video_spec.py holds it to a verbatim copy of that original
+(tests/segment_reference.py). Anything the import decides — whether headings
+become chapter screens, whether quotes are drawn — is settled here, from
+`RenderOptions`, and the spec only records the outcome.
 """
 
 import json
@@ -35,8 +37,7 @@ from app.video.spec import (
 @dataclass
 class ImportResult:
     spec: VideoSpec
-    # Media the note references that could not be used, in the order and
-    # wording segment() reports them.
+    # Media the note references that could not be used, in document order.
     warnings: List[str] = field(default_factory=list)
 
 
@@ -47,7 +48,7 @@ class _Part:
     kind: ShotKind
     media: Optional[Tuple[str, str]] = None   # (url, "image" | "video")
     media_label: Optional[str] = None         # a readable name, when the file has one
-    path: Optional[str] = None                # resolved, for segment()'s comparisons
+    path: Optional[str] = None                # resolved, for the cleanup passes
     label: str = ""
     beats: List[Beat] = field(default_factory=list)
     chapter: Optional[str] = None
@@ -61,7 +62,7 @@ class _Part:
                               heading_pause_ms=heading_pause_ms)
 
     def panel(self) -> bool:
-        """Whether segment()'s shot would carry quote_text or code_text."""
+        """Whether the compiled shot will carry quote_text or code_text."""
         if isinstance(self.overlay, CodeOverlay):
             return True
         if isinstance(self.overlay, QuoteOverlay):
@@ -120,7 +121,8 @@ def segment_via_spec(
     author: str = "",
     has_audio: Optional[Callable[[str], Any]] = None,
 ) -> Segmentation:
-    """`segment()` by way of a VideoSpec: same arguments, same shots and warnings."""
+    """What `segment()` returns: the note imported as a spec and compiled back to shots,
+    with the import's warnings ahead of the compile's."""
     imported = import_note(content, user_id=user_id, media_dir=media_dir, options=options,
                            note_title=note_title, author=author, has_audio=has_audio)
     compiled = compile_spec(imported.spec, user_id=user_id, media_dir=media_dir)
@@ -128,7 +130,7 @@ def segment_via_spec(
                         warnings=imported.warnings + compiled.segmentation.warnings)
 
 
-# ── the walk (segmenter.segment(), recording beats) ──────────────────────────
+# ── the walk ──────────────────────────
 
 def _walk(content, *, user_id, media_dir, options, note_title, author, has_audio,
           warnings) -> List[_Part]:

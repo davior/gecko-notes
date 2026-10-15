@@ -1,10 +1,12 @@
-"""The VideoSpec round trip: a note imported as a spec and compiled back must be
-exactly what `segment()` makes of it — the same shots, field for field, and the
-same warnings — and must drive the renderer to the same ffmpeg commands.
+"""The VideoSpec round trip: `segment()` imports a note as a spec and compiles it
+back to shots, and that must be exactly what the segmenter made of the note
+before it went through a spec — the same shots, field for field, and the same
+warnings — and must drive the renderer to the same ffmpeg commands.
 
-That equivalence is Phase 0 of docs/gecko-video-creator.md: it proves the spec
-can describe everything Notes already renders before anything is built on it.
-Nothing here encodes video; ffmpeg is faked as in test_video_render_resume.
+The original walk is kept verbatim as the oracle (segment_reference.py). This is
+Phase 0 of docs/gecko-video-creator.md: it proves the spec can describe
+everything Notes already renders before anything is built on it. Nothing here
+encodes video; ffmpeg is faked as in test_video_render_resume.
 """
 
 import inspect
@@ -12,17 +14,25 @@ import json
 import os
 import random
 import re
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlmodel import Session, SQLModel, create_engine
 
 import test_video_segmenter as segmenter_cases
+from segment_reference import segment as reference_segment
 from test_video_render_resume import FakeFFmpeg
 
+from app.models import Note
+from app.routers import video as video_router
+from app.schemas import VideoRenderRequest
 from app.video import renderer
 from app.video.compiler import IMPORT_ONLY_OPTIONS, UnsupportedSpec, compile_spec
-from app.video.importer import import_note, segment_via_spec
+from app.video.importer import import_note
 from app.video.options import RenderOptions
 from app.video.segmenter import segment
 from app.video.spec import VideoSpec
@@ -31,11 +41,11 @@ DOC = Path(__file__).resolve().parents[2] / "docs" / "gecko-video-creator.md"
 
 
 def _assert_same(content, **kwargs):
-    want = segment(content, **kwargs)
-    got = segment_via_spec(content, **kwargs)
+    want = reference_segment(content, **kwargs)
+    got = segment(content, **kwargs)
     assert got.shots == want.shots
     assert got.warnings == want.warnings
-    return want
+    return got
 
 
 def _round_trips_as_json(spec: VideoSpec) -> None:
@@ -272,6 +282,10 @@ def _render_commands(monkeypatch, media, content, options, *, via_spec):
         plan.warnings[:0] = imported.warnings
         monkeypatch.setattr(renderer, "segment", lambda *a, **k: plan)
         options = compiled.options
+    else:
+        # The original walk, with the options as given: how Notes rendered
+        # before segment() went through a spec.
+        monkeypatch.setattr(renderer, "segment", reference_segment)
     result = renderer.render(
         job_id="j", user_id="u1", media_dir=media, note_content=content,
         note_title="Salt", author="gecko", options=options, preview=True,
@@ -409,3 +423,64 @@ def test_what_the_notes_renderer_cannot_draw_is_refused(change, message):
 def test_a_malformed_spec_is_rejected(change, message):
     with pytest.raises(ValidationError, match=message):
         _spec(**change)
+
+
+# ── POST /api/video/spec ─────────────────────────────────────────────────────
+
+_SPEC_NOTE = [
+    {"id": "img", "type": "image", "props": {"url": "/media/u1/a.png"}},
+    {"id": "p1", "type": "paragraph", "content": [{"type": "text", "text": "Under the map."}]},
+    {"id": "q1", "type": "quote", "content": [{"type": "text", "text": "Salt is gold \u2014 A Trader"}]},
+]
+
+
+@pytest.fixture
+def notes(tmp_path, monkeypatch):
+    monkeypatch.setattr(video_router, "MEDIA_DIR", _media_root(tmp_path))
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        now = datetime.utcnow()
+        for note_id, owner in (("mine", "u1"), ("theirs", "u2")):
+            session.add(Note(id=note_id, title="Salt", content=json.dumps(_SPEC_NOTE),
+                             category_id="cat-1", user_id=owner, created_at=now, modified_at=now))
+        session.commit()
+        yield session
+
+
+def _spec_route(session, note_id="mine", **fields):
+    payload = VideoRenderRequest(note_id=note_id, **fields)
+    request = SimpleNamespace(state=SimpleNamespace(user_id="u1"))
+    return video_router.video_spec(payload, request, session).data
+
+
+def test_the_spec_route_returns_the_note_as_a_spec(notes):
+    data = _spec_route(notes, options={"title_card": False, "quotes": {"enabled": True}})
+    spec = VideoSpec.model_validate(data.spec)
+    assert spec.source.note_id == "mine"
+    assert spec.title == "Salt"
+    [scene] = spec.segments
+    assert [b.block_id for b in scene.beats] == ["p1", "q1"]
+    assert scene.overlays[0].attribution == "A Trader"
+    assert data.spec["assets"][scene.visual.asset]["from"] == "notes"
+    assert data.warnings == []
+
+
+def test_the_spec_route_shapes_the_spec_as_a_render_would(notes):
+    selection = json.dumps(_SPEC_NOTE[2:])
+    data = _spec_route(notes, options={"title_card": True}, selected_content=selection)
+    spec = VideoSpec.model_validate(data.spec)
+    assert [s.kind for s in spec.segments] == ["card", "scene"]
+    assert spec.segments[0].card.title == "Salt"
+    # Quotes are off by default, so the quotation is read as plain prose.
+    assert spec.segments[1].overlays == []
+
+
+def test_the_spec_route_refuses_another_users_note_and_bad_options(notes):
+    with pytest.raises(HTTPException) as missing:
+        _spec_route(notes, note_id="theirs")
+    assert missing.value.status_code == 404
+    with pytest.raises(HTTPException) as invalid:
+        _spec_route(notes, options={"aspect": "4:3"})
+    assert invalid.value.status_code == 400
+

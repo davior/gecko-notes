@@ -21,9 +21,11 @@ from app.models import Note, User, VideoRenderJob
 from app.routers.media import MEDIA_DIR
 from app.schemas import (
     DataResponse, ListResponse, VideoEstimateRead, VideoRenderJobRead, VideoRenderRequest,
+    VideoSpecRead,
 )
 from app.video import ffmpeg as F
 from app.video import worker
+from app.video.importer import import_note
 from app.video.options import RenderOptions
 from app.video.renderer import estimate
 
@@ -210,4 +212,32 @@ def estimate_render(payload: VideoRenderRequest, request: Request, session: Sess
     return DataResponse(data=VideoEstimateRead(
         shots=shots, narration_chars=chars,
         estimated_seconds=round(seconds, 1), warnings=warnings,
+    ))
+
+
+@router.post("/spec", response_model=DataResponse[VideoSpecRead])
+def video_spec(payload: VideoRenderRequest, request: Request, session: Session = Depends(get_session)):
+    """The VideoSpec a render of this note would be built from, as a document.
+
+    Takes the same body as /estimate, so a selection and the dialog's options
+    shape it exactly as they would the render. Nothing is rendered or stored.
+    """
+    user_id = _get_user_id(request)
+    note = _owned_note(session, payload.note_id, user_id)
+    options = _parse_options(payload.options)
+    user = session.get(User, user_id)
+
+    imported = import_note(
+        payload.selected_content or note.content or "[]",
+        user_id=user_id,
+        media_dir=MEDIA_DIR,
+        options=options,
+        note_title=note.title or "Untitled",
+        author=(user.username if user else "") or "",
+        has_audio=F.probe_has_audio,
+        note_id=note.id,
+    )
+    return DataResponse(data=VideoSpecRead(
+        spec=imported.spec.model_dump(mode="json", by_alias=True, exclude_none=True),
+        warnings=imported.warnings,
     ))

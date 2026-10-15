@@ -150,7 +150,7 @@ def _segment_shots(segment: Segment, spec: VideoSpec, resolve, heading_ms: int) 
             label=label,
         )
         if index == 0 and segment.chapter:
-            # Set after construction, as segment() does for every section, so
+            # Set after construction, as the walk always has for a section, so
             # the mark is exactly what it was — pause markers included, which
             # nothing strips from a section's chapter today.
             shot.chapter = segment.chapter
