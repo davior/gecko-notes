@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 import fal_client
 import httpx
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
@@ -1842,6 +1842,15 @@ class TTSRequest(BaseModel):
     text: str
     # The voice name; kept as `model` for backwards-compat with the frontend request shape.
     model: str = DEFAULT_TTS_VOICE
+    # Set by an app reading a whole video one chunk at a time (Gecko Video Creator).
+    # With it, the engine and voice are resolved the way Notes' own render worker
+    # resolves them (`video.worker.resolve_render_speech`): `voice` null means the
+    # account's voice, not `model`'s default, and the answer names both in
+    # X-Speech-Provider / X-Speech-Voice so the caller can pin them for every later
+    # chunk. Unpinned, a Deepgram hiccup partway through would read one chunk on
+    # fal.ai in a different voice. Absent, the request means what it always has.
+    provider: Optional[Literal["auto", "deepgram", "fal"]] = None
+    voice: Optional[str] = None
 
 
 @router.get("/speech/voices")
@@ -2256,8 +2265,20 @@ async def synthesize_speech(
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
-    data, media_type = await synthesize_tts_bytes(session, user_id, payload.text, voice=payload.model)
-    return Response(content=data, media_type=media_type)
+    if payload.provider is None:
+        data, media_type = await synthesize_tts_bytes(session, user_id, payload.text, voice=payload.model)
+        return Response(content=data, media_type=media_type)
+
+    from app.video.worker import resolve_render_speech
+
+    provider, voice = resolve_render_speech(session, user_id, payload.voice, payload.provider)
+    data, media_type = await synthesize_tts_bytes(
+        session, user_id, payload.text, voice=voice, provider_override=provider,
+    )
+    return Response(content=data, media_type=media_type, headers={
+        "X-Speech-Provider": provider,
+        "X-Speech-Voice": voice or "",
+    })
 
 
 @router.get("/usage")
