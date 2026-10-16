@@ -938,7 +938,7 @@ or extract.
 | Note as Markdown for the AI | expose `note_to_markdown`, e.g. `GET /api/notes/{id}?format=markdown` | ➕ small |
 | "Make video" in Notes | a button / slash-menu item → `https://gvc.geckopico.com/new?note={id}` (replaces today's dialog) | ➕ small |
 | Cross-origin calls | add `https://gvc.geckopico.com` to `CORS_ORIGIN` and the CSP in [`frontend/nginx.conf`](../frontend/nginx.conf), only where GVC's browser code calls Notes directly (server-side calls with a Bearer token need neither, as in GAM) | ➕ config |
-| Speech for GVC's renders | `POST /api/settings/speech/tts`, plus a `provider` field passed through to `synthesize_tts_bytes(provider_override=…)`, so one video can't switch voices partway | ➕ small |
+| Speech for GVC's renders | `POST /api/settings/speech/tts` with `provider` (and `voice`, null for the account's): resolved as the render worker resolves them, and named back in `X-Speech-Provider` / `X-Speech-Voice` so GVC pins both for every chunk and one video can't switch voices partway | ✅ |
 | Put the finished video back in the note | No endpoint can write `Note.content` safely against the editor's autosave (`routers/assets.py:174`), and today's auto-insert relies on Notes' own job registry | ➕ needs design (open decision 11) |
 
 **Re-sync.** Every imported segment records the `block_ids` it came from, and every beat

@@ -107,3 +107,52 @@ def test_a_render_is_read_in_the_dialogs_voice_on_the_engine_it_pins(
 
     worker._tts_caller(USER, chosen)("A chunk of narration.")
     assert heard == [expected]
+
+
+# ── POST /speech/tts for another app's render (Gecko Video Creator) ──────────
+
+def _speak(session, **body):
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(state=SimpleNamespace(user_id=USER))
+    payload = settings.TTSRequest(text="A chunk of narration.", **body)
+    return asyncio.run(settings.synthesize_speech(payload, request, session))
+
+
+def test_another_apps_render_is_read_in_the_accounts_voice_and_told_which(session, monkeypatch):
+    _set(session, "tts_model", "Rex")
+    _set(session, settings._SPEECH_CONFIG,
+         {"tts_provider": "auto", "deepgram_tts_model": "flux-haley-en"})
+    heard = _fake_providers(monkeypatch)
+
+    response = _speak(session, provider="auto")
+
+    # "auto" with a Deepgram key: Deepgram, in the account's Flux voice rather than
+    # `model`'s fal.ai default.
+    assert heard == [("deepgram", "flux-haley-en")]
+    assert response.headers["X-Speech-Provider"] == "deepgram"
+    # What to send back on every later chunk, so the video keeps one voice.
+    assert response.headers["X-Speech-Voice"] == "Rex"
+
+
+def test_a_pinned_engine_and_voice_are_kept(session, monkeypatch):
+    _set(session, "tts_model", "Rex")
+    _set(session, settings._SPEECH_CONFIG,
+         {"tts_provider": "auto", "deepgram_tts_model": "flux-haley-en"})
+    heard = _fake_providers(monkeypatch)
+
+    response = _speak(session, provider="fal", voice=FAL_VOICE)
+
+    assert heard == [("fal", FAL_VOICE)]
+    assert response.headers["X-Speech-Provider"] == "fal"
+    assert response.headers["X-Speech-Voice"] == FAL_VOICE
+
+
+def test_read_aloud_without_a_provider_is_unchanged(session, monkeypatch):
+    _set(session, settings._SPEECH_CONFIG, {"tts_provider": "fal"})
+    heard = _fake_providers(monkeypatch)
+
+    response = _speak(session, model=FAL_VOICE)
+
+    assert heard == [("fal", FAL_VOICE)]
+    assert "X-Speech-Provider" not in response.headers

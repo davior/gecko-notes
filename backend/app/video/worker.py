@@ -16,7 +16,7 @@ import shutil
 import threading
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 
 from sqlmodel import Session, select
 
@@ -88,6 +88,24 @@ def _render_voice(session: Session, user_id: str, provider: str, chosen: Optiona
     return load_selected_voice(session, user_id)
 
 
+def resolve_render_speech(
+    session: Session, user_id: str, chosen_voice: Optional[str], provider: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """The engine and voice a whole render is read with, resolved once.
+
+    `provider` "deepgram" or "fal" names the engine; None or "auto" takes the
+    account's setting, and "auto" there means Deepgram when a key is set. The voice
+    is `_render_voice`'s. Shared by this worker and by `POST /speech/tts` when
+    another app (Gecko Video Creator) renders, so both pin the same way.
+    """
+    from app.routers.settings import load_deepgram_api_key, load_speech_config
+
+    tts_provider = provider if provider in ("deepgram", "fal") else load_speech_config(session, user_id)["tts_provider"]
+    if tts_provider == "auto":
+        tts_provider = "deepgram" if load_deepgram_api_key(session, user_id) else "fal"
+    return tts_provider, _render_voice(session, user_id, tts_provider, chosen_voice)
+
+
 def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
     """A sync `text -> mp3 bytes` callable for the renderer.
 
@@ -97,9 +115,7 @@ def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
     this runs on a worker thread, not in a request. `chosen_voice` is the video
     dialog's voice (`RenderOptions.voice`); None means the account's.
     """
-    from app.routers.settings import (
-        load_deepgram_api_key, load_speech_config, synthesize_tts_bytes,
-    )
+    from app.routers.settings import synthesize_tts_bytes
 
     with Session(engine) as session:
         # Resolve "auto" to a concrete provider once, up front, and pin it for
@@ -109,10 +125,7 @@ def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
         # that one chunk, handing back a video that audibly changes voice
         # mid-way. Pinned, the same hiccup fails the render instead, which is
         # a render worth retrying rather than a video worth keeping.
-        tts_provider = load_speech_config(session, user_id)["tts_provider"]
-        if tts_provider == "auto":
-            tts_provider = "deepgram" if load_deepgram_api_key(session, user_id) else "fal"
-        voice = _render_voice(session, user_id, tts_provider, chosen_voice)
+        tts_provider, voice = resolve_render_speech(session, user_id, chosen_voice)
 
     def call(text: str) -> bytes:
         with Session(engine) as session:
