@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 from typing import Any, Dict, Optional
 
+from app import suite
 from app.database import get_session
 from app.limiter import limiter
 from app.routers.settings import (
@@ -78,6 +79,13 @@ async def search_web_for_user(
     accounting; the endpoint's rate limit stays on the endpoint, where the traffic it
     is guarding against arrives.
     """
+    if suite.enabled():
+        # The suite chooses the backend and records the search; Notes' own settings and
+        # usage table are not involved. An empty query is refused here as it is locally.
+        if not (query or "").strip():
+            raise HTTPException(status_code=400, detail={"code": "empty_query", "message": "The search query was empty."})
+        return await suite.web_search(query, count, user_id)
+
     config = load_web_search_config(session, user_id)
 
     try:

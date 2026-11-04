@@ -151,6 +151,57 @@ async def complete(
     return response.json()
 
 
+async def request_json(
+    method: str,
+    path: str,
+    user_id: str,
+    *,
+    body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[httpx.Timeout] = None,
+) -> Any:
+    """One non-streaming call to the suite's `/api/v1` as Notes for `user_id`.
+
+    Returns the `data` of the suite's `{"data": ...}` envelope. A refusal keeps the
+    suite's status and `{code, message}`, so a caller that already maps HTTPException
+    (the assistant's failed-search note, a route's own response) needs no new case.
+    """
+    try:
+        async with httpx.AsyncClient(transport=TRANSPORT, timeout=timeout or httpx.Timeout(30.0)) as client:
+            response = await client.request(
+                method, f"{base_url()}/api/v1{path}", headers=_headers(user_id), json=body)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail={
+            "code": "upstream_timeout", "message": f"Timed out waiting for Gecko Suite ({type(exc).__name__})."}) from exc
+    except httpx.RequestError as exc:
+        logger.warning("Gecko Suite unreachable: %s", exc)
+        raise _unavailable() from exc
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=_detail(response))
+    try:
+        return response.json()["data"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail={
+            "code": "suite_error", "message": "Gecko Suite sent a reply Notes could not read."}) from exc
+
+
+async def web_search(query: str, count: Optional[int], user_id: str) -> Dict[str, Any]:
+    """A search by the suite, in the shape `search_web_for_user` has always returned.
+
+    Which backend runs is the suite's decision (the person's own, else the shared one,
+    else DuckDuckGo), so the Notes setting for it does not apply in this mode.
+    """
+    body: Dict[str, Any] = {"query": query.strip()[:500]}
+    if count:
+        body["count"] = max(1, min(int(count), 10))
+    data = await request_json("POST", "/search/web", user_id, body=body, timeout=httpx.Timeout(10.0, read=40.0))
+    return {
+        "provider": data.get("kind", ""),
+        "provider_label": data.get("provider", ""),
+        "query": query.strip(),
+        "results": data.get("results", []),
+    }
+
+
 async def events(protocol: str, body: Dict[str, Any], user_id: str) -> AsyncIterator[Tuple[str, Any]]:
     """The suite's SSE as (event, data): `delta`, then `final`, or `error`.
 
