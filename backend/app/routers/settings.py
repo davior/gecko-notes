@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app import suite
 from app.auth import encrypt_api_key, decrypt_api_key
 from app.database import get_session, engine
 from app.model_profiles import parse_extra_params
@@ -953,6 +954,8 @@ async def anthropic_completion(
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if not _speaks_anthropic(provider):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider does not use the Anthropic API"})
+    if suite.enabled():
+        return await suite.complete("anthropic", suite.request_body(payload, provider.provider_type), user_id, on_delta=on_delta)
 
     messages = list(payload.messages)
     if payload.prefill:
@@ -1058,6 +1061,8 @@ async def openai_completion(
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if provider.provider_type not in ("openai", "deepseek", "custom"):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
+    if suite.enabled():
+        return await suite.complete("openai", suite.request_body(payload, provider.provider_type), user_id, on_delta=on_delta)
 
     base = _openai_compat_base(provider.provider_type, provider.base_url)
     body: Dict[str, Any] = {
@@ -1133,6 +1138,8 @@ async def ollama_completion(
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if provider.provider_type != "ollama":
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Ollama type"})
+    if suite.enabled():
+        return await suite.complete("ollama", suite.request_body(payload, "ollama"), user_id, on_delta=on_delta)
 
     base = (provider.base_url or "http://localhost:11434").rstrip("/")
     body: Dict[str, Any] = {
@@ -1209,6 +1216,16 @@ def _error_frame(exc: Exception) -> str:
     return _sse("error", data)
 
 
+async def _suite_sse(protocol: str, payload: BaseModel, provider: AIProvider, user_id: str) -> AsyncIterator[str]:
+    """The suite's stream, re-framed as this route's own. It records the usage, not us."""
+    try:
+        async for event, data in suite.events(protocol, suite.request_body(payload, provider.provider_type), user_id):
+            yield _sse(event, data)
+    except Exception as e:  # headers are sent; an exception now would only cut the connection
+        logger.exception("suite %s stream failed", protocol)
+        yield _error_frame(e)
+
+
 def _record_anthropic_usage(user_id: str, provider_type: str, model: str, data: Dict[str, Any]) -> None:
     """Mirror the usage accounting in proxy_anthropic, using a fresh Session.
 
@@ -1240,6 +1257,9 @@ async def proxy_anthropic_stream(payload: AnthropicProxyRequest, request: Reques
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if not _speaks_anthropic(provider):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider does not use the Anthropic API"})
+    if suite.enabled():
+        return StreamingResponse(_suite_sse("anthropic", payload, provider, user_id),
+                                 media_type="text/event-stream", headers=_STREAM_HEADERS)
 
     # Body construction is identical to proxy_anthropic — keeping it byte-for-byte
     # matched preserves the prompt-cache breakpoints in the messages/system blocks.
@@ -1296,6 +1316,9 @@ async def proxy_openai_stream(payload: OpenAIProxyRequest, request: Request, ses
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if provider.provider_type not in ("openai", "deepseek", "custom"):
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not OpenAI-compatible"})
+    if suite.enabled():
+        return StreamingResponse(_suite_sse("openai", payload, provider, user_id),
+                                 media_type="text/event-stream", headers=_STREAM_HEADERS)
 
     base = _openai_compat_base(provider.provider_type, provider.base_url)
     body: Dict[str, Any] = {
@@ -1356,6 +1379,9 @@ async def proxy_ollama_stream(payload: OllamaProxyRequest, request: Request, ses
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "AI provider not found"})
     if provider.provider_type != "ollama":
         raise HTTPException(status_code=400, detail={"code": "invalid_provider", "message": "Provider is not Ollama type"})
+    if suite.enabled():
+        return StreamingResponse(_suite_sse("ollama", payload, provider, user_id),
+                                 media_type="text/event-stream", headers=_STREAM_HEADERS)
 
     base = (provider.base_url or "http://localhost:11434").rstrip("/")
     body: Dict[str, Any] = {
