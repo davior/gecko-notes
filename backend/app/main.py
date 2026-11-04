@@ -13,6 +13,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+from app import suite
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
@@ -76,6 +77,7 @@ def _encrypt_legacy_api_keys(session: Session) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    suite.validate()  # AI_BACKEND=suite without its credential stops here, not on the first chat
     init_db()
     with Session(engine) as session:
         run_seed(session)

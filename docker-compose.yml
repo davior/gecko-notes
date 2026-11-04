@@ -14,6 +14,11 @@ services:
       - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-true}
       - NOTE_VERSION_INTERVAL_MINUTES=${NOTE_VERSION_INTERVAL_MINUTES:-5}
       - NOTE_VERSION_MAX_COUNT=${NOTE_VERSION_MAX_COUNT:-50}
+      # AI chat through Gecko Suite instead of straight to the vendors (see .env.example).
+      - AI_BACKEND=${AI_BACKEND:-local}
+      - SUITE_BASE_URL=${SUITE_BASE_URL:-https://suite.geckopico.com}
+      - SUITE_APP_ID=${SUITE_APP_ID:-notes}
+      - SUITE_APP_SECRET=${SUITE_APP_SECRET:-}
       # Article-to-video rendering (see .env.example).
       - RENDER_MAX_CONCURRENCY=${RENDER_MAX_CONCURRENCY:-1}
       - VIDEO_MAX_SHOTS=${VIDEO_MAX_SHOTS:-200}
