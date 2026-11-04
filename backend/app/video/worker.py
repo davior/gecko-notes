@@ -20,6 +20,7 @@ from typing import Optional, Set, Tuple
 
 from sqlmodel import Session, select
 
+from app import suite
 from app.database import engine
 from app.jobs.runner import JobQueue, int_env, progress_reporter
 from app.jobs.runner import readable_error as _readable_error
@@ -117,6 +118,9 @@ def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
     """
     from app.routers.settings import synthesize_tts_bytes
 
+    if suite.enabled():
+        return _suite_tts_caller(user_id, chosen_voice)
+
     with Session(engine) as session:
         # Resolve "auto" to a concrete provider once, up front, and pin it for
         # every chunk of this render. Left as "auto" per chunk, a transient
@@ -133,6 +137,27 @@ def _tts_caller(user_id: str, chosen_voice: Optional[str] = None):
                 synthesize_tts_bytes(session, user_id, text, voice=voice, provider_override=tts_provider)
             )
             return data
+
+    return call
+
+
+def _suite_tts_caller(user_id: str, chosen_voice: Optional[str]):
+    """The renderer's `text -> mp3 bytes` through the suite, one model and voice throughout.
+
+    Nothing is resolved up front: the suite routes `speech.tts` and answers the first chunk
+    with the model and voice it chose. Every later chunk is sent back to that model, so a
+    transient failure fails the render (worth retrying) instead of reading one chunk in
+    another engine's voice, which the old Deepgram-to-fal fallback did.
+    """
+    pin = {"model": None, "voice": chosen_voice}
+
+    def call(text: str) -> bytes:
+        async def one() -> bytes:
+            spoken = await suite.speak(text.strip(), user_id, voice=pin["voice"], model_ref=pin["model"])
+            pin["model"], pin["voice"] = spoken.model_ref or pin["model"], spoken.voice or pin["voice"]
+            return spoken.audio
+
+        return asyncio.run(one())
 
     return call
 

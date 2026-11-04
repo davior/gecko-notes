@@ -262,3 +262,138 @@ def test_the_search_test_button_tests_the_suite_path(client, calls, respond):
     assert str(calls[-1].url).endswith("/search/web")
     respond.fn = lambda r: httpx.Response(200, json={"data": {"provider": "DuckDuckGo", "kind": "duckduckgo", "results": []}})
     assert client.post("/api/settings/web-search/test", json={}).json()["success"] is False
+
+
+# ─── speech (SN-2b) ──────────────────────────────────────────────────────────
+
+AUDIO = b"ID3" + b"x" * 400
+
+
+def _speech(model="model-1", voice="Rex"):
+    return httpx.Response(200, content=AUDIO, headers={
+        "content-type": "audio/mpeg", "X-Speech-Model": model, "X-Speech-Voice": voice,
+        "X-Speech-Provider": "fal", "X-Speech-Cached": "false"})
+
+
+def test_read_aloud_goes_to_the_suite_and_writes_nothing_locally(client, calls, respond, engine):
+    respond.fn = lambda r: _speech()
+    res = client.post("/api/settings/speech/tts", json={"text": " Hello there ", "model": "Rex"})
+    assert res.status_code == 200 and res.content == AUDIO and res.headers["content-type"] == "audio/mpeg"
+    [request] = calls
+    assert str(request.url) == f"{BASE}/api/v1/ai/speech/tts"
+    assert request.headers["x-on-behalf-of"] == "user-1"
+    assert json.loads(request.content) == {"text": "Hello there", "voice": "Rex"}
+    with Session(engine) as s:
+        assert s.exec(select(UsageEvent)).all() == []
+
+
+def test_a_render_pin_is_the_suites_model_and_comes_back_each_time(client, calls, respond):
+    respond.fn = lambda r: _speech(model="model-7", voice="Rex")
+    first = client.post("/api/settings/speech/tts", json={"text": "One.", "provider": "auto", "voice": None})
+    assert first.headers["x-speech-provider"] == "model-7" and first.headers["x-speech-voice"] == "Rex"
+    assert "model_ref" not in json.loads(calls[-1].content)  # "auto" pins nothing
+
+    client.post("/api/settings/speech/tts", json={
+        "text": "Two.", "provider": first.headers["x-speech-provider"], "voice": first.headers["x-speech-voice"]})
+    assert json.loads(calls[-1].content) == {"text": "Two.", "voice": "Rex", "model_ref": "model-7"}
+
+
+def test_a_pinned_model_failing_fails_the_call_and_never_switches_engine(client, calls, respond):
+    respond.fn = lambda r: httpx.Response(502, json={"detail": {"code": "upstream_error", "message": "fal is down"}})
+    res = client.post("/api/settings/speech/tts", json={"text": "Two.", "provider": "model-7", "voice": "Rex"})
+    assert res.status_code == 502 and res.json()["detail"]["code"] == "upstream_error"
+    assert len(calls) == 1
+
+
+def test_narrating_a_long_text_reads_every_chunk_through_the_suite(client, calls, respond):
+    respond.fn = lambda r: _speech()
+    text = ("Sentence number one is here. " * 80).strip()  # over one 1500-character chunk
+    res = client.post("/api/settings/speech/narrate", json={"text": text, "model": "Rex"})
+    assert res.status_code == 200 and res.headers["content-type"] == "audio/mpeg"
+    assert len(calls) >= 2 and all(str(c.url).endswith("/ai/speech/tts") for c in calls)
+
+
+def test_the_local_path_still_checks_the_provider_name(client, monkeypatch):
+    monkeypatch.setenv("AI_BACKEND", "local")
+    res = client.post("/api/settings/speech/tts", json={"text": "Hi", "provider": "model-7"})
+    assert res.status_code == 422
+
+
+def test_a_dictation_upload_is_transcribed_by_the_suite(client, calls, respond):
+    segments = [{"text": "hello", "start": 0, "end": 1, "words": []}, {"text": "world", "start": 1, "end": 2, "words": []}]
+    respond.fn = lambda r: httpx.Response(200, json={"data": {"segments": segments, "language": "en", "model": "nova-3",
+                                                              "duration_seconds": 2, "usage_event_id": "u1"}})
+    res = client.post("/api/settings/speech/transcribe", files={"file": ("rec.webm", b"audio-bytes", "audio/webm")})
+    assert res.status_code == 200 and res.json() == {"text": "hello world"}
+    [request] = calls
+    assert str(request.url) == f"{BASE}/api/v1/ai/speech/stt"
+    assert request.headers["content-type"] == "audio/webm" and request.content == b"audio-bytes"
+
+
+def test_a_missing_deepgram_provider_is_the_suites_sentence(client, respond):
+    respond.fn = lambda r: httpx.Response(409, json={"detail": {"code": "ai_not_configured", "message": "No Deepgram key is set up."}})
+    res = client.post("/api/settings/speech/transcribe", files={"file": ("rec.webm", b"a", "audio/webm")})
+    assert res.status_code == 409 and res.json()["detail"]["message"] == "No Deepgram key is set up."
+
+
+def test_the_renderers_narrator_is_pinned_after_the_first_chunk(monkeypatch, calls, respond):
+    from app.video.worker import _tts_caller
+
+    monkeypatch.setenv("AI_BACKEND", "suite")
+    monkeypatch.setenv("SUITE_BASE_URL", BASE)
+    monkeypatch.setenv("SUITE_APP_SECRET", "app-secret")
+    monkeypatch.setattr(suite, "TRANSPORT", httpx.MockTransport(lambda r: (calls.append(r), respond.fn(r))[1]))
+    respond.fn = lambda r: _speech(model="model-9", voice="Aria")
+
+    call = _tts_caller("user-1", None)  # no database: nothing is resolved up front
+    assert call("First chunk.") == AUDIO and call("Second chunk.") == AUDIO
+    assert json.loads(calls[0].content) == {"text": "First chunk."}
+    assert json.loads(calls[1].content) == {"text": "Second chunk.", "voice": "Aria", "model_ref": "model-9"}
+
+
+def test_a_recording_is_transcribed_by_the_suite_and_its_text_saved(tmp_path, monkeypatch, calls, respond):
+    import subprocess
+
+    from sqlalchemy.pool import StaticPool
+
+    from app.models import Category, Note, TranscriptionJob
+    from app.routers import transcription
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    now = datetime.now(timezone.utc)
+    with Session(eng) as s:
+        s.add(Category(id="c", label="Notes", emoji="📝", color="#000"))
+        s.add(Note(id="n", title="T", content="[]", category_id="c", tags="[]", created_at=now,
+                   modified_at=now, user_id="user-1"))
+        s.add(TranscriptionJob(id="j", user_id="user-1", source_filename="clip.webm", status="queued",
+                               stage="", progress=0, note_id="n", note_title="T", after_block_id=None,
+                               model="fal-ai/wizper", created_at=now, updated_at=now))
+        s.commit()
+    (tmp_path / "user-1").mkdir()
+    (tmp_path / "user-1" / "clip.webm").write_bytes(b"video")
+
+    def fake_ffmpeg(cmd, **kwargs):
+        open(cmd[-1], "wb").write(b"RIFFwav")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(transcription, "engine", eng)
+    monkeypatch.setattr(transcription, "MEDIA_DIR", str(tmp_path))
+    monkeypatch.setattr(transcription.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(transcription.subprocess, "run", fake_ffmpeg)
+    monkeypatch.setenv("AI_BACKEND", "suite")
+    monkeypatch.setenv("SUITE_BASE_URL", BASE)
+    monkeypatch.setenv("SUITE_APP_SECRET", "app-secret")
+    monkeypatch.setattr(suite, "TRANSPORT", httpx.MockTransport(lambda r: (calls.append(r), respond.fn(r))[1]))
+    respond.fn = lambda r: httpx.Response(200, json={"data": {"segments": [{"text": "spoken words", "start": 0, "end": 1, "words": []}],
+                                                              "language": "en", "model": "nova-3", "duration_seconds": 1,
+                                                              "usage_event_id": "u"}})
+
+    transcription._run_job("j")  # no fal key exists anywhere: the suite is the only engine
+
+    with Session(eng) as s:
+        job = s.get(TranscriptionJob, "j")
+        assert job.status == "done", job.error_message
+        assert (tmp_path / "user-1" / job.result_filename).read_text() == "spoken words"
+        assert s.exec(select(UsageEvent)).all() == []
+    assert calls[0].content == b"RIFFwav" and calls[0].headers["content-type"] == "audio/wav"

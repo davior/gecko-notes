@@ -1825,6 +1825,12 @@ async def transcribe_speech(
     session: Session = Depends(get_session),
 ):
     user_id = _get_user_id(request)
+    if suite.enabled():
+        # The suite's Deepgram reads it and records the seconds; Notes' fal key and
+        # `stt_model` (a fal endpoint) play no part.
+        audio = await file.read()
+        return {"text": await suite.transcribe(audio, file.content_type or "audio/webm", user_id)}
+
     api_key = load_fal_api_key(session, user_id)
     if not api_key:
         raise HTTPException(status_code=400, detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"})
@@ -1875,7 +1881,11 @@ class TTSRequest(BaseModel):
     # X-Speech-Provider / X-Speech-Voice so the caller can pin them for every later
     # chunk. Unpinned, a Deepgram hiccup partway through would read one chunk on
     # fal.ai in a different voice. Absent, the request means what it always has.
-    provider: Optional[Literal["auto", "deepgram", "fal"]] = None
+    #
+    # In `AI_BACKEND=suite` mode the engine names mean nothing and `provider` is an opaque
+    # pin instead: the suite model the first chunk resolved, sent back for the rest. So
+    # it is a plain string here, and the local path checks it against its three names.
+    provider: Optional[str] = None
     voice: Optional[str] = None
 
 
@@ -2143,6 +2153,12 @@ async def synthesize_tts_bytes(
     if len(text) > _TTS_MAX_CHARS:
         raise HTTPException(status_code=400, detail={"code": "text_too_long", "message": f"Text exceeds {_TTS_MAX_CHARS} characters"})
 
+    if suite.enabled():
+        # Routing, the voice list, the cache and the billing are the suite's. A pin
+        # (`provider_override`) is a suite model ref here; the old engine names are ignored.
+        spoken = await suite.speak(text, user_id, voice=voice, model_ref=provider_override)
+        return spoken.audio, spoken.media_type
+
     speech_cfg = load_speech_config(session, user_id)
     tts_provider = provider_override or speech_cfg["tts_provider"]
     deepgram_key = load_deepgram_api_key(session, user_id)
@@ -2294,6 +2310,19 @@ async def synthesize_speech(
     if payload.provider is None:
         data, media_type = await synthesize_tts_bytes(session, user_id, payload.text, voice=payload.model)
         return Response(content=data, media_type=media_type)
+
+    if suite.enabled():
+        # An app reading a whole video chunk by chunk: the first answer names the model and
+        # voice the suite chose (as the pin), and the app sends them back each time.
+        text = (payload.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail={"code": "empty_text", "message": "No text to synthesize"})
+        spoken = await suite.speak(text, user_id, voice=payload.voice, model_ref=payload.provider)
+        return Response(content=spoken.audio, media_type=spoken.media_type, headers={
+            "X-Speech-Provider": spoken.model_ref, "X-Speech-Voice": spoken.voice})
+
+    if payload.provider not in ("auto", "deepgram", "fal"):
+        raise HTTPException(status_code=422, detail={"code": "invalid_provider", "message": "provider must be auto, deepgram or fal"})
 
     from app.video.worker import resolve_render_speech
 
