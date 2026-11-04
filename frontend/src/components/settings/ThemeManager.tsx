@@ -4,6 +4,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { mediaApi } from '@/api/media'
 import type { Theme, ThemeCreate, ThemeUpdate } from '@/api/settings'
+import { useIdentity } from '@/hooks/useIdentity'
 
 interface ThemeForm {
   name: string
@@ -132,9 +133,14 @@ function SliderField({ label, value, min, max, step, unit, onChange }: { label: 
 }
 
 export default function ThemeManager() {
-  const { themes, activeThemeId, sharedThemeId, createTheme, updateTheme, deleteTheme, activateTheme, deactivateTheme, setSharedTheme } = useSettingsStore()
+  const { themes, activeThemeId, sharedThemeId, createTheme, updateTheme, deleteTheme, activateTheme, deactivateTheme, setSharedTheme, themeSource } = useSettingsStore()
   const user = useAuthStore((s) => s.user)
-  const isAdmin = user?.is_admin ?? false
+  // With Gecko Suite keeping the themes (M7), they are made and edited on its Themes
+  // page, for every app at once; here Notes only chooses which one it wears.
+  const identity = useIdentity()
+  const fromSuite = themeSource === 'suite'
+  const suiteThemesUrl = fromSuite && identity?.url ? `${identity.url}/themes` : null
+  const isAdmin = !fromSuite && (user?.is_admin ?? false)
 
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -232,9 +238,18 @@ export default function ThemeManager() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Themes</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Customise the Glass look of the app.</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+            {fromSuite
+              ? 'Choose the theme Notes wears. Each Gecko app keeps its own choice.'
+              : 'Customise the Glass look of the app.'}
+          </p>
         </div>
-        {!showForm && (
+        {suiteThemesUrl && (
+          <a href={suiteThemesUrl} className="btn btn-secondary">
+            Create and edit themes in Gecko Suite
+          </a>
+        )}
+        {!fromSuite && !showForm && (
           <button className="btn btn-primary" onClick={startAddNew}>
             <Plus className="w-4 h-4" /> New Theme
           </button>
@@ -395,8 +410,8 @@ export default function ThemeManager() {
                   theme={t}
                   isActive={t.id === activeThemeId}
                   isSharedDefault={t.id === sharedThemeId}
-                  canEdit
-                  canDelete
+                  canEdit={!fromSuite}
+                  canDelete={!fromSuite}
                   onEdit={() => startEdit(t)}
                   onDelete={() => setConfirmDelete(t.id)}
                   onActivate={() => handleActivate(t.id)}
@@ -408,7 +423,7 @@ export default function ThemeManager() {
         )}
         {personalThemes.length === 0 && !showForm && (
           <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-4">
-            No personal themes yet. Create one above.
+            {fromSuite ? 'No personal themes yet. Make one in Gecko Suite.' : 'No personal themes yet. Create one above.'}
           </p>
         )}
       </div>

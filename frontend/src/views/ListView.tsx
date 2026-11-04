@@ -719,7 +719,7 @@ export default function ListView() {
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 shrink-0 no-print">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 shrink-0">
-            <span className="text-2xl">🦎</span>
+            <img src="/favicon.svg" alt="" aria-hidden="true" className="w-8 h-8" />
             Gecko Notes
           </h1>
           <form onSubmit={(e) => { e.preventDefault(); void runDeepSearch() }} className="relative flex-1">

@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import { useSettingsStore } from '@/stores/settings'
+import { applyThemeToDom, useSettingsStore } from '@/stores/settings'
+import { cachedTheme } from '@/api/suiteThemes'
 import { useCategoriesStore } from '@/stores/categories'
 import { useRecipesStore } from '@/stores/recipes'
 import { useAuthStore } from '@/stores/auth'
@@ -41,6 +42,14 @@ export default function App() {
       document.documentElement.classList.remove('dark')
     }
   }, [theme])
+
+  // The theme Notes last wore from Gecko Suite (M7), drawn before the suite is asked, so
+  // a reload does not flash the plain look. After the effect above, which would otherwise
+  // take its dark mode off. Only ever written in suite mode, and cleared on sign-out.
+  useEffect(() => {
+    const cached = cachedTheme()
+    if (cached) applyThemeToDom(cached)
+  }, [])
 
   return (
     <div id="app-root" className="h-screen flex flex-col overflow-hidden">
