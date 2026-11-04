@@ -26,6 +26,7 @@ Tests set `TRANSPORT`; production leaves it None, which is httpx's real transpor
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -261,6 +262,40 @@ async def transcribe(audio: bytes, content_type: str, user_id: str) -> str:
         raise HTTPException(status_code=502, detail={
             "code": "suite_error", "message": "Gecko Suite sent a transcript Notes could not read."}) from exc
     return " ".join((seg.get("text") or "").strip() for seg in segments).strip()
+
+
+# How often a queued generation is asked after. fal image endpoints take seconds, so this is
+# short; a test sets it to 0.
+POLL_INTERVAL = 1.5
+
+
+async def run_fal_job(kind: str, endpoint_id: str, body: Dict[str, Any], user_id: str,
+                      *, timeout: float) -> Dict[str, Any]:
+    """One fal generation through the suite's queue, waited for. Returns the finished job.
+
+    The request `body` is the endpoint's own dialect, built by the caller: the model list and
+    each endpoint's fields stay in Notes, and the suite is the key, the queue and the bill.
+    A failure keeps fal's reason; running out of time cancels the job so it is not billed
+    for a result nobody is waiting for.
+    """
+    job = await request_json("POST", "/ai/media/jobs", user_id, body={
+        "kind": kind, "endpoint_id": endpoint_id, "input": body})
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while job.get("status") not in ("completed", "failed", "cancelled"):
+        if loop.time() >= deadline:
+            try:
+                await request_json("DELETE", f"/ai/media/jobs/{job['id']}", user_id)
+            except HTTPException:
+                logger.warning("Could not cancel timed-out suite job %s", job.get("id"))
+            raise HTTPException(status_code=504, detail={
+                "code": "upstream_timeout", "message": f"The image did not finish within {int(timeout)}s."})
+        await asyncio.sleep(POLL_INTERVAL)
+        job = await request_json("GET", f"/ai/media/jobs/{job['id']}", user_id)
+    if job["status"] != "completed" or not isinstance(job.get("result"), dict):
+        raise HTTPException(status_code=502, detail={
+            "code": "fal_error", "message": (job.get("error") or f"The generation {job['status']}.")[:500]})
+    return job
 
 
 async def web_search(query: str, count: Optional[int], user_id: str) -> Dict[str, Any]:
