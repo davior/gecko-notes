@@ -50,6 +50,8 @@ export type TtsProvider = 'auto' | 'deepgram' | 'fal'
 
 export interface SpeechSettings {
   has_fal_key: boolean
+  /** AI runs through Gecko Suite, which holds the fal.ai key: no local key is needed. */
+  via_suite?: boolean
   tts_models: TTSModel[]
   custom_tts_models: CustomTTSModel[]
   tts_model: string
@@ -222,6 +224,8 @@ export interface FalModel {
 
 export interface ImageSettings {
   has_api_key: boolean
+  /** AI runs through Gecko Suite, which holds the fal.ai key: no local key is needed. */
+  via_suite?: boolean
   has_admin_key: boolean
   curated_models: FalModel[]
   image_sizes: string[]
@@ -376,7 +380,17 @@ export interface WebSearchSettingsUpdate {
   api_key?: string
 }
 
+/** Where AI work goes. `suite_url` is where the browser reaches Gecko Suite; null in `local`. */
+export interface AiBackendInfo {
+  backend: 'local' | 'suite'
+  suite_url: string | null
+}
+
 export const settingsApi = {
+  getAiBackend(): Promise<AiBackendInfo> {
+    return client.get('/settings/ai-backend').then((r) => r.data)
+  },
+
   getAll(): Promise<Record<string, unknown>> {
     return client.get('/settings').then((r) => r.data)
   },

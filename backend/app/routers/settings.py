@@ -1774,6 +1774,9 @@ def get_speech_settings(request: Request, session: Session = Depends(get_session
 
     return {
         "has_fal_key": bool(load_fal_api_key(session, user_id)),
+        # In suite mode the suite holds the fal.ai key and speaks, so the UI must not wait for
+        # a key saved here before offering read-aloud and dictation. `has_fal_key` stays literal.
+        "via_suite": suite.enabled(),
         "tts_models": tts_models,
         "custom_tts_models": cfg["custom_tts_models"],
         "tts_model": cfg["tts_model"],
@@ -2788,6 +2791,9 @@ def get_image_settings(request: Request, session: Session = Depends(get_session)
     ]
     return {
         "has_api_key": bool(api_key),
+        # Same as the speech settings: image generation runs on the suite's fal.ai key, so a
+        # missing local key must not hide the generate form.
+        "via_suite": suite.enabled(),
         "has_admin_key": bool(admin_key),
         "curated_models": curated_models,
         "image_sizes": FAL_IMAGE_SIZES,
@@ -3289,6 +3295,17 @@ async def test_web_search(
         "success": True,
         "message": f"Connected — {label} returned {len(results)} result(s), e.g. “{results[0].title}”.",
     }
+
+
+@router.get("/ai-backend")
+def get_ai_backend(request: Request):
+    """Where AI work goes, so Settings can say who holds the keys and the bill.
+
+    `suite_url` is only given in suite mode: in `local` there is nothing to link to.
+    """
+    _get_user_id(request)
+    enabled = suite.enabled()
+    return {"backend": suite.backend(), "suite_url": suite.public_url() if enabled else None}
 
 
 # ─── Substack publishing (per-user) ───────────────────────────────────────────

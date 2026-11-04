@@ -495,3 +495,37 @@ def test_the_suite_being_down_is_a_sentence_for_image_generation(images, client,
     respond.fn = refuse
     res = client.post("/api/images/generate", json={"prompt": "x"})
     assert res.status_code == 503 and res.json()["detail"]["code"] == "suite_unavailable"
+
+
+# ─── Settings knows where AI goes (SN-5) ─────────────────────────────────────
+
+
+def test_settings_reports_suite_mode_and_the_address_a_browser_can_open(client, monkeypatch):
+    monkeypatch.setenv("SUITE_BASE_URL", "http://suite-backend:8003")
+    monkeypatch.setenv("SUITE_PUBLIC_URL", "https://suite.example.com/")
+    res = client.get("/api/settings/ai-backend")
+    assert res.status_code == 200
+    # The public address, trailing slash dropped; the internal one is never shown.
+    assert res.json() == {"backend": "suite", "suite_url": "https://suite.example.com"}
+
+
+def test_the_public_address_falls_back_to_the_base_url(client, monkeypatch):
+    monkeypatch.delenv("SUITE_PUBLIC_URL", raising=False)
+    assert client.get("/api/settings/ai-backend").json()["suite_url"] == BASE
+
+
+def test_local_mode_has_no_suite_to_link_to(client, monkeypatch):
+    monkeypatch.setenv("AI_BACKEND", "local")
+    assert client.get("/api/settings/ai-backend").json() == {"backend": "local", "suite_url": None}
+
+
+def test_a_missing_local_fal_key_must_not_hide_speech_or_images_when_the_suite_holds_it(client, monkeypatch):
+    # The UI gates read-aloud, dictation and the image form on these flags, so they have to
+    # say the feature is usable even though no key was ever saved in Notes.
+    speech, images_ = client.get("/api/settings/speech").json(), client.get("/api/settings/images").json()
+    assert speech["has_fal_key"] is False and speech["via_suite"] is True
+    assert images_["has_api_key"] is False and images_["via_suite"] is True
+
+    monkeypatch.setenv("AI_BACKEND", "local")
+    assert client.get("/api/settings/speech").json()["via_suite"] is False
+    assert client.get("/api/settings/images").json()["via_suite"] is False

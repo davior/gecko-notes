@@ -214,7 +214,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const speechSettings = await settingsApi.getSpeechSettings()
       set({
-        falKeyConfigured: speechSettings.has_fal_key,
+        // "Can fal-powered speech be used": a key saved here, or the suite holding one.
+        falKeyConfigured: speechSettings.has_fal_key || speechSettings.via_suite === true,
         ttsModels: speechSettings.tts_models,
         ttsModel: speechSettings.tts_model,
         customTtsModels: speechSettings.custom_tts_models,

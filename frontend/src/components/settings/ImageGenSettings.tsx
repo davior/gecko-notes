@@ -152,7 +152,7 @@ export default function ImageGenSettings() {
           Your fal.ai API key is managed on the{' '}
           <span className="font-medium">Providers</span> tab, under{' '}
           <span className="font-medium">Media Provider</span> — the same key also powers Speech.
-          {settings && !settings.has_api_key && (
+          {settings && !settings.has_api_key && !settings.via_suite && (
             <span className="text-amber-600 dark:text-amber-400"> No key is configured yet.</span>
           )}
         </p>

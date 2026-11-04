@@ -4,6 +4,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useNotesStore } from '@/stores/notes'
 import { useAssetsStore } from '@/stores/assets'
 import { useActivityStore } from '@/stores/activity'
+import { useAiBackendStore } from '@/stores/aiBackend'
 
 interface AuthState {
   user: User | null
@@ -117,6 +118,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     useNotesStore.getState().reset()
     useAssetsStore.getState().reset()
     useActivityStore.getState().reset()
+    useAiBackendStore.getState().reset()
   },
 
   async updateProfile(data) {
