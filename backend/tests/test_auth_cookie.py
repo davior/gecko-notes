@@ -186,3 +186,28 @@ def test_header_write_from_a_foreign_origin_is_allowed(client):
         headers={"Authorization": f"Bearer {token}", "Origin": FOREIGN_ORIGIN},
     )
     assert res.status_code == 200
+
+
+# ─── A two-factor challenge is not a session ──────────────────────────────────
+
+
+def test_a_two_factor_challenge_does_not_open_the_api(client):
+    """The password step of a 2FA sign-in hands back a five-minute challenge, signed with
+    the same secret and carrying the user's `sub`. As a session it would let the password
+    alone in, here and in every app that verifies the same token."""
+    from app.auth import create_challenge_token
+
+    challenge = create_challenge_token("user-1", "totp")
+    res = client.get("/api/auth/me", headers={"Authorization": f"Bearer {challenge}"})
+    assert res.status_code == 401
+    client.cookies.set("gecko_session", challenge)
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_the_second_step_still_reads_its_challenge():
+    from app.auth import create_access_token, create_challenge_token, decode_challenge_token
+    from jose import JWTError
+
+    assert decode_challenge_token(create_challenge_token("user-1", "totp"))["sub"] == "user-1"
+    with pytest.raises(JWTError):  # and a session still cannot stand in for the challenge
+        decode_challenge_token(create_access_token({"sub": "user-1", "username": USERNAME}))
