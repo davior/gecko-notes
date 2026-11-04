@@ -25,6 +25,7 @@ import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
 import { assistantApi } from '@/api/assistant'
+import { buildToolContext, canPlanWithTools } from '@/utils/toolContext'
 import type { ActivityJob } from '@/api/activity'
 import { errorMessage } from '@/utils/aiErrors'
 import { isActive, isAwaitingApproval, isSettled } from '@/api/activity'
@@ -410,6 +411,7 @@ export default function AIConversationPanel({
   // markup as raw text (<tool_calls><invoke name="web_search">…) or tells the user it has
   // no web access — the two bugs this guards against.
   const webSearchConfigured = useSettingsStore((s) => s.webSearchConfigured)
+  const assistantToolMode = useSettingsStore((s) => s.assistantToolMode)
   const hasNativeSearch = activeProvider?.provider_type === 'anthropic' || !!activeProvider?.use_anthropic_api
   const webSearchMode: 'native' | 'action' | 'none' =
     hasNativeSearch ? 'native' : webSearchConfigured ? 'action' : 'none'
@@ -1396,6 +1398,12 @@ export default function AIConversationPanel({
           voice: voiceActiveRef.current,
           web_search_mode: webSearchMode,
           use_summaries: useSummaries,
+          // Planned by tool calls through Gecko Suite when the person switched that on; the
+          // server ignores it in local mode. The usual body above still goes too: the deferred
+          // bodies are written from it whichever planner ran.
+          ...(canPlanWithTools(assistantToolMode, req.attachments)
+            ? { tool_mode: true, tool_ctx: buildToolContext(req) }
+            : {}),
         },
         note_id: noteId ?? null,
         session_id: sessionId ?? null,

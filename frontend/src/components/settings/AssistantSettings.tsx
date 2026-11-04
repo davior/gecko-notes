@@ -1,16 +1,41 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSettingsStore } from '@/stores/settings'
 import { DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 import SystemPromptManager from '@/components/settings/SystemPromptManager'
 import WebSearchSettings from '@/components/settings/WebSearchSettings'
+import { useAiBackendStore } from '@/stores/aiBackend'
 
 export default function AssistantSettings() {
-  const { updateAppSettings, aiPrefill, summaryPrompt } = useSettingsStore()
+  const { updateAppSettings, aiPrefill, summaryPrompt, assistantToolMode } = useSettingsStore()
+  const backend = useAiBackendStore((s) => s.info?.backend)
+  const loadBackend = useAiBackendStore((s) => s.load)
+  useEffect(() => {
+    void loadBackend()
+  }, [loadBackend])
   const [localSummaryPrompt, setLocalSummaryPrompt] = useState<string | null>(null)
   const displaySummaryPrompt = localSummaryPrompt ?? summaryPrompt
 
   return (
     <div className="space-y-8">
+      {backend === 'suite' && (
+        <div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">Tool calling (beta)</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            The assistant looks things up and proposes changes through tools, instead of writing its plan as
+            text. Changes still wait for your approval as before. Turns with a PDF attached use the text plan.
+            Switch off to go back to the text plan at any time.
+          </p>
+          <label className="card p-4 flex items-center gap-3 text-sm text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={assistantToolMode}
+              onChange={(e) => void updateAppSettings({ assistant_tool_mode: e.target.checked })}
+            />
+            Plan with tool calls
+          </label>
+        </div>
+      )}
+
       <SystemPromptManager />
 
       <WebSearchSettings />

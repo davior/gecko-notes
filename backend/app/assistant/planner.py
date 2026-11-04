@@ -186,6 +186,18 @@ def run_planning(
     if not job:
         return PlanningResult(False)
 
+    # Planned by tool calls instead, when the person switched that on and the suite is
+    # there. Everything after planning (approval, bodies, the executor) is shared.
+    from app.assistant import tool_planner
+
+    if tool_planner.wanted(_load(job.turn_ctx, {})):
+        from app.assistant.worker import is_cancelled
+
+        return tool_planner.run_tool_planning(
+            session, job_id, check_cancelled=check_cancelled, report=report,
+            is_cancelled=lambda: is_cancelled(job_id),
+        )
+
     user_id = job.user_id
     ctx = PromptContext(_load(job.prompt_ctx, {}))
     exec_ctx: Dict[str, Any] = _load(job.exec_ctx, {})
