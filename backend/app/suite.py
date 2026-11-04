@@ -41,6 +41,8 @@ APP = "notes"
 DEFAULT_BASE_URL = "https://suite.geckopico.com"
 
 TRANSPORT: Optional[httpx.AsyncBaseTransport] = None
+# The same, for the synchronous client the assistant's tool loop uses on its worker thread.
+SYNC_TRANSPORT: Optional[httpx.BaseTransport] = None
 
 # A blocking call returns when the reply exists, so its read timeout is the whole call.
 # Streamed ones bound only the gap between events (the suite pings through its own).
@@ -58,6 +60,18 @@ def enabled() -> bool:
 
 def base_url() -> str:
     return (os.getenv("SUITE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def chat_client(user_id: str):
+    """A `gecko-suite-client` connection as Notes, for `user_id`, for the assistant's tool
+    loop (`assistant/tool_planner.py`). One per turn, closed after it: the credential names
+    the user. Imported here, not at the top, so the rest of Notes never needs the package."""
+    from gecko_suite_client import SuiteClient
+
+    return SuiteClient(
+        base_url(), app=os.getenv("SUITE_APP_ID") or APP, app_secret=os.getenv("SUITE_APP_SECRET", ""),
+        on_behalf_of=user_id, transport=SYNC_TRANSPORT, timeout=httpx.Timeout(15.0, read=300.0),
+    )
 
 
 def public_url() -> str:

@@ -13,6 +13,9 @@ interface SettingsState {
   systemPrompts: SystemPrompt[]
   activeSystemPrompt: SystemPrompt | null
   aiPrefill: string
+  // Plan assistant turns by tool calls through Gecko Suite (M5). Off by default; only acted
+  // on in suite mode, where the server honours it.
+  assistantToolMode: boolean
   summaryPrompt: string
   themes: Theme[]
   activeThemeId: string | null
@@ -153,6 +156,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   systemPrompts: [],
   activeSystemPrompt: null,
   aiPrefill: '',
+  assistantToolMode: false,
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
   themes: [],
   activeThemeId: null,
@@ -200,6 +204,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         systemPrompts: prompts.data,
         activeSystemPrompt: deriveActiveSystemPrompt(prompts.data),
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
+        assistantToolMode: settings['assistant_tool_mode'] === true,
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
         themes: themesResp.data,
         activeThemeId,
@@ -268,6 +273,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         appSettings: updated,
         defaultSortOrder: (updated['default_sort_order'] as string) ?? 'modified_at',
         aiPrefill: (updated['ai_prefill'] as string) ?? '',
+        assistantToolMode: updated['assistant_tool_mode'] === true,
         summaryPrompt: (updated['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
         voice: rawVoice && s.availableVoices.includes(rawVoice) ? rawVoice : s.voice,
       }
@@ -465,6 +471,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       systemPrompts: [],
       activeSystemPrompt: null,
       aiPrefill: '',
+      assistantToolMode: false,
       summaryPrompt: DEFAULT_SUMMARY_PROMPT,
       themes: [],
       activeThemeId: null,
