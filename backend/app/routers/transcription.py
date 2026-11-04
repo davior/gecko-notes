@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app import suite
 from app.database import engine
 from app.jobs.runner import JobQueue, int_env, set_fields as _set
 from app.models import Note, TranscriptionJob
@@ -150,9 +152,11 @@ def _run_job(job_id: str) -> None:
             if not shutil.which("ffmpeg"):
                 raise RuntimeError("ffmpeg is not installed on the server")
 
-            api_key = load_fal_api_key(session, user_id)
-            if not api_key:
-                raise RuntimeError("fal.ai API key is not configured")
+            api_key = None
+            if not suite.enabled():
+                api_key = load_fal_api_key(session, user_id)
+                if not api_key:
+                    raise RuntimeError("fal.ai API key is not configured")
 
             fd, audio_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
@@ -174,42 +178,49 @@ def _run_job(job_id: str) -> None:
                 except OSError:
                     pass
 
-            _set(session, job, stage="Uploading", progress=40)
+            use_suite = suite.enabled()
+            body = resp = None
+            if use_suite:
+                # The suite's Deepgram reads the audio, and counts the seconds.
+                _set(session, job, stage="Transcribing", progress=60)
+                transcript = asyncio.run(suite.transcribe(audio_bytes, "audio/wav", user_id))
+            else:
+                _set(session, job, stage="Uploading", progress=40)
 
-            # fal's model endpoints need a real, fetchable URL for file inputs (not a
-            # data: URI), so upload via the official SDK first and run on the result.
-            try:
-                fal = fal_client.SyncClient(key=api_key)
-                audio_url = fal.upload(audio_bytes, "audio/wav", "recording.wav")
-            except fal_client.FalClientHTTPError as e:
-                raise RuntimeError(f"fal.ai error: {str(e)[:500]}")
-            except Exception as e:
-                raise RuntimeError(f"fal.ai upload failed: {type(e).__name__}: {e}")
+                # fal's model endpoints need a real, fetchable URL for file inputs (not a
+                # data: URI), so upload via the official SDK first and run on the result.
+                try:
+                    fal = fal_client.SyncClient(key=api_key)
+                    audio_url = fal.upload(audio_bytes, "audio/wav", "recording.wav")
+                except fal_client.FalClientHTTPError as e:
+                    raise RuntimeError(f"fal.ai error: {str(e)[:500]}")
+                except Exception as e:
+                    raise RuntimeError(f"fal.ai upload failed: {type(e).__name__}: {e}")
 
-            _set(session, job, stage="Transcribing", progress=60)
+                _set(session, job, stage="Transcribing", progress=60)
 
-            # POST directly to fal's synchronous Wizper endpoint (rather than
-            # fal_client.run()) so we can read fal's billing headers off the response,
-            # same approach as the live-transcription and TTS integrations.
-            try:
-                with httpx.Client(timeout=120.0) as http:
-                    resp = http.post(
-                        f"https://fal.run/{model}",
-                        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-                        json={"audio_url": audio_url, "task": "transcribe"},
-                    )
-            except httpx.TimeoutException as e:
-                raise RuntimeError(f"Timed out contacting fal.ai: {type(e).__name__}: {e}")
-            except httpx.RequestError as e:
-                raise RuntimeError(f"Could not reach fal.ai: {type(e).__name__}: {e}")
-            if not resp.is_success:
-                raise RuntimeError(f"fal.ai error: {resp.text[:500]}")
-            try:
-                body = resp.json()
-            except ValueError:
-                raise RuntimeError("Unexpected fal.ai response")
+                # POST directly to fal's synchronous Wizper endpoint (rather than
+                # fal_client.run()) so we can read fal's billing headers off the response,
+                # same approach as the live-transcription and TTS integrations.
+                try:
+                    with httpx.Client(timeout=120.0) as http:
+                        resp = http.post(
+                            f"https://fal.run/{model}",
+                            headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+                            json={"audio_url": audio_url, "task": "transcribe"},
+                        )
+                except httpx.TimeoutException as e:
+                    raise RuntimeError(f"Timed out contacting fal.ai: {type(e).__name__}: {e}")
+                except httpx.RequestError as e:
+                    raise RuntimeError(f"Could not reach fal.ai: {type(e).__name__}: {e}")
+                if not resp.is_success:
+                    raise RuntimeError(f"fal.ai error: {resp.text[:500]}")
+                try:
+                    body = resp.json()
+                except ValueError:
+                    raise RuntimeError("Unexpected fal.ai response")
 
-            transcript = (body.get("text") or "").strip()
+                transcript = (body.get("text") or "").strip()
 
             # ffmpeg and the fal upload have no interruption points, so cancelling a
             # running transcription cannot stop the work — but it must stop the result
@@ -235,6 +246,8 @@ def _run_job(job_id: str) -> None:
                 # the note must not turn a finished job into an error.
                 logger.exception("Could not attach transcript %s to its note", job_id)
 
+            if use_suite:
+                return  # the suite recorded it
             cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
             try:
                 seconds = None

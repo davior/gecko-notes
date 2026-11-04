@@ -184,6 +184,85 @@ async def request_json(
             "code": "suite_error", "message": "Gecko Suite sent a reply Notes could not read."}) from exc
 
 
+async def request_bytes(
+    method: str,
+    path: str,
+    user_id: str,
+    *,
+    content: Optional[bytes] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    content_type: Optional[str] = None,
+    timeout: Optional[httpx.Timeout] = None,
+) -> httpx.Response:
+    """A call to the suite whose answer is not a `{"data": ...}` envelope (audio out, audio in).
+
+    Errors are raised exactly as `request_json` raises them; a good response is returned
+    whole so the caller can read its body and its headers.
+    """
+    headers = _headers(user_id)
+    if content is not None:
+        headers["content-type"] = content_type or "application/octet-stream"
+    try:
+        async with httpx.AsyncClient(transport=TRANSPORT, timeout=timeout or httpx.Timeout(30.0)) as client:
+            response = await client.request(
+                method, f"{base_url()}/api/v1{path}", headers=headers,
+                content=content, json=json_body, params=params)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail={
+            "code": "upstream_timeout", "message": f"Timed out waiting for Gecko Suite ({type(exc).__name__})."}) from exc
+    except httpx.RequestError as exc:
+        logger.warning("Gecko Suite unreachable: %s", exc)
+        raise _unavailable() from exc
+    if not response.is_success:
+        raise HTTPException(status_code=response.status_code, detail=_detail(response))
+    return response
+
+
+# What the suite resolved for a spoken chunk. `model_ref` is the pin: a narration sends it
+# back for every later chunk so the whole thing is read by one model in one voice.
+class Spoken:
+    def __init__(self, audio: bytes, media_type: str, model_ref: str, voice: str):
+        self.audio, self.media_type, self.model_ref, self.voice = audio, media_type, model_ref, voice
+
+
+# Notes' old engine names. They mean "let the account decide", which in this mode is the
+# suite's `speech.tts` routing, so none of them can pin anything.
+_NOT_A_PIN = {"", "auto", "deepgram", "fal"}
+
+
+async def speak(text: str, user_id: str, *, voice: Optional[str] = None,
+                model_ref: Optional[str] = None) -> Spoken:
+    """Text to audio through the model the suite routes `speech.tts` to.
+
+    A `model_ref` that is one of Notes' own engine names is ignored (see `_NOT_A_PIN`);
+    a real one is sent, and the suite then uses that model or fails: it never falls back
+    to another engine, which is what made a narration change voice partway through.
+    """
+    body: Dict[str, Any] = {"text": text}
+    if voice:
+        body["voice"] = voice
+    if model_ref and model_ref not in _NOT_A_PIN:
+        body["model_ref"] = model_ref
+    response = await request_bytes("POST", "/ai/speech/tts", user_id, json_body=body,
+                                   timeout=httpx.Timeout(10.0, read=180.0))
+    return Spoken(response.content, response.headers.get("content-type", "audio/mpeg").split(";")[0],
+                  response.headers.get("X-Speech-Model", ""), response.headers.get("X-Speech-Voice", ""))
+
+
+async def transcribe(audio: bytes, content_type: str, user_id: str) -> str:
+    """Audio to text by the suite's Deepgram. Which model reads it is the suite's default;
+    Notes' `stt_model` names a fal endpoint and means nothing there."""
+    response = await request_bytes("POST", "/ai/speech/stt", user_id, content=audio, content_type=content_type,
+                                   timeout=httpx.Timeout(30.0, read=900.0))
+    try:
+        segments = response.json()["data"]["segments"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail={
+            "code": "suite_error", "message": "Gecko Suite sent a transcript Notes could not read."}) from exc
+    return " ".join((seg.get("text") or "").strip() for seg in segments).strip()
+
+
 async def web_search(query: str, count: Optional[int], user_id: str) -> Dict[str, Any]:
     """A search by the suite, in the shape `search_web_for_user` has always returned.
 
