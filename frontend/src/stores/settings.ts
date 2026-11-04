@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, DEFAULT_DEEPGRAM_MODEL, DEFAULT_DEEPGRAM_TTS_MODEL, DEFAULT_DEEPGRAM_TTS_EXPRESSIVITY, DEFAULT_DEEPGRAM_TTS_SPEED, TTS_VOICES, type AIProvider, type SystemPrompt, type SystemPromptCreate, type SystemPromptUpdate, type Theme, type ThemeCreate, type ThemeUpdate, type TTSModel, type STTModel, type CustomTTSModel, type SpeechConfigUpdate, type SttProvider, type TtsProvider } from '@/api/settings'
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
+import { cacheTheme, cachedTheme, suiteThemesApi } from '@/api/suiteThemes'
+import { loadIdentity } from '@/hooks/useIdentity'
 
 interface SettingsState {
   appSettings: Record<string, unknown>
@@ -20,6 +22,9 @@ interface SettingsState {
   themes: Theme[]
   activeThemeId: string | null
   sharedThemeId: string | null
+  // Where themes come from (M7): Notes' own tables, or Gecko Suite when it signs people
+  // in. In the suite they are made and edited on its Themes page; here they are chosen.
+  themeSource: 'notes' | 'suite'
   // Speech (TTS/STT) runs on fal.ai using the shared fal key configured on the
   // Providers tab (Media Provider); this flag reflects whether that key is present.
   falKeyConfigured: boolean
@@ -105,6 +110,17 @@ function deriveAIService(providers: AIProvider[]): AIService | null {
   return active ? createAIService(active) : null
 }
 
+/** The suite's themes and Notes' choice; `active` undefined when the suite did not answer. */
+async function loadSuiteThemes(): Promise<{ themes: Theme[]; active: Theme | null | undefined }> {
+  try {
+    const [themes, active] = await Promise.all([suiteThemesApi.list(), suiteThemesApi.selected()])
+    return { themes, active }
+  } catch {
+    // The suite is down or unreachable: Notes keeps working, wearing what it last wore.
+    return { themes: [], active: undefined }
+  }
+}
+
 export function applyThemeToDom(theme: Theme | null) {
   const root = document.documentElement
   if (!theme) {
@@ -161,6 +177,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   themes: [],
   activeThemeId: null,
   sharedThemeId: null,
+  themeSource: 'notes',
   falKeyConfigured: false,
   substackConfigured: false,
   webSearchConfigured: false,
@@ -185,16 +202,27 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   async loadSettings() {
     set({ loading: true })
     try {
-      const [settings, providers, prompts, themesResp] = await Promise.all([
+      const identity = await loadIdentity()
+      const fromSuite = identity.provider === 'suite'
+      const [settings, providers, prompts, themes] = await Promise.all([
         settingsApi.getAll(),
         settingsApi.listAIProviders(),
         settingsApi.listSystemPrompts(),
-        settingsApi.listThemes(),
+        fromSuite ? loadSuiteThemes() : settingsApi.listThemes().then((r) => ({ themes: r.data, active: undefined })),
       ])
-      const activeThemeId = (settings['active_theme_id'] as string) ?? null
       const sharedThemeId = (settings['shared_theme_id'] as string) ?? null
-      const activeTheme = activeThemeId ? themesResp.data.find((t) => t.id === activeThemeId) ?? null : null
-      applyThemeToDom(activeTheme)
+      let activeThemeId: string | null
+      if (fromSuite) {
+        // Undefined: the suite did not answer. Keep what is drawn (the cached theme).
+        activeThemeId = themes.active === undefined ? cachedTheme()?.id ?? null : themes.active?.id ?? null
+        if (themes.active !== undefined) {
+          applyThemeToDom(themes.active)
+          cacheTheme(themes.active)
+        }
+      } else {
+        activeThemeId = (settings['active_theme_id'] as string) ?? null
+        applyThemeToDom(activeThemeId ? themes.themes.find((t) => t.id === activeThemeId) ?? null : null)
+      }
       set({
         appSettings: settings,
         aiProviders: providers.data,
@@ -206,9 +234,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         aiPrefill: (settings['ai_prefill'] as string) ?? '',
         assistantToolMode: settings['assistant_tool_mode'] === true,
         summaryPrompt: (settings['summary_prompt'] as string) || DEFAULT_SUMMARY_PROMPT,
-        themes: themesResp.data,
+        themes: themes.themes,
         activeThemeId,
         sharedThemeId,
+        themeSource: fromSuite ? 'suite' : 'notes',
       })
     } finally {
       set({ loading: false })
@@ -438,6 +467,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   async activateTheme(id) {
+    if (get().themeSource === 'suite') {
+      const theme = await suiteThemesApi.choose(id)
+      set({ activeThemeId: theme?.id ?? null })
+      applyThemeToDom(theme)
+      cacheTheme(theme)
+      if (!theme) throw new Error('The suite did not keep that choice')
+      return theme
+    }
     const response = await settingsApi.activateTheme(id)
     set({ activeThemeId: id })
     applyThemeToDom(response.data)
@@ -445,13 +482,25 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   async deactivateTheme() {
-    await settingsApi.deactivateTheme()
+    if (get().themeSource === 'suite') {
+      await suiteThemesApi.choose(null)
+      cacheTheme(null)
+    } else {
+      await settingsApi.deactivateTheme()
+    }
     set({ activeThemeId: null })
     applyThemeToDom(null)
   },
 
   async setSharedTheme(id) {
-    await settingsApi.update({ shared_theme_id: id })
+    if (get().themeSource === 'suite') {
+      // The public page cannot ask the suite (nobody is signed in there), so it keeps a
+      // copy of how the theme looks (`shared_theme`, read by routers/shared.py).
+      const theme = id ? get().themes.find((t) => t.id === id) ?? null : null
+      await settingsApi.update({ shared_theme_id: id, shared_theme: theme })
+    } else {
+      await settingsApi.update({ shared_theme_id: id })
+    }
     set({ sharedThemeId: id })
   },
 
@@ -461,6 +510,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   reset() {
     applyThemeToDom(null)
+    cacheTheme(null)
     set({
       appSettings: {},
       aiProviders: [],
@@ -476,6 +526,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       themes: [],
       activeThemeId: null,
       sharedThemeId: null,
+      themeSource: 'notes',
       falKeyConfigured: false,
       substackConfigured: false,
       webSearchConfigured: false,

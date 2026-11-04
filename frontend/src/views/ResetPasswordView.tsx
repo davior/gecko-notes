@@ -53,7 +53,7 @@ function NotesResetPasswordView() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <span className="text-4xl">🦎</span>
+          <img src="/favicon.svg" alt="" aria-hidden="true" className="w-12 h-12" />
           <h1 className="mt-2 text-2xl font-bold text-gray-900 dark:text-white">Gecko Notes</h1>
         </div>
 

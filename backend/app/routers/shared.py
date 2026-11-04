@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -9,6 +10,31 @@ from app.schemas import DataResponse, SharedNoteRead, ThemeRead, LikeCountRead
 from app.routers.notes import extract_first_image, extract_plain_text, extract_linked_note_ids
 
 router = APIRouter()
+
+
+def _theme_snapshot(session: Session, user_id: str):
+    """The shared-note theme as a copy of its values (M7, `shared_theme`).
+
+    With Gecko Suite keeping the themes, the public view has nobody signed in to ask the
+    suite as, so choosing the shared-note theme stores what it looks like here instead.
+    Read first; `shared_theme_id` (a Notes theme row) is the older way and still works.
+    """
+    setting = session.exec(
+        select(UserSetting).where(UserSetting.user_id == user_id, UserSetting.key == "shared_theme")
+    ).first()
+    if not setting:
+        return None
+    try:
+        values = json.loads(setting.value)
+        if not isinstance(values, dict):
+            return None
+        # The copy's own id and values; who it belongs to is this note's author, whatever
+        # the copy says.
+        return ThemeRead.model_validate({
+            "created_at": datetime.utcnow(), **values, "user_id": user_id, "is_global": False,
+        })
+    except Exception:
+        return None
 
 
 @router.get("/{token}", response_model=DataResponse[SharedNoteRead])
@@ -23,6 +49,8 @@ def get_shared_note(token: str, session: Session = Depends(get_session)):
 
     theme_data = None
     if note.user_id:
+        theme_data = _theme_snapshot(session, note.user_id)
+    if note.user_id and theme_data is None:
         setting = session.exec(
             select(UserSetting).where(
                 UserSetting.user_id == note.user_id,
