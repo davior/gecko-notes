@@ -5,6 +5,8 @@ import { adminApi, type AdminSettings } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import UserMetricsPanel from '@/components/settings/UserMetricsPanel'
 import type { User } from '@/api/auth'
+import { ManagedInSuite } from '@/components/SuiteMoved'
+import { useIdentity } from '@/hooks/useIdentity'
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
@@ -22,6 +24,10 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
 }
 
 export default function UserManager() {
+  // With Gecko Suite signing people in (M6), accounts are managed on its Users screen.
+  // What stays here is what each person keeps in Notes: metrics and storage.
+  const identity = useIdentity()
+  const suiteUrl = identity?.provider === 'suite' ? identity.url : null
   const currentUser = useAuthStore((s) => s.user)
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
@@ -137,6 +143,16 @@ export default function UserManager() {
     <div>
       <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-6">User Management</h2>
 
+      {suiteUrl && (
+        <div className="mb-6">
+          <ManagedInSuite
+            suiteUrl={suiteUrl}
+            what="accounts, sign-up, admin rights and passwords"
+            path="/users"
+          />
+        </div>
+      )}
+
       {/* Registration policy (admin-wide) */}
       {adminSettings && (
         <div className="card p-5 mb-6">
@@ -145,6 +161,8 @@ export default function UserManager() {
             <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Registration</h3>
           </div>
           <div className="space-y-4">
+            {!suiteUrl && (
+              <>
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Allow new registrations</p>
@@ -167,6 +185,8 @@ export default function UserManager() {
                 onChange={(v) => updateSetting({ email_verification_required: v })}
               />
             </div>
+              </>
+            )}
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Voice mode (Deepgram Flux)</p>
@@ -212,6 +232,8 @@ export default function UserManager() {
                   <BarChart3 className="w-4 h-4" />
                 </button>
 
+                {!suiteUrl && (
+                  <>
                 {/* Active toggle */}
                 <button
                   title={user.is_active ? 'Deactivate user' : 'Activate user'}
@@ -254,6 +276,8 @@ export default function UserManager() {
                 >
                   <UserX className="w-4 h-4 text-gray-400 hover:text-red-500" />
                 </button>
+                  </>
+                )}
               </div>
               </div>
 

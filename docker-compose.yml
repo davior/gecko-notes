@@ -20,6 +20,7 @@ services:
       - SUITE_APP_ID=${SUITE_APP_ID:-notes}
       - SUITE_PUBLIC_URL=${SUITE_PUBLIC_URL:-}
       - SUITE_APP_SECRET=${SUITE_APP_SECRET:-}
+      - IDENTITY_PROVIDER=${IDENTITY_PROVIDER:-notes}
       # Article-to-video rendering (see .env.example).
       - RENDER_MAX_CONCURRENCY=${RENDER_MAX_CONCURRENCY:-1}
       - VIDEO_MAX_SHOTS=${VIDEO_MAX_SHOTS:-200}

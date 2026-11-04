@@ -7,13 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from jose import JWTError
+from starlette.concurrency import run_in_threadpool
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-from app import suite
+from app import identity, suite
 from app.database import init_db, get_session, engine
 from app.limiter import limiter
 from app.seed import run_seed
@@ -78,6 +79,7 @@ def _encrypt_legacy_api_keys(session: Session) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     suite.validate()  # AI_BACKEND=suite without its credential stops here, not on the first chat
+    identity.validate()
     init_db()
     with Session(engine) as session:
         run_seed(session)
@@ -174,7 +176,25 @@ async def jwt_auth_middleware(request: Request, call_next):
             content={"error": {"code": "unauthorized", "message": "Invalid or expired token"}},
         )
 
+    if identity.suite_signs_in():
+        # The suite signed this person in; make sure Notes has its row for them before any
+        # route looks it up. A primary-key read on every request, and a write only the
+        # first time or when the token says something changed.
+        await run_in_threadpool(_ensure_user, payload)
+
     return await call_next(request)
+
+
+def _ensure_user(payload: dict) -> None:
+    # Through whatever `get_session` resolves to, so a test's override (an in-memory
+    # database) is the one written to, as it is for every route.
+    factory = app.dependency_overrides.get(get_session, get_session)
+    sessions = factory()
+    session = next(sessions)
+    try:
+        identity.ensure_user(session, payload)
+    finally:
+        sessions.close()
 
 
 app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
@@ -238,4 +258,8 @@ def app_config(session: Session = Depends(get_session)):
         "email_enabled": mail_on,
         # Instance-wide gate for the opt-in Flux voice mode.
         "voice_mode_enabled": get_bool(session, VOICE_MODE_ENABLED, False),
+        # Who signs people in (M6). With "suite", the login, registration and recovery
+        # pages send the browser to `identity_url` instead of showing a form.
+        "identity_provider": identity.provider(),
+        "identity_url": identity.suite_url() if identity.suite_signs_in() else None,
     }

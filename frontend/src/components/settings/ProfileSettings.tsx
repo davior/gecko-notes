@@ -4,10 +4,16 @@ import { Camera, Loader2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { mediaApi } from '@/api/media'
 import TwoFactorSettings from '@/components/settings/TwoFactorSettings'
+import { ManagedInSuite } from '@/components/SuiteMoved'
+import { useIdentity } from '@/hooks/useIdentity'
 
 export default function ProfileSettings() {
   const navigate = useNavigate()
   const { user, updateProfile, changePassword, logout } = useAuthStore()
+  // With Gecko Suite signing people in (M6), name, email, password and two-step live
+  // there; only the avatar, which is Notes' own file, is changed here.
+  const identity = useIdentity()
+  const suiteUrl = identity?.provider === 'suite' ? identity.url : null
 
   const [username, setUsername] = useState(user?.username ?? '')
   const [email, setEmail] = useState(user?.email ?? '')
@@ -113,6 +119,14 @@ export default function ProfileSettings() {
         <p className="text-sm text-gray-500 dark:text-gray-400">{user?.username}</p>
       </div>
 
+      {suiteUrl ? (
+        <ManagedInSuite
+          suiteUrl={suiteUrl}
+          what="your username, email, password and two-step verification"
+          path="/account"
+        />
+      ) : (
+        <>
       {/* Account details */}
       <div className="card p-5">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-4">Account Details</h2>
@@ -164,6 +178,8 @@ export default function ProfileSettings() {
 
       {/* Two-factor authentication */}
       <TwoFactorSettings />
+        </>
+      )}
 
       {/* Log out */}
       <div className="card p-5">

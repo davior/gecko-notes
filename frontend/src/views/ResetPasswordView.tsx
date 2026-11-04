@@ -1,12 +1,25 @@
 import { useState, FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { authApi } from '@/api/auth'
+import { MovedToSuite } from '@/components/SuiteMoved'
+import { useIdentity } from '@/hooks/useIdentity'
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm'
 const labelCls = 'block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
 
 export default function ResetPasswordView() {
+  const identity = useIdentity()
+  if (!identity) return null
+  if (identity.provider === 'suite' && identity.url) {
+    return (
+      <MovedToSuite suiteUrl={identity.url} title="Reset your password" path="/forgot-password" action="Ask Gecko Suite for a new link" />
+    )
+  }
+  return <NotesResetPasswordView />
+}
+
+function NotesResetPasswordView() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const token = params.get('token') ?? ''
