@@ -20,11 +20,23 @@ export interface DeepgramStreamHandle {
   close: () => void
 }
 
+import { useAiBackendStore } from '@/stores/aiBackend'
+import { useSettingsStore } from '@/stores/settings'
+import { streamUrl } from '@/utils/dictationStream'
+
 const CLOSE_CODE_MESSAGES: Record<number, string> = {
   4400: 'Deepgram API key not configured — set one in Settings → AI Services → Speech',
   4401: 'Not authenticated',
+  4403: 'Gecko Suite refused this page: its CORS_ORIGIN must list Notes',
   4409: 'A Deepgram dictation session is already active',
 }
+
+// With Gecko Suite, the suite holds the Deepgram key, so "not configured" means there.
+const SUITE_CLOSE_CODE_MESSAGES: Record<number, string> = {
+  ...CLOSE_CODE_MESSAGES,
+  4400: 'No Deepgram key is set up in Gecko Suite, so dictation is off',
+}
+
 
 function wsBaseURL(): string {
   const apiBase = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -38,7 +50,10 @@ export function connectDeepgramStream(
   onClose: (code: number, reason: string) => void,
 ): DeepgramStreamHandle {
   const token = localStorage.getItem('auth_token') ?? ''
-  const url = `${wsBaseURL()}/stt-stream/ws?token=${encodeURIComponent(token)}`
+  const backend = useAiBackendStore.getState().info
+  const suiteUrl = backend?.backend === 'suite' ? backend.suite_url : null
+  const url = streamUrl(suiteUrl, token, useSettingsStore.getState().deepgramModel, wsBaseURL())
+  const messages = suiteUrl ? SUITE_CLOSE_CODE_MESSAGES : CLOSE_CODE_MESSAGES
   const ws = new WebSocket(url)
 
   // MediaRecorder starts producing chunks immediately, but the WS handshake can
@@ -69,7 +84,7 @@ export function connectDeepgramStream(
   }
 
   ws.onclose = (event) => {
-    onClose(event.code, CLOSE_CODE_MESSAGES[event.code] ?? event.reason ?? '')
+    onClose(event.code, messages[event.code] ?? event.reason ?? '')
   }
 
   return {
