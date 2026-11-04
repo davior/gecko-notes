@@ -18,6 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app import suite
 from app.database import get_session
 from app.routers.media import get_user_media_dir
 from app.thumbnails import generate_thumbnail
@@ -97,8 +98,9 @@ async def generate_image_for_user(
     if not prompt:
         raise HTTPException(status_code=400, detail={"code": "empty_prompt", "message": "A prompt is required"})
 
-    api_key = load_fal_api_key(session, user_id)
-    if not api_key:
+    use_suite = suite.enabled()
+    api_key = None if use_suite else load_fal_api_key(session, user_id)
+    if not use_suite and not api_key:
         raise HTTPException(
             status_code=400,
             detail={"code": "no_fal_key", "message": "fal.ai API key is not configured"},
@@ -121,22 +123,33 @@ async def generate_image_for_user(
 
     # 1) Ask fal to generate the image (blocking synchronous endpoint). The named
     #    size preset is translated per endpoint (image_size / aspect_ratio / WxH).
-    resp = await _post_upstream(
-        f"https://fal.run/{model}",
-        headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
-        json_body=build_fal_image_body(model, prompt, image_size, cfg["model_params"].get(model)),
-        timeout=_GENERATE_TIMEOUT,
-        provider_label="fal.ai",
-    )
-    if not resp.is_success:
-        raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
+    fal_body = build_fal_image_body(model, prompt, image_size, cfg["model_params"].get(model))
+    suite_job = None
+    if use_suite:
+        # The model list, size presets and per-endpoint fields above are still Notes'. The
+        # suite holds the key, runs the queue and records the billed cost.
+        suite_job = await suite.run_fal_job("image", model, fal_body, user_id, timeout=_GENERATE_TIMEOUT)
+        body = suite_job["result"]
+    else:
+        resp = await _post_upstream(
+            f"https://fal.run/{model}",
+            headers={"Authorization": f"Key {api_key}", "Content-Type": "application/json"},
+            json_body=fal_body,
+            timeout=_GENERATE_TIMEOUT,
+            provider_label="fal.ai",
+        )
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail={"code": "fal_error", "message": resp.text[:500]})
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
 
     try:
-        body = resp.json()
         images = body.get("images") or []
         first = images[0]
         image_url = first["url"]
-    except (ValueError, KeyError, IndexError, TypeError):
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise HTTPException(status_code=502, detail={"code": "fal_parse_error", "message": "Unexpected fal.ai response"})
 
     width = first.get("width") if isinstance(first, dict) else None
@@ -171,15 +184,19 @@ async def generate_image_for_user(
     # 3) Attribute the actual cost: fal returns the request id and billed quantity as
     #    response headers; multiplied by the endpoint's cached unit price this gives the
     #    exact charge for this image (null when the price isn't cached yet).
-    cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
+    if suite_job is not None:
+        # Already priced and recorded by the suite (None when fal's price is not known yet).
+        cost, currency = suite_job.get("cost"), suite_job.get("currency")
+    else:
+        cost, currency, request_id, cost_estimated = compute_fal_cost(session, user_id, model, resp)
 
-    # 4) Record usage (surfaced in Settings → Usage as kind "image"). cost is the
-    #    exact fal-billed amount (not an estimate), so cost_estimated stays False.
-    _record_usage(
-        session, user_id, "image", model, 1, "images",
-        provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
-        cost_estimated=cost_estimated,
-    )
+        # 4) Record usage (surfaced in Settings → Usage as kind "image"). cost is the
+        #    exact fal-billed amount (not an estimate), so cost_estimated stays False.
+        _record_usage(
+            session, user_id, "image", model, 1, "images",
+            provider="fal.ai", external_ref=request_id, cost=cost, currency=currency,
+            cost_estimated=cost_estimated,
+        )
 
     return ImageGenerateResponse(
         url=f"/media/{user_id}/{filename}",

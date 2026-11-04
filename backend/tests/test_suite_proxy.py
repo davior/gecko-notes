@@ -397,3 +397,101 @@ def test_a_recording_is_transcribed_by_the_suite_and_its_text_saved(tmp_path, mo
         assert (tmp_path / "user-1" / job.result_filename).read_text() == "spoken words"
         assert s.exec(select(UsageEvent)).all() == []
     assert calls[0].content == b"RIFFwav" and calls[0].headers["content-type"] == "audio/wav"
+
+
+# ─── image generation (SN-2c) ────────────────────────────────────────────────
+
+IMAGE_BYTES = b"\x89PNG\r\n\x1a\n" + b"i" * 64
+IMAGE_URL = "https://v3.fal.media/files/out.png"
+DONE = {"id": "job-1", "kind": "image", "endpoint_id": "fal-ai/flux/dev", "status": "completed",
+        "result": {"images": [{"url": IMAGE_URL, "width": 1024, "height": 768, "content_type": "image/png"}]},
+        "cost": 0.025, "currency": "USD", "provider": "fal"}
+
+
+@pytest.fixture
+def images(client, engine, calls, respond, tmp_path, monkeypatch):
+    """Notes' real image route, the suite faked, and the download of fal's file faked."""
+    import app.routers.images as images_module
+    from app.models import ModelCatalogEntry
+
+    with Session(engine) as s:
+        s.add(ModelCatalogEntry(id="m1", kind="image", model_id="fal-ai/flux/dev", label="Flux dev"))
+        s.commit()
+
+    def handler(request):
+        calls.append(request)
+        if request.url.host == "v3.fal.media":
+            return httpx.Response(200, content=IMAGE_BYTES, headers={"content-type": "image/png"})
+        return respond.fn(request)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(suite, "TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(suite, "POLL_INTERVAL", 0)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real(*a, **{"transport": httpx.MockTransport(handler), **kw}))
+    monkeypatch.setattr(images_module, "get_user_media_dir", lambda user_id: str(tmp_path))
+    monkeypatch.setattr(images_module, "generate_thumbnail", lambda path: None)
+    return tmp_path
+
+
+def _job_replies(*states):
+    """The fake suite: the first POST queues, each GET after answers the next state."""
+    remaining = list(states)
+
+    def respond(request):
+        if request.method == "POST":
+            return httpx.Response(202, json={"data": {**DONE, "status": "queued", "result": None, "cost": None}})
+        state = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return httpx.Response(200, json={"data": state})
+    return respond
+
+
+def test_an_image_is_generated_by_the_suite_and_saved_into_notes_media(images, client, calls, respond, engine):
+    respond.fn = _job_replies({**DONE, "status": "running", "result": None, "cost": None}, DONE)
+    res = client.post("/api/images/generate", json={"prompt": "a gecko on a leaf", "image_size": "landscape_4_3"})
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["model"] == "fal-ai/flux/dev" and data["cost"] == 0.025 and data["currency"] == "USD"
+    assert (data["width"], data["height"]) == (1024, 768) and data["url"].startswith("/media/user-1/")
+    assert next(images.iterdir()).read_bytes() == IMAGE_BYTES  # the file lives in Notes, not on fal's URL
+
+    submit = next(c for c in calls if c.method == "POST")
+    assert str(submit.url) == f"{BASE}/api/v1/ai/media/jobs"
+    sent = json.loads(submit.content)
+    assert sent["kind"] == "image" and sent["endpoint_id"] == "fal-ai/flux/dev"
+    assert sent["input"]["prompt"] == "a gecko on a leaf"  # Notes still builds the endpoint's own body
+    assert submit.headers["x-gecko-app"] == "notes" and submit.headers["x-on-behalf-of"] == "user-1"
+    with Session(engine) as s:
+        assert s.exec(select(UsageEvent)).all() == []  # no fal key here, and the suite recorded it
+
+
+def test_a_failed_generation_keeps_fals_reason(images, client, respond):
+    respond.fn = _job_replies({**DONE, "status": "failed", "result": None, "error": "Your prompt was refused"})
+    res = client.post("/api/images/generate", json={"prompt": "x"})
+    assert res.status_code == 502 and res.json()["detail"] == {"code": "fal_error", "message": "Your prompt was refused"}
+    assert list(images.iterdir()) == []
+
+
+def test_a_generation_that_never_finishes_is_cancelled_not_left_billing(images, client, calls, respond, monkeypatch):
+    import app.routers.images as images_module
+
+    monkeypatch.setattr(images_module, "_GENERATE_TIMEOUT", 0.05)
+    monkeypatch.setattr(suite, "POLL_INTERVAL", 0.01)
+    respond.fn = lambda r: httpx.Response(202 if r.method == "POST" else 200, json={"data": {
+        **DONE, "status": "running", "result": None, "cost": None}})
+    res = client.post("/api/images/generate", json={"prompt": "x"})
+    assert res.status_code == 504 and res.json()["detail"]["code"] == "upstream_timeout"
+    assert any(c.method == "DELETE" and str(c.url).endswith("/ai/media/jobs/job-1") for c in calls)
+
+
+def test_a_model_outside_the_notes_list_is_refused_without_asking_the_suite(images, client, calls):
+    res = client.post("/api/images/generate", json={"prompt": "x", "model": "fal-ai/not-listed"})
+    assert res.status_code == 400 and res.json()["detail"]["code"] == "invalid_model"
+    assert calls == []
+
+
+def test_the_suite_being_down_is_a_sentence_for_image_generation(images, client, respond):
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+    respond.fn = refuse
+    res = client.post("/api/images/generate", json={"prompt": "x"})
+    assert res.status_code == 503 and res.json()["detail"]["code"] == "suite_unavailable"
