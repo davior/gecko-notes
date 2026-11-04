@@ -2,10 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Loader2, CheckCircle2, XCircle } from 'lucide-react'
 import { authApi } from '@/api/auth'
+import { MovedToSuite } from '@/components/SuiteMoved'
+import { useIdentity } from '@/hooks/useIdentity'
 
 type State = 'loading' | 'success' | 'error'
 
 export default function VerifyEmailView() {
+  const identity = useIdentity()
+  if (!identity) return null
+  if (identity.provider === 'suite' && identity.url) {
+    return (
+      <MovedToSuite suiteUrl={identity.url} title="Confirm your email" path="/login" action="Sign in at Gecko Suite" />
+    )
+  }
+  return <NotesVerifyEmailView />
+}
+
+function NotesVerifyEmailView() {
   const [params] = useSearchParams()
   const token = params.get('token') ?? ''
   const [state, setState] = useState<State>('loading')

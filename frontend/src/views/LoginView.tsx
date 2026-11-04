@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { authApi, isTwoFactorRequired } from '@/api/auth'
 import { configApi } from '@/api/config'
+import SuiteSignIn from '@/components/SuiteSignIn'
+import { useIdentity } from '@/hooks/useIdentity'
 
 type Mode = 'login' | 'register' | 'forgot'
 type Step = 'form' | 'twofa'
@@ -28,7 +30,24 @@ function validatedRedirect(raw: string | null): string | null {
   return null
 }
 
+// Which login this instance has: its own form, or Gecko Suite's (M6). Decided before
+// either renders, so neither a form nor a redirect flashes while the config arrives.
 export default function LoginView() {
+  const identity = useIdentity()
+  const [searchParams] = useSearchParams()
+  if (!identity) return null
+  if (identity.provider === 'suite' && identity.url) {
+    return (
+      <SuiteSignIn
+        suiteUrl={identity.url}
+        redirectTarget={validatedRedirect(searchParams.get('redirect'))}
+      />
+    )
+  }
+  return <NotesLogin />
+}
+
+function NotesLogin() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const redirectTarget = validatedRedirect(searchParams.get('redirect'))

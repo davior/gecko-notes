@@ -7,6 +7,10 @@ export interface AppConfig {
   email_verification_required: boolean
   email_enabled: boolean
   voice_mode_enabled: boolean
+  /** Who signs people in (M6). "suite": Gecko Suite keeps the accounts; Notes only verifies. */
+  identity_provider: 'notes' | 'suite'
+  /** The suite's address for the browser, when it signs people in; otherwise null. */
+  identity_url: string | null
 }
 
 export const configApi = {

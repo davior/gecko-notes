@@ -3,6 +3,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select, func
 
+from app import identity
 from app.database import get_session
 from app.models import User, Note, Folder, NoteAsset
 from app.routers.media import MEDIA_DIR, IMAGE_EXTENSIONS, categorize_extension
@@ -13,6 +14,13 @@ from app.schemas import (
 from app.auth import hash_password
 
 router = APIRouter()
+
+# With IDENTITY_PROVIDER=suite (M6) the accounts are the suite's: enabling, admin rights,
+# passwords and deletion happen on its Users screen. Listing, metrics and storage stay,
+# since they are about what each person keeps in Notes. Deleting stays off too: it
+# removes only the row here, and the next request from the same person would bring
+# it straight back, with their notes still attached.
+SUITE_OWNS = [Depends(identity.refuse_in_suite_mode)]
 
 
 def _count(session: Session, model, *conditions) -> int:
@@ -129,7 +137,7 @@ def user_storage(user_id: str, request: Request, session: Session = Depends(get_
     )
 
 
-@router.patch("/{user_id}", response_model=UserRead)
+@router.patch("/{user_id}", response_model=UserRead, dependencies=SUITE_OWNS)
 def update_user(user_id: str, payload: AdminUserUpdate, request: Request, session: Session = Depends(get_session)):
     admin = _require_admin(request, session)
     user = session.get(User, user_id)
@@ -147,7 +155,7 @@ def update_user(user_id: str, payload: AdminUserUpdate, request: Request, sessio
     return UserRead.model_validate(user)
 
 
-@router.post("/{user_id}/reset-password", status_code=204)
+@router.post("/{user_id}/reset-password", status_code=204, dependencies=SUITE_OWNS)
 def reset_password(user_id: str, payload: AdminPasswordReset, request: Request, session: Session = Depends(get_session)):
     _require_admin(request, session)
     user = session.get(User, user_id)
@@ -158,7 +166,7 @@ def reset_password(user_id: str, payload: AdminPasswordReset, request: Request, 
     session.commit()
 
 
-@router.delete("/{user_id}", status_code=204)
+@router.delete("/{user_id}", status_code=204, dependencies=SUITE_OWNS)
 def delete_user(user_id: str, request: Request, session: Session = Depends(get_session)):
     admin = _require_admin(request, session)
     if user_id == admin.id:

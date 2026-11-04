@@ -21,6 +21,7 @@ from app.auth import (
     generate_url_token, generate_numeric_code, hash_token,
     encrypt_api_key, decrypt_api_key,
 )
+from app import identity
 from app.seed import seed_user_settings
 from app.mail import email_enabled, app_base_url, send_template
 from app import twofa
@@ -29,6 +30,12 @@ from app.app_settings import (
 )
 
 router = APIRouter()
+
+# With IDENTITY_PROVIDER=suite (M6), Gecko Suite keeps the accounts. Every route that
+# creates, signs in to or changes one carries this and answers 410 pointing there. The
+# rest (`me`, `session`, `logout`) still work, against the row `identity.ensure_user`
+# keeps from the suite's token.
+SUITE_OWNS = [Depends(identity.refuse_in_suite_mode)]
 
 APP_NAME = "Gecko Notes"
 VERIFY_TOKEN_EXPIRE_HOURS = 24
@@ -199,7 +206,7 @@ def _consume_email_2fa_code(session: Session, user: User, code: str) -> bool:
 
 # ─── Registration & login ─────────────────────────────────────────────────────
 
-@router.post("/register", response_model=UserRead, status_code=201)
+@router.post("/register", response_model=UserRead, status_code=201, dependencies=SUITE_OWNS)
 def register(payload: UserCreate, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
     if session.exec(select(User).where(User.username == payload.username)).first():
         raise HTTPException(status_code=400, detail="Username already taken")
@@ -234,7 +241,7 @@ def register(payload: UserCreate, background_tasks: BackgroundTasks, session: Se
     return UserRead.model_validate(user)
 
 
-@router.post("/login")
+@router.post("/login", dependencies=SUITE_OWNS)
 @limiter.limit("5/minute")
 def login(request: Request, payload: UserLogin, background_tasks: BackgroundTasks,
           response: Response, session: Session = Depends(get_session)):
@@ -259,7 +266,7 @@ def login(request: Request, payload: UserLogin, background_tasks: BackgroundTask
     return _finalize_login(session, user, response)
 
 
-@router.post("/login/2fa", response_model=Token)
+@router.post("/login/2fa", response_model=Token, dependencies=SUITE_OWNS)
 @limiter.limit("10/minute")
 def login_two_factor(request: Request, payload: LoginTwoFactorRequest, response: Response,
                      session: Session = Depends(get_session)):
@@ -294,7 +301,7 @@ def logout(response: Response):
 
 # ─── Email verification & password reset ──────────────────────────────────────
 
-@router.post("/verify-email", response_model=MessageResponse)
+@router.post("/verify-email", response_model=MessageResponse, dependencies=SUITE_OWNS)
 def verify_email(payload: VerifyEmailRequest, session: Session = Depends(get_session)):
     row = _consume_link_token(session, "verify_email", payload.token)
     user = session.get(User, row.user_id) if row else None
@@ -308,7 +315,7 @@ def verify_email(payload: VerifyEmailRequest, session: Session = Depends(get_ses
     return MessageResponse(message="Your email has been verified. You can now sign in.")
 
 
-@router.post("/resend-verification", response_model=MessageResponse)
+@router.post("/resend-verification", response_model=MessageResponse, dependencies=SUITE_OWNS)
 @limiter.limit("3/minute")
 def resend_verification(request: Request, payload: ResendVerificationRequest,
                         background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
@@ -320,7 +327,7 @@ def resend_verification(request: Request, payload: ResendVerificationRequest,
     )
 
 
-@router.post("/forgot-password", response_model=MessageResponse)
+@router.post("/forgot-password", response_model=MessageResponse, dependencies=SUITE_OWNS)
 @limiter.limit("3/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest,
                     background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
@@ -332,7 +339,7 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest,
     )
 
 
-@router.post("/reset-password", response_model=MessageResponse)
+@router.post("/reset-password", response_model=MessageResponse, dependencies=SUITE_OWNS)
 @limiter.limit("5/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest,
                    session: Session = Depends(get_session)):
@@ -374,6 +381,13 @@ def current_session(request: Request, session: Session = Depends(get_session)):
 def update_me(payload: UserUpdate, request: Request, background_tasks: BackgroundTasks,
               session: Session = Depends(get_session)):
     user = _require_auth(request, session)
+    if identity.suite_signs_in() and (
+        (payload.username is not None and payload.username != user.username)
+        or (payload.email is not None and payload.email != user.email)
+    ):
+        # The name and address are the suite's; Notes would only be overwritten by the
+        # next token. The avatar is Notes' own file, so it stays editable here.
+        raise identity.managed_by_suite("Your username and email")
     if payload.username is not None and payload.username != user.username:
         if session.exec(select(User).where(User.username == payload.username)).first():
             raise HTTPException(status_code=400, detail="Username already taken")
@@ -397,7 +411,7 @@ def update_me(payload: UserUpdate, request: Request, background_tasks: Backgroun
     return UserRead.model_validate(user)
 
 
-@router.post("/me/change-password", status_code=204)
+@router.post("/me/change-password", status_code=204, dependencies=SUITE_OWNS)
 def change_password(payload: PasswordChange, request: Request, session: Session = Depends(get_session)):
     user = _require_auth(request, session)
     if not verify_password(payload.current_password, user.hashed_password):
@@ -419,7 +433,7 @@ def two_factor_status(request: Request, session: Session = Depends(get_session))
     )
 
 
-@router.post("/2fa/totp/setup", response_model=TotpSetupResponse)
+@router.post("/2fa/totp/setup", response_model=TotpSetupResponse, dependencies=SUITE_OWNS)
 def totp_setup(request: Request, session: Session = Depends(get_session)):
     """Generate a fresh authenticator secret + QR. Nothing is persisted until the
     user confirms with a valid code at /2fa/totp/enable, so an abandoned setup can't
@@ -430,7 +444,7 @@ def totp_setup(request: Request, session: Session = Depends(get_session)):
     return TotpSetupResponse(secret=secret, otpauth_uri=uri, qr_data_uri=twofa.qr_data_uri(uri))
 
 
-@router.post("/2fa/totp/enable", response_model=TwoFactorStatus)
+@router.post("/2fa/totp/enable", response_model=TwoFactorStatus, dependencies=SUITE_OWNS)
 def totp_enable(payload: TotpEnableRequest, request: Request, session: Session = Depends(get_session)):
     user = _require_auth(request, session)
     if not twofa.verify_code(payload.secret, payload.code):
@@ -442,7 +456,7 @@ def totp_enable(payload: TotpEnableRequest, request: Request, session: Session =
     return TwoFactorStatus(enabled=True, method="totp", email_available=email_enabled())
 
 
-@router.post("/2fa/email/setup", response_model=MessageResponse)
+@router.post("/2fa/email/setup", response_model=MessageResponse, dependencies=SUITE_OWNS)
 def email_2fa_setup(request: Request, background_tasks: BackgroundTasks,
                     session: Session = Depends(get_session)):
     user = _require_auth(request, session)
@@ -452,7 +466,7 @@ def email_2fa_setup(request: Request, background_tasks: BackgroundTasks,
     return MessageResponse(message="We've emailed you a code to confirm email-based 2FA.")
 
 
-@router.post("/2fa/email/verify", response_model=TwoFactorStatus)
+@router.post("/2fa/email/verify", response_model=TwoFactorStatus, dependencies=SUITE_OWNS)
 def email_2fa_verify(payload: CodeRequest, request: Request, session: Session = Depends(get_session)):
     user = _require_auth(request, session)
     if not _consume_email_2fa_code(session, user, payload.code):
@@ -463,7 +477,7 @@ def email_2fa_verify(payload: CodeRequest, request: Request, session: Session = 
     return TwoFactorStatus(enabled=True, method="email", email_available=email_enabled())
 
 
-@router.post("/2fa/disable", response_model=TwoFactorStatus)
+@router.post("/2fa/disable", response_model=TwoFactorStatus, dependencies=SUITE_OWNS)
 def two_factor_disable(payload: TwoFactorDisableRequest, request: Request,
                        session: Session = Depends(get_session)):
     user = _require_auth(request, session)

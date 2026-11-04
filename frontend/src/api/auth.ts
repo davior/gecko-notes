@@ -64,6 +64,14 @@ export const authApi = {
     await client.post('/auth/logout')
   },
 
+  // Trades the shared session cookie for a token and the account. How Notes picks up a
+  // sign-in that happened somewhere else (Gecko Suite, from M6): the cookie is HttpOnly,
+  // so the frontend cannot read it, only present it.
+  async session(): Promise<LoginResponse> {
+    const res = await client.get<LoginResponse>('/auth/session')
+    return res.data
+  },
+
   async me(): Promise<User> {
     const res = await client.get<User>('/auth/me')
     return res.data

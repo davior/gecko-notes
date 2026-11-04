@@ -22,6 +22,8 @@ interface AuthState {
   updateProfile: (data: Partial<Pick<User, 'username' | 'email' | 'avatar_url'>>) => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   setUser: (user: User) => void
+  // A session Notes did not sign in itself (Gecko Suite's, from M6), traded for a token.
+  adoptSession: (result: LoginResponse) => Promise<void>
 }
 
 function loadStoredAuth(): { user: User | null; token: string | null } {
@@ -134,6 +136,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   setUser(user) {
     localStorage.setItem('auth_user', JSON.stringify(user))
     set({ user })
+  },
+
+  async adoptSession(result) {
+    _applySession(set, result)
+    await useSettingsStore.getState().loadSettings()
   },
 }))
 
