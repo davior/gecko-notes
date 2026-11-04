@@ -225,6 +225,22 @@ Tune assistant behavior under **Settings → AI Settings** (system prompts, temp
 
 API keys are stored encrypted in the local SQLite database — never transmitted to any third party except the AI provider you configure.
 
+### Through Gecko Suite
+
+Notes can hand its AI to [Gecko Suite](https://github.com/davior/gecko-suite) instead: chat, web
+search, speech and image generation then use the providers and keys held there, and the spend is
+counted there. Set up the suite first (import Notes' providers, route `speech.tts`, issue the
+`notes` app secret), then add to `.env`:
+
+```
+AI_BACKEND=suite
+SUITE_APP_SECRET=<issued on the suite's Apps screen>
+```
+
+The full procedure, including checks and how to switch back, is in the suite's
+[`docs/deploying.md`](https://github.com/davior/gecko-suite/blob/main/docs/deploying.md#gecko-notes)
+("Connect the apps"). `AI_BACKEND=local`, the default, keeps everything above unchanged.
+
 ## Web Search
 
 The assistant can look things up online — current events, recent facts, research — and
