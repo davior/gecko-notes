@@ -43,8 +43,22 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_token(token: str) -> dict:
+def _decode(token: str) -> dict:
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+
+def decode_token(token: str) -> dict:
+    """A session token's claims, or JWTError.
+
+    A two-factor challenge (below) is refused here. It is signed with the same secret and
+    carries the same `sub`, so a session check that accepted it would let the password step
+    alone in: every caller of this (the API middleware, the live-audio websockets) is a
+    session check. The second step reads its challenge through `decode_challenge_token`.
+    """
+    payload = _decode(token)
+    if payload.get("twofa_pending"):
+        raise JWTError("A two-factor challenge is not a session")
+    return payload
 
 
 # ─── Two-factor login challenge ───────────────────────────────────────────────
@@ -66,7 +80,7 @@ def create_challenge_token(user_id: str, method: str) -> str:
 def decode_challenge_token(token: str) -> dict:
     """Decode a 2FA challenge token, raising JWTError unless it is a genuine
     twofa_pending token (a normal access token must not be accepted here)."""
-    payload = decode_token(token)
+    payload = _decode(token)
     if not payload.get("twofa_pending"):
         raise JWTError("Not a 2FA challenge token")
     return payload
