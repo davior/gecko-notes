@@ -60,6 +60,15 @@ def base_url() -> str:
     return (os.getenv("SUITE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
 
+def public_url() -> str:
+    """Where a person's browser reaches the suite, for the links in Settings.
+
+    Not `SUITE_BASE_URL`: that is how this server reaches it, which in some deployments is
+    an internal address (a compose service name) no browser can open.
+    """
+    return (os.getenv("SUITE_PUBLIC_URL") or base_url()).rstrip("/")
+
+
 def validate() -> None:
     """Refuse to start on a configuration that cannot work, rather than fail every call.
 

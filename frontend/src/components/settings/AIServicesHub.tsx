@@ -6,6 +6,7 @@ import SpeechSettings from '@/components/settings/SpeechSettings'
 import ImageGenSettings from '@/components/settings/ImageGenSettings'
 import UsageDashboard from '@/components/settings/UsageDashboard'
 import ModelCatalogManager from '@/components/settings/ModelCatalogManager'
+import SuiteNotice from '@/components/settings/SuiteNotice'
 import { useAuthStore } from '@/stores/auth'
 
 const BASE_SUBTABS = [
@@ -49,6 +50,8 @@ export default function AIServicesHub({ section }: { section: string }) {
           })}
         </nav>
       </div>
+
+      <SuiteNotice section={active} />
 
       <div>
         {active === 'providers' && <AIProviderManager />}

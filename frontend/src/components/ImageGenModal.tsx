@@ -70,7 +70,8 @@ export default function ImageGenModal({ onInsert, onClose }: Props) {
   const allModels = settings
     ? [...settings.curated_models, ...settings.custom_models.map((id) => ({ id, label: id }))]
     : []
-  const noKey = settings !== null && !settings.has_api_key
+  // Through Gecko Suite the key is the suite's, so a missing local one is not a blocker.
+  const noKey = settings !== null && !settings.has_api_key && !settings.via_suite
   // A model whose saved parameters set the size ignores the dropdown, and the preset-based
   // estimate (megapixels per preset) no longer describes what will be generated.
   const sizeOverridden = overridesSize(settings?.model_params[model])
