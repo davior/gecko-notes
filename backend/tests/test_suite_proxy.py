@@ -222,3 +222,43 @@ def test_suite_mode_without_its_secret_refuses_to_start(monkeypatch):
         suite.validate()
     monkeypatch.setenv("AI_BACKEND", "local")
     suite.validate()
+
+
+# ─── web search (SN-2a) ──────────────────────────────────────────────────────
+
+SEARCH_DATA = {"data": {"provider": "My Brave", "kind": "brave", "results": [
+    {"title": "Gecko", "url": "https://example.com/g", "snippet": "A lizard", "published": None}]}}
+
+
+def test_a_search_goes_to_the_suite_and_keeps_notes_response_shape(client, calls, respond, engine):
+    respond.fn = lambda r: httpx.Response(200, json=SEARCH_DATA)
+    res = client.post("/api/search/web", json={"query": " geckos ", "count": 50})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"provider": "brave", "provider_label": "My Brave", "query": "geckos",
+                          "results": SEARCH_DATA["data"]["results"]}
+    [request] = calls
+    assert str(request.url) == f"{BASE}/api/v1/search/web"
+    assert request.headers["x-gecko-app"] == "notes" and request.headers["x-on-behalf-of"] == "user-1"
+    assert json.loads(request.content) == {"query": "geckos", "count": 10}  # clamped to the suite's cap
+    with Session(engine) as s:
+        assert s.exec(select(UsageEvent)).all() == []  # the suite counts it
+
+
+def test_a_failed_search_keeps_the_suites_reason(client, respond):
+    respond.fn = lambda r: httpx.Response(502, json={"detail": {"code": "search_timeout", "message": "Brave did not respond."}})
+    res = client.post("/api/search/web", json={"query": "geckos"})
+    assert res.status_code == 502 and res.json()["detail"] == {"code": "search_timeout", "message": "Brave did not respond."}
+
+
+def test_an_empty_query_is_refused_without_asking_the_suite(client, calls):
+    assert client.post("/api/search/web", json={"query": "  "}).status_code == 400
+    assert calls == []
+
+
+def test_the_search_test_button_tests_the_suite_path(client, calls, respond):
+    respond.fn = lambda r: httpx.Response(200, json=SEARCH_DATA)
+    res = client.post("/api/settings/web-search/test", json={})
+    assert res.json()["success"] is True and "Gecko Suite" in res.json()["message"]
+    assert str(calls[-1].url).endswith("/search/web")
+    respond.fn = lambda r: httpx.Response(200, json={"data": {"provider": "DuckDuckGo", "kind": "duckduckgo", "results": []}})
+    assert client.post("/api/settings/web-search/test", json={}).json()["success"] is False

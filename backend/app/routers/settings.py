@@ -3217,6 +3217,20 @@ async def test_web_search(
     """Run a throwaway query against the backend. Always HTTP 200 with
     {success, message} (mirrors /ai-providers/test and /substack/test)."""
     user_id = _get_user_id(request)
+    if suite.enabled():
+        # Notes' own backend settings are not what runs the search in this mode, so
+        # testing them would pass or fail for the wrong reason. Test the real path.
+        try:
+            found = await suite.web_search("what is the current date", 3, user_id)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            return {"success": False, "message": detail.get("message") or "Gecko Suite could not run the search."}
+        if not found["results"]:
+            return {"success": False, "message": f"Gecko Suite's {found['provider_label']} answered, but returned no results."}
+        return {"success": True, "message": (
+            f"Connected through Gecko Suite — {found['provider_label']} returned "
+            f"{len(found['results'])} result(s), e.g. “{found['results'][0]['title']}”.")}
+
     stored = load_web_search_config(session, user_id)
     provider = (payload.provider or stored["provider"]).strip()
     if provider not in WEB_SEARCH_PROVIDERS:
