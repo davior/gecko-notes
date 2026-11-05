@@ -3,6 +3,7 @@ import { settingsApi, DEFAULT_TTS_VOICE, DEFAULT_TTS_MODEL, DEFAULT_STT_MODEL, D
 import { createAIService, type AIService, DEFAULT_SUMMARY_PROMPT } from '@/services/ai'
 import { cacheTheme, cachedTheme, suiteThemesApi } from '@/api/suiteThemes'
 import { loadIdentity } from '@/hooks/useIdentity'
+import { useAiBackendStore } from '@/stores/aiBackend'
 
 interface SettingsState {
   appSettings: Record<string, unknown>
@@ -201,6 +202,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   async loadSettings() {
     set({ loading: true })
+    // Whether AI goes through Gecko Suite, wanted before the first dictation (SN-9) picks
+    // where to stream; read once per session, and quietly local if it fails.
+    void useAiBackendStore.getState().load()
     try {
       const identity = await loadIdentity()
       const fromSuite = identity.provider === 'suite'
