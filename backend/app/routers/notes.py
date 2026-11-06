@@ -15,10 +15,11 @@ from app.asset_utils import (  # noqa: F401  (extract_media_urls re-exported for
 )
 from app.database import get_session
 from app.folder_utils import archived_subtree_ids, get_folder_subtree, get_or_create_archive_folder
-from app.models import Note, NoteVersion, Folder, Annotation
+from app.blocks.markdown_blocks import markdown_to_blocks
+from app.models import Category, Note, NoteVersion, Folder, Annotation
 from app.routers.media import MEDIA_DIR
 from app.schemas import (
-    NoteCreate, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
+    NoteCreate, NoteFromMarkdown, NoteUpdate, NoteRead, NoteListItem, MoveNoteRequest, CreateChildRequest,
     NoteVersionRead, NoteVersionListItem, RestoreVersionRequest, NoteSearchFilter,
     NoteMetrics, DataResponse, ListResponse, ErrorResponse
 )
@@ -566,6 +567,92 @@ def create_note(payload: NoteCreate, request: Request, session: Session = Depend
         user_id=user_id,
     )
     session.add(note)
+    session.commit()
+    session.refresh(note)
+    sync_note_assets(session, note)
+    return DataResponse(data=note_to_read(note))
+
+
+# The folder each sibling app's notes land in when the caller names none.
+APP_FOLDERS = {"gam": "From GAM", "gvc": "From Video Creator"}
+APP_TAGS = {"gam": "gam", "gvc": "video-creator"}
+
+
+def _folder_named(session: Session, user_id: str, name: str) -> Folder:
+    """The caller's top-level folder with this name, or a new one.
+
+    Case-insensitive, so "from gam" finds "From GAM" rather than making a twin beside
+    it. Never the Archive Bin (deleted folders live there) and never a dynamic folder,
+    which is a saved search and holds no notes.
+    """
+    wanted = name.strip().lower()
+    for folder in session.exec(
+        select(Folder).where(Folder.user_id == user_id, col(Folder.parent_folder_id).is_(None))
+    ).all():
+        if folder.name.strip().lower() == wanted and not folder.system_key and not folder.search_query:
+            return folder
+    now = datetime.now(timezone.utc)
+    folder = Folder(id=str(uuid.uuid4()), name=name.strip(), user_id=user_id,
+                    created_at=now, modified_at=now)
+    session.add(folder)
+    session.flush()
+    return folder
+
+
+def _default_category(session: Session) -> Category:
+    category = session.exec(select(Category).where(Category.is_default == True)).first()  # noqa: E712
+    if category is None:
+        category = session.exec(select(Category).order_by(Category.sort_order)).first()
+    if category is None:
+        raise HTTPException(status_code=409, detail={
+            "code": "no_category", "message": "Gecko Notes has no categories to file a note under."})
+    return category
+
+
+def _title_from(markdown: str) -> str:
+    for line in markdown.splitlines():
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            return heading.group(1)[:300]
+    return "Untitled"
+
+
+@router.post("/from-markdown", response_model=DataResponse[NoteRead], status_code=201)
+def create_note_from_markdown(payload: NoteFromMarkdown, request: Request,
+                              session: Session = Depends(get_session)):
+    """A note from Markdown, for the sibling apps (GAM, Video Creator) to file what their
+    assistants wrote, with the person's own token.
+
+    Everything a plain `POST /api/notes` leaves to the caller is decided here, so the
+    apps send only text: the blocks (`markdown_to_blocks`, the converter the assistant's
+    plans already use), the category (the default one), and the folder (the app's own,
+    made the first time). A first version is written too, so the note has a history
+    from the start rather than only once someone opens it.
+    """
+    user_id = _get_user_id(request)
+    if not payload.markdown.strip():
+        raise HTTPException(status_code=400, detail={"code": "empty_note", "message": "The note has no text."})
+    folder_name = (payload.folder_name or "").strip() or APP_FOLDERS.get(payload.source_app or "")
+    folder = _folder_named(session, user_id, folder_name) if folder_name else None
+    tags = [t.strip() for t in payload.tags if t and t.strip()]
+    app_tag = APP_TAGS.get(payload.source_app or "")
+    if app_tag and app_tag not in tags:
+        tags.append(app_tag)
+    now = datetime.now(timezone.utc)
+    note = Note(
+        id=str(uuid.uuid4()),
+        title=payload.title.strip() or _title_from(payload.markdown),
+        content=json.dumps(markdown_to_blocks(payload.markdown), ensure_ascii=False),
+        category_id=_default_category(session).id,
+        folder_id=folder.id if folder else None,
+        tags=json.dumps(tags[:20]),
+        created_at=now,
+        modified_at=now,
+        user_id=user_id,
+    )
+    session.add(note)
+    session.flush()
+    _snapshot_note(session, note)
     session.commit()
     session.refresh(note)
     sync_note_assets(session, note)

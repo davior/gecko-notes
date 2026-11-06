@@ -144,6 +144,23 @@ class NoteCreate(BaseModel):
     summary: Optional[str] = None
 
 
+class NoteFromMarkdown(BaseModel):
+    """A note written somewhere else, as Markdown: what GAM's and Video Creator's
+    assistants send when a person applies a note they proposed. Converted to blocks here,
+    by the same converter the assistant's own plans use, so another app never has to know
+    BlockNote's format."""
+    title: str = Field(default="", max_length=300)
+    # 200 KB: a long report, not a book. The converter is linear, but a note this size is
+    # already more than the editor is comfortable opening.
+    markdown: str = Field(max_length=200_000)
+    # A top-level folder, found by name or made. Absent: the app's own folder
+    # ("From GAM", "From Video Creator"), or the top level when no app is named.
+    folder_name: Optional[str] = Field(default=None, max_length=120)
+    tags: List[str] = Field(default_factory=list, max_length=20)
+    # "gam" | "gvc": tagged on the note, and names the default folder.
+    source_app: Optional[str] = Field(default=None, pattern=r"^(gam|gvc)$")
+
+
 class CreateChildRequest(BaseModel):
     title: str = "Untitled"
     content: str = '[]'  # selected blocks JSON when sending a selection, else empty
