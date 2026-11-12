@@ -87,8 +87,10 @@ def run_tool_planning(
         folder_names=turn_ctx.get("folder_names") or {},
         use_summaries=bool(turn_ctx.get("use_summaries")),
     )
-    # Search runs through the suite in this mode for every vendor, so the tool is offered
-    # whenever the panel would have offered search at all.
+    # Offered whenever the panel would have offered search at all. The suite decides who
+    # runs it: a model with its own search (Claude, DeepSeek on its Anthropic endpoint)
+    # searches for itself, as the text plan's native mode did, and this handler is never
+    # called; any other model gets the suite's search backend through it.
     web_search = turn_ctx.get("web_search_mode") in ("native", "action")
     voice = bool(turn_ctx.get("voice"))
 
