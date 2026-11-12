@@ -24,4 +24,4 @@ qrcode>=7.4
 email-validator>=2.1.0
 # Gecko Suite's client, for the assistant's tool loop (app/assistant/tool_planner.py). Pinned by
 # commit archive, not git: the python:3.11-slim image has no git.
-gecko-suite-client @ https://github.com/davior/gecko-suite/archive/e4d0d2a6ce49046f9ff58d1e7a7508aec331ba18.tar.gz#subdirectory=client
+gecko-suite-client @ https://github.com/davior/gecko-suite/archive/a9b024f9e146a89e320581084d02c3a81215bcf1.tar.gz#subdirectory=client
