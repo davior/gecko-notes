@@ -24,7 +24,9 @@ import { notesApi, type NoteListItem } from '@/api/notes'
 import { foldersApi } from '@/api/folders'
 import { annotationsApi } from '@/api/annotations'
 import { aiSessionsApi, type AISession } from '@/api/aiSessions'
-import { assistantApi } from '@/api/assistant'
+import { assistantApi, type TurnStep } from '@/api/assistant'
+import { formatCost } from '@/api/imageGen'
+import { AssistantSteps, TurnCost } from '@/components/AssistantSteps'
 import { buildToolContext, canPlanWithTools } from '@/utils/toolContext'
 import type { ActivityJob } from '@/api/activity'
 import { errorMessage } from '@/utils/aiErrors'
@@ -58,6 +60,10 @@ export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: string
+  /** On a reply the server wrote: what the turn did to get there. */
+  steps?: TurnStep[]
+  /** On a reply the server wrote: what the turn cost (an estimate). */
+  cost?: number | null
 }
 
 type ContextScope = 'none' | 'note' | 'children' | 'folder' | 'subfolder'
@@ -496,6 +502,9 @@ export default function AIConversationPanel({
   // Live text of the in-flight streamed reply (null = not streaming). See planOnce.
   // The reply so far, polled off the turn's job row while it is planning.
   const [streamingText, setStreamingText] = useState<string | null>(null)
+  // The turn's steps and cost so far, polled with the reply while it plans.
+  const [liveSteps, setLiveSteps] = useState<TurnStep[]>([])
+  const [liveCost, setLiveCost] = useState<number | null>(null)
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -708,6 +717,8 @@ export default function AIConversationPanel({
   useEffect(() => {
     if (!activeRun || !planning) {
       setStreamingText(null)
+      setLiveSteps([])
+      setLiveCost(null)
       return
     }
     const runId = activeRun.id
@@ -717,7 +728,11 @@ export default function AIConversationPanel({
     const tick = async () => {
       try {
         const { data } = await assistantApi.preview(runId)
-        if (!stopped) setStreamingText(liveExtractText(data.text))
+        if (!stopped) {
+          setStreamingText(liveExtractText(data.text))
+          setLiveSteps(data.steps ?? [])
+          setLiveCost(data.cost ?? null)
+        }
       } catch { /* a missed poll keeps the last text; try again */ }
       if (!stopped) timer = setTimeout(() => void tick(), PREVIEW_POLL_MS)
     }
@@ -2042,6 +2057,8 @@ export default function AIConversationPanel({
                   </ReactMarkdown>
                 </div>
               </div>
+              {msg.steps && msg.steps.length > 0 && <AssistantSteps steps={msg.steps} live={false} />}
+              <TurnCost cost={msg.cost} />
               <div className="flex items-center gap-1">
                 <button
                   className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -2089,7 +2106,8 @@ export default function AIConversationPanel({
         )}
 
         {(loading || planning) && (
-          streamingText ? (
+          <div className="space-y-1.5">
+          {streamingText ? (
             // Live streamed reply — replaces the "Thinking…" bubble once tokens arrive.
             // Rendered with a trailing caret; the final, fully-styled message is appended
             // when the stream completes.
@@ -2108,7 +2126,10 @@ export default function AIConversationPanel({
                 Thinking…
               </div>
             </div>
-          )
+          )}
+          {planning && <AssistantSteps steps={liveSteps} live />}
+          {planning && <TurnCost cost={liveCost} label="So far: " />}
+          </div>
         )}
 
         {error && (
@@ -2153,6 +2174,9 @@ export default function AIConversationPanel({
                 {activeRun.stage || 'Working'}
                 {activeRun.detail ? ` · ${activeRun.detail}` : ''}
                 {` · ${activeRun.progress}%`}
+                {typeof activeRun.meta?.cost === 'number' && activeRun.meta.cost > 0
+                  ? ` · about ${formatCost(activeRun.meta.cost)} so far`
+                  : ''}
               </span>
               <button
                 className="btn-ghost ml-auto shrink-0 px-1.5 py-0.5 text-xs"

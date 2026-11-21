@@ -27,6 +27,7 @@ from sqlmodel import Session
 from app import suite
 from app.assistant.provider import PromptContext
 from app.assistant.retrieve import RetrievalContext
+from app.assistant.turn_log import TurnLog
 from app.assistant.tools import (
     Proposal,
     handlers,
@@ -103,11 +104,19 @@ def run_tool_planning(
     subject = f"notes:note:{exec_ctx['current_note_id']}" if exec_ctx.get("current_note_id") else None
 
     steps = {"n": 0}
+    log = TurnLog(job_id)
 
     def on_step(kind: str, text: str) -> None:
-        # Searching and recording show as progress through planning's share of the bar.
+        # Each step goes into the panel's list as it is taken (GVC's), and moves the bar
+        # through planning's share of it.
         steps["n"] += 1
+        log.step(kind, text)
         report("Planning", min(30, 2 + steps["n"] * 2), text[:120])
+
+    def on_reply(reply: Any) -> None:
+        # The suite has already put this call in its own ledger; this is only the turn's
+        # running total. None (an unpriced model) adds nothing.
+        log.cost(getattr(reply, "cost", None))
 
     try:
         with closing(suite.chat_client(user_id)) as connection:
@@ -123,10 +132,11 @@ def run_tool_planning(
             )
             outcome = run_agent(
                 conversation,
-                handlers=handlers(session, user_id, proposal, retrieval, web_search=web_search),
+                handlers=handlers(session, user_id, proposal, retrieval, web_search=web_search, on_step=on_step),
                 caps=CAPS,
                 cancelled=is_cancelled,
                 on_step=on_step,
+                on_reply=on_reply,
                 on_delta=preview,
             )
     except Stopped as exc:

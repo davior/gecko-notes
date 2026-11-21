@@ -25,7 +25,7 @@ the stalled-turn recovery in `ai.ts` applies. What is left is joining the text.
 import copy
 import logging
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlmodel import Session
 
@@ -159,12 +159,49 @@ async def _send(
     )
 
 
+def _tokens(protocol: str, data: Dict[str, Any]) -> Tuple[int, int]:
+    """(input, output) tokens of a reply, counted as the usage ledger counts them:
+    cache reads and writes are input, and a provider that reports only a total has it
+    costed as input."""
+    if protocol == "anthropic":
+        usage = data.get("usage") or {}
+        inp = sum(int(usage.get(k, 0) or 0) for k in (
+            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        return inp, int(usage.get("output_tokens", 0) or 0)
+    if protocol == "ollama":
+        return int(data.get("prompt_eval_count", 0) or 0), int(data.get("eval_count", 0) or 0)
+    usage = data.get("usage") or {}
+    inp, out = int(usage.get("prompt_tokens", 0) or 0), int(usage.get("completion_tokens", 0) or 0)
+    if not (inp or out):
+        inp = int(usage.get("total_tokens", 0) or 0)
+    return inp, out
+
+
+def reply_cost(session: Session, ctx: PromptContext, data: Any) -> Optional[float]:
+    """A list-price estimate of one reply, for the turn's running total. None when there
+    is no price for the model (a custom endpoint), never a made-up zero.
+
+    The same table the usage dashboard uses (`app.pricing`), so the two agree.
+    """
+    from app.models import AIProvider
+    from app.pricing import cost_for
+
+    if not isinstance(data, dict):
+        return None
+    provider = session.get(AIProvider, ctx.provider_id)
+    if provider is None:
+        return None
+    estimate = cost_for(provider.provider_type, ctx.model, *_tokens(ctx.protocol, data))
+    return estimate[0] if estimate else None
+
+
 def call_provider(
     session: Session,
     user_id: str,
     ctx: PromptContext,
     body: Dict[str, Any],
     on_delta: Optional[Callable[[str], None]] = None,
+    on_cost: Optional[Callable[[Optional[float]], None]] = None,
 ) -> Dict[str, Any]:
     """One call, returning the provider's reply dict. Synchronous — worker thread.
 
@@ -177,12 +214,20 @@ def call_provider(
     """
     import asyncio
 
-    return asyncio.run(_send(session, user_id, ctx, body, on_delta))
+    data = asyncio.run(_send(session, user_id, ctx, body, on_delta))
+    if on_cost is not None:
+        try:
+            on_cost(reply_cost(session, ctx, data))
+        except Exception:
+            # The running total is a courtesy; a reply that arrived is not lost over it.
+            logger.exception("Could not price an assistant reply")
+    return data
 
 
 def call_provider_text(
-    session: Session, user_id: str, ctx: PromptContext, step: Dict[str, Any]
+    session: Session, user_id: str, ctx: PromptContext, step: Dict[str, Any],
+    on_cost: Optional[Callable[[Optional[float]], None]] = None,
 ) -> str:
     """Generate one step's body."""
-    data = call_provider(session, user_id, ctx, ctx.body_for(step))
+    data = call_provider(session, user_id, ctx, ctx.body_for(step), on_cost=on_cost)
     return extract_text(ctx.protocol, data)

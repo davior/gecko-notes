@@ -153,15 +153,61 @@ class Proposal:
         self.label_map[note_id] = title
 
 
+Step = Callable[[str, str], None]
+
+
+def _quoted(value: Any, limit: int = 80) -> str:
+    text = " ".join(str(value or "").split())
+    return f"“{text[:limit]}{'…' if len(text) > limit else ''}”"
+
+
+def describe_action(action: Dict[str, Any], label_map: Dict[str, str]) -> str:
+    """One line for a recorded change, as the steps list shows it."""
+    kind = str(action.get("type") or "")
+
+    def note(key: str = "noteId") -> str:
+        ref = str(action.get(key) or "")
+        return _quoted(label_map.get(ref) or ref or "a note")
+
+    if kind == "create_note":
+        return f"Create note {_quoted(action.get('title'))}"
+    if kind == "create_child_note":
+        return f"Create note {_quoted(action.get('title'))} inside {note('parentId')}"
+    if kind == "edit_section":
+        return f"Rewrite section {_quoted(action.get('section'))} of {note()}"
+    if kind == "edit_note":
+        return f"{'Rewrite' if action.get('mode') == 'replace' else 'Amend'} {note()}"
+    if kind == "append_note":
+        return f"Add to the end of {note()}"
+    if kind == "rename_note":
+        return f"Rename {note()} to {_quoted(action.get('title'))}"
+    if kind == "create_folder":
+        return f"Create folder {_quoted(action.get('name'))}"
+    if kind == "generate_image":
+        return f"Generate image {_quoted(action.get('alt'))} in {note()}"
+    if kind in ("create_recipe", "update_recipe", "delete_recipe"):
+        name = action.get("name")
+        return f"{kind.split('_')[0].capitalize()} recipe" + (f" {_quoted(name)}" if name else "")
+    target = note() if action.get("noteId") else ""
+    return " ".join(p for p in (kind.replace("_", " ").capitalize(), "in" if target else "", target) if p)
+
+
 def handlers(session: Session, user_id: str, proposal: Proposal, retrieval: RetrievalContext,
-             *, web_search: bool) -> Dict[str, Callable[[dict], Any]]:
-    """The handler for every tool this turn offers."""
-    table: Dict[str, Callable[[dict], Any]] = {name: _recorder(name, proposal) for name in WRITE_TOOLS}
+             *, web_search: bool, on_step: Step = lambda kind, text: None) -> Dict[str, Callable[[dict], Any]]:
+    """The handler for every tool this turn offers. `on_step(kind, text)` is told what
+    each one does as it does it: kind is search, read, edit or issue."""
+    table: Dict[str, Callable[[dict], Any]] = {name: _recorder(name, proposal, on_step) for name in WRITE_TOOLS}
 
     def find_notes(args: dict):
         action = validate_action({"type": "find_notes", **args})
         if action is None:
             return "find_notes needs a query, a folderId, or both.", True
+        if action.get("query"):
+            on_step("search", f"Searching your notes for {_quoted(action.get('query'))}")
+        else:
+            where = retrieval.current_folder_id if action.get("folderId") == "current" else action.get("folderId")
+            name = "the root" if where is None else retrieval.folder_names.get(where) or "a folder"
+            on_step("search", f"Looking through {_quoted(name)}")
         summary, ids, labels = _run_find_notes(session, user_id, [action], retrieval)
         for note_id in ids:
             proposal.note_found(note_id, labels.get(note_id, "Untitled"))
@@ -174,31 +220,42 @@ def handlers(session: Session, user_id: str, proposal: Proposal, retrieval: Retr
             note_id = proposal.exec_ctx.get("current_note_id") or ""
         notes = _load_notes(session, user_id, [note_id]) if note_id else []
         if not notes:
+            on_step("issue", f"Could not read note {_quoted(args.get('noteId'))}")
             return f"There is no note {note_id!r} you can read.", True
         proposal.note_found(notes[0].id, notes[0].title or "Untitled")
+        on_step("read", f"Reading {_quoted(notes[0].title or 'Untitled')}")
         return _render_note(notes[0], retrieval)
 
     table["find_notes"] = find_notes
     table["read_note"] = read_note
     if web_search:
-        table["web_search"] = lambda args: _web_search(session, user_id, args)
+        def search_web(args: dict):
+            # The same words as a search the model runs itself (reported by the suite's
+            # client), so the steps read alike whichever ran it.
+            on_step("search", f"Searching the web: {str(args.get('query') or '').strip()}")
+            return _web_search(session, user_id, args)
+
+        table["web_search"] = search_web
     return table
 
 
-def _recorder(name: str, proposal: Proposal) -> Callable[[dict], Any]:
+def _recorder(name: str, proposal: Proposal, on_step: Step = lambda kind, text: None) -> Callable[[dict], Any]:
     required = WRITE_TOOLS[name][2]
 
     def record(args: dict):
         if len(proposal.actions) >= MAX_PLAN_ACTIONS:
+            on_step("issue", f"Too many changes for one turn; {name.replace('_', ' ')} was left out")
             return f"This turn already has {MAX_PLAN_ACTIONS} changes, the most one turn can hold.", True
         action = validate_action({"type": name, **args})
         if action is None:
+            on_step("issue", f"A {name.replace('_', ' ')} was missing {', '.join(required) or 'its fields'}; retrying")
             return (f"That {name} could not be used. It needs {', '.join(required) or 'its fields'}; "
                     "call it again with them."), True
         if action.get("content") and action.get("spec"):
             # The text plan's rule: never both. Inline content wins, as the writer would.
             action.pop("spec")
         proposal.actions.append(action)
+        on_step("edit", f"Proposed: {describe_action(action, proposal.label_map)}")
         return (f"Recorded as change {len(proposal.actions)}. Nothing is applied until the person "
                 "approves; carry on, then finish with a short reply saying what you propose.")
 

@@ -32,6 +32,7 @@ from sqlmodel import Session, select
 
 from app.assistant import worker
 from app.assistant.executor import touched_note_ids
+from app.assistant.turn_log import steps_of
 from app.database import get_session
 from app.jobs.runner import ACTIVE_STATUSES, set_fields
 from app.models import AssistantRunJob, Note
@@ -80,6 +81,10 @@ class PreviewRead(BaseModel):
     stage: str
     status: str
     text: str
+    # What the turn has done so far ([{kind, text}]) and cost so far (an estimate, or
+    # None while nothing priced has landed). See assistant/turn_log.py.
+    steps: List[Dict[str, str]] = []
+    cost: Optional[float] = None
 
 
 def _get_user_id(request: Request) -> str:
@@ -253,6 +258,8 @@ def get_preview(run_id: str, request: Request, session: Session = Depends(get_se
         stage=job.stage or "",
         status=job.status,
         text=job.preview or "",
+        steps=steps_of(job),
+        cost=job.cost,
     ))
 
 

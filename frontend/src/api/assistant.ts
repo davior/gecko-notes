@@ -63,6 +63,16 @@ export interface TurnPreview {
   stage: string
   status: string
   text: string
+  /** What the turn has done so far, in order. */
+  steps: TurnStep[]
+  /** What it has cost so far (an estimate); null until a priced call lands. */
+  cost: number | null
+}
+
+/** One thing a turn did: a search, a note read, a change proposed, a problem. */
+export interface TurnStep {
+  kind: 'search' | 'read' | 'edit' | 'issue' | 'think' | string
+  text: string
 }
 
 /** A plan waiting for a decision, with what the review modal needs to render it. */

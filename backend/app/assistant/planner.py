@@ -45,6 +45,7 @@ from app.assistant.continuation import (
 from app.assistant.executor import touched_note_ids
 from app.assistant.plan_parse import RETRIEVAL_TYPES, is_respond_only, parse_plan, respond_text
 from app.assistant.provider import PromptContext, call_provider
+from app.assistant.turn_log import TurnLog, steps_of
 from app.assistant.retrieve import (
     MAX_RETRIEVAL_ROUNDS,
     RetrievalContext,
@@ -138,6 +139,7 @@ def _one_call(
     turns: List[Dict[str, Any]],
     preview: _Preview,
     check_cancelled: Callable[[], None],
+    on_cost: Optional[Callable[[Optional[float]], None]] = None,
 ) -> str:
     """One planning call, finished if the provider left it open.
 
@@ -148,7 +150,7 @@ def _one_call(
     check_cancelled()
     preview.reset()
     body = ctx.body_for({"messages": turns})
-    data = call_provider(session, user_id, ctx, body, preview)
+    data = call_provider(session, user_id, ctx, body, preview, on_cost=on_cost)
 
     # Only the Messages protocol can leave a turn open this way: the stall is a
     # `stop_reason: "tool_use"` with nothing left for a client to run.
@@ -157,7 +159,7 @@ def _one_call(
             if not is_stalled_turn(data):
                 break
             check_cancelled()
-            data = call_provider(session, user_id, ctx, continuation_body(body, data), preview)
+            data = call_provider(session, user_id, ctx, continuation_body(body, data), preview, on_cost=on_cost)
 
     preview.flush()
     text = finalize_plan_text(ctx.protocol, data)
@@ -214,6 +216,7 @@ def run_planning(
     web_search_enabled = turn_ctx.get("web_search_mode") == "action"
 
     preview = _Preview(job_id)
+    log = TurnLog(job_id)
     turns: List[Dict[str, Any]] = []
     found_note_ids: List[str] = []
     search_label = ""
@@ -223,7 +226,7 @@ def run_planning(
     report("Planning", 1, "")
 
     for round_index in range(MAX_RETRIEVAL_ROUNDS + 1):
-        raw = _one_call(session, user_id, ctx, turns, preview, check_cancelled)
+        raw = _one_call(session, user_id, ctx, turns, preview, check_cancelled, on_cost=log.cost)
         plan = parse_plan(raw)
 
         retrieval = [a for a in plan.get("actions") or [] if a.get("type") in RETRIEVAL_TYPES]
@@ -236,6 +239,12 @@ def run_planning(
             _planning_progress(round_index),
             f"searching (round {round_index + 1})",
         )
+        for action in retrieval:
+            query = str(action.get("query") or "").strip()
+            if action.get("type") == "web_search":
+                log.step("search", f"Searching the web: {query}")
+            else:
+                log.step("search", f"Searching your notes for “{query}”" if query else "Looking through a folder")
         result = run_retrieval_round(
             session, user_id, retrieval, retrieval_ctx,
             web_search_enabled=web_search_enabled,
@@ -366,7 +375,9 @@ def _decide(
     # The model's reply is already written — it is sitting in the plan's respond
     # actions — so it goes into the chat now rather than waiting minutes for the run
     # to finish. build_result_summary deliberately does not repeat it.
-    _append_answer(session, row, respond_text(plan))
+    # No cost on this one: the turn goes on spending, and the summary written when it
+    # finishes carries the whole of it.
+    _append_answer(session, row, respond_text(plan), with_cost=False)
     return PlanningResult(True)
 
 
@@ -379,13 +390,15 @@ def _awaiting_message(plan: Dict[str, Any]) -> str:
     return "\n\n".join(part for part in (respond_text(plan), AWAITING_NOTICE) if part)
 
 
-def _append_answer(session: Session, job: AssistantRunJob, text: str) -> None:
+def _append_answer(session: Session, job: AssistantRunJob, text: str, *, with_cost: bool = True) -> None:
+    """The model's reply into the chat, with the steps it took and what planning cost.
+    `_decide` refreshed the row, so both are the turn's latest."""
     from app.assistant.worker import append_to_session
 
     if not text.strip():
         return
     try:
-        append_to_session(session, job, text)
+        append_to_session(session, job, text, steps=steps_of(job), cost=job.cost if with_cost else None)
     except Exception:
         # A finished turn must not be turned into a failure by bookkeeping.
         logger.exception("Could not write the reply for turn %s into its session", job.id)
