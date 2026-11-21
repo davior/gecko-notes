@@ -17,7 +17,7 @@ of five sections is worth more than discarding all five.
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlmodel import Session
 
@@ -40,6 +40,7 @@ def generate_bodies(
     *,
     check_cancelled: Callable[[], None] = lambda: None,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
+    on_cost: Optional[Callable[[Optional[float]], None]] = None,
 ) -> Tuple[Dict[str, Any], List[ActionResult]]:
     """Fill in every deferred body.
 
@@ -66,7 +67,7 @@ def generate_bodies(
             return index, "", "no generation prompt was recorded for this step"
         try:
             with Session(engine) as session:
-                body = call_provider_text(session, user_id, ctx, step)
+                body = call_provider_text(session, user_id, ctx, step, on_cost=on_cost)
             if not body.strip():
                 return index, "", "the model returned an empty body"
             return index, body, ""

@@ -20,6 +20,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 import app.assistant.planner as planner
+import app.assistant.turn_log as turn_log
 from app.assistant.planner import PLANNING_SHARE, run_planning
 from app.jobs.registry import KINDS
 from app.models import AISession, AssistantRunJob, Category, Note
@@ -40,6 +41,7 @@ def engine():
 def session(engine, monkeypatch):
     # The preview writes through its own Session, as it does on a worker thread.
     monkeypatch.setattr(planner, "engine", engine)
+    monkeypatch.setattr(turn_log, "engine", engine)
     now = datetime.utcnow()
     with Session(engine) as s:
         s.add(Category(id=CATEGORY, label="Notes", emoji="📝", color="#000"))
@@ -102,7 +104,7 @@ def stub_provider(monkeypatch, *replies):
     sent = []
     queue = list(replies)
 
-    def fake(session, user_id, ctx, body, on_delta=None):
+    def fake(session, user_id, ctx, body, on_delta=None, on_cost=None):
         sent.append(body)
         data = queue.pop(0) if queue else reply("{}")
         if on_delta:
@@ -390,7 +392,7 @@ def test_the_reply_is_written_to_the_row_as_it_arrives(session, monkeypatch):
     make_turn(session)
     seen = []
 
-    def fake(session_, user_id, ctx, body, on_delta=None):
+    def fake(session_, user_id, ctx, body, on_delta=None, on_cost=None):
         on_delta("I'll start ")
         on_delta("by reading the note.")
         seen.append(turn(session).preview)
@@ -558,3 +560,46 @@ def test_plan_mode_off_runs_on_from_every_protocol(session, monkeypatch, protoco
     ), protocol))
 
     assert plan_turn(session).run_now is True
+
+
+# ─── what a turn costs ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("protocol, data, tokens", [
+    ("anthropic", {"usage": {"input_tokens": 100, "cache_read_input_tokens": 900,
+                             "cache_creation_input_tokens": 0, "output_tokens": 50}}, (1000, 50)),
+    ("openai", {"usage": {"prompt_tokens": 1000, "completion_tokens": 50}}, (1000, 50)),
+    ("openai", {"usage": {"total_tokens": 1050}}, (1050, 0)),
+    ("ollama", {"prompt_eval_count": 1000, "eval_count": 50}, (1000, 50)),
+])
+def test_a_reply_is_priced_as_the_usage_ledger_prices_it(session, protocol, data, tokens):
+    from app.assistant.provider import PromptContext, reply_cost
+    from app.models import AIProvider
+    from app.pricing import cost_for
+
+    session.add(AIProvider(id="p1", name="DeepSeek", provider_type="deepseek", api_key="x",
+                           model="deepseek-chat", user_id=USER))
+    session.commit()
+    ctx = PromptContext({"protocol": protocol, "provider_id": "p1", "model": "deepseek-chat"})
+    assert reply_cost(session, ctx, data) == cost_for("deepseek", "deepseek-chat", *tokens)[0]
+    # No price is no cost, never a guess of zero.
+    unpriced = PromptContext({"protocol": protocol, "provider_id": "missing", "model": "x"})
+    assert reply_cost(session, unpriced, data) is None
+
+
+def test_the_text_planners_calls_add_up_on_the_turn_and_its_answer(session, monkeypatch):
+    make_turn(session)
+
+    def fake(session_, user_id, ctx, body, on_delta=None, on_cost=None):
+        on_cost(0.002)
+        on_cost(None)  # an unpriced call adds nothing
+        return reply(envelope({"type": "respond", "text": "Done."}))
+
+    monkeypatch.setattr(planner, "call_provider", fake)
+    plan_turn(session)
+    session.expire_all()
+    assert turn(session).cost == pytest.approx(0.002)
+    answer = json.loads(session.get(AISession, SESSION_ID).messages)[-1]
+    assert answer["content"] == "Done." and answer["cost"] == pytest.approx(0.002)
+    assert "steps" not in answer  # nothing was searched or read
+

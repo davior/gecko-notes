@@ -31,6 +31,7 @@ from app.assistant.generate import generate_bodies
 from app.assistant.plan_prompt import build_generation_steps
 from app.assistant.planner import PLANNING_SHARE, run_planning
 from app.assistant.provider import PromptContext
+from app.assistant.turn_log import TurnLog, steps_of
 from app.database import engine
 from app.jobs.runner import JobQueue, int_env, readable_error, set_fields as _set
 from app.models import AISession, AssistantRunJob
@@ -66,12 +67,16 @@ def _load(raw: str, fallback: Any) -> Any:
     return value if value is not None else fallback
 
 
-def append_to_session(session: Session, job: AssistantRunJob, text: str) -> None:
+def append_to_session(session: Session, job: AssistantRunJob, text: str, *,
+                      steps: Optional[List[Dict[str, str]]] = None, cost: Optional[float] = None) -> None:
     """Write the run's summary into the conversation it came from.
 
     Done here rather than in the browser for the same reason the video worker attaches
     its result server-side: the tab that started this may be long gone, and the record
     of what happened belongs in the chat regardless of who is watching.
+
+    `steps` and `cost` ride on the message, so the panel can show what the turn did and
+    what it cost under the reply after the live view of it is gone (GVC's way).
     """
     if not job.session_id or not text.strip():
         return
@@ -81,12 +86,17 @@ def append_to_session(session: Session, job: AssistantRunJob, text: str) -> None
     messages = _load(row.messages, [])
     if not isinstance(messages, list):
         messages = []
-    messages.append({
+    message: Dict[str, Any] = {
         "id": str(uuid.uuid4()),
         "role": "assistant",
         "content": text,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if steps:
+        message["steps"] = steps
+    if cost is not None:
+        message["cost"] = cost
+    messages.append(message)
     row.messages = json.dumps(messages)
     row.updated_at = datetime.utcnow()
     session.add(row)
@@ -125,8 +135,13 @@ def _finish(
         summary = (summary + "\n\n_Run cancelled._").strip()
     elif error:
         summary = (summary + f"\n\n_Run failed: {error}_").strip()
+    # The steps already went into the chat with the model's reply, unless the turn ended
+    # before it had one: then this is the only place left to show them. The cost here is
+    # the whole turn's, writing included.
+    session.refresh(row)
     try:
-        append_to_session(session, row, summary)
+        append_to_session(session, row, summary,
+                          steps=steps_of(row) if row.phase == "planning" else None, cost=row.cost)
     except Exception:
         # A finished run must not be turned into a failure by bookkeeping.
         logger.exception("Could not write the summary for run %s into its session", job_id)
@@ -198,6 +213,7 @@ def _run_job(job_id: str) -> None:
                 user_id, plan, ctx,
                 check_cancelled=check_cancelled,
                 on_progress=writing_progress,
+                on_cost=TurnLog(job_id).cost,
             )
             results.extend(failures)
 

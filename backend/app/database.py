@@ -673,6 +673,9 @@ def _run_migrations():
             "turn_ctx TEXT NOT NULL DEFAULT '{}'",
             "preview TEXT NOT NULL DEFAULT ''",
             "plan_raw TEXT NOT NULL DEFAULT ''",
+            # The turn's steps and running cost, shown live in the panel.
+            "steps TEXT NOT NULL DEFAULT '[]'",
+            "cost REAL",
         ):
             try:
                 conn.execute(text(f"ALTER TABLE assistantrunjob ADD COLUMN {column}"))

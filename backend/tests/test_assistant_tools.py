@@ -16,9 +16,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.suite as suite
-from app.assistant import planner, tool_planner
+from app.assistant import planner, tool_planner, turn_log
 from app.assistant.tools import TOOL_INSTRUCTIONS, tool_specs
-from app.models import AIProvider, AssistantRunJob, Category, Note
+from app.models import AIProvider, AISession, AssistantRunJob, Category, Note
 from app.routers import assistant
 
 USER = "user-1"
@@ -42,6 +42,7 @@ def engine(monkeypatch):
         s.commit()
     # The live preview writes through its own session, as the worker's does.
     monkeypatch.setattr(planner, "engine", eng)
+    monkeypatch.setattr(turn_log, "engine", eng)
     monkeypatch.setattr(assistant.worker, "enqueue", lambda job_id: None)
     monkeypatch.setenv("AI_BACKEND", "suite")
     monkeypatch.setenv("SUITE_BASE_URL", BASE)
@@ -50,7 +51,8 @@ def engine(monkeypatch):
 
 
 class FakeSuite:
-    """/ai/chat, streamed, answering from a script. Each answer is (text, tool_calls)."""
+    """/ai/chat, streamed, answering from a script. Each answer is (text, tool_calls), or
+    (text, tool_calls, searches) for a model that also searched the web itself."""
 
     def __init__(self):
         self.script = []
@@ -58,7 +60,8 @@ class FakeSuite:
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        text, calls = self.script.pop(0)
+        text, calls, *rest = self.script.pop(0)
+        searches = rest[0] if rest else []
         if isinstance(text, Exception):
             return httpx.Response(409, json={"detail": {"code": "ai_not_configured", "message": str(text)}})
         final = {
@@ -67,7 +70,8 @@ class FakeSuite:
             "usage": {"input_tokens": 10, "output_tokens": 5}, "cost": 0.001,
             "message": {"role": "assistant", "content": text or "(tools)"},
         }
-        body = (f"event: delta\ndata: {json.dumps({'text': text})}\n\n" if text else "") + \
+        body = "".join(f"event: search\ndata: {json.dumps({'query': q})}\n\n" for q in searches) + \
+               (f"event: delta\ndata: {json.dumps({'text': text})}\n\n" if text else "") + \
                f"event: final\ndata: {json.dumps(final)}\n\n"
         return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
 
@@ -90,7 +94,7 @@ TOOL_CTX = {
 }
 
 
-def start(engine, **turn_overrides):
+def start(engine, session_id=None, **turn_overrides):
     turn_ctx = {"plan_mode": True, "tool_mode": True, "tool_ctx": TOOL_CTX, "web_search_mode": "action",
                 "label_map": {"note-1": "Trip plan"}, **turn_overrides}
     with Session(engine) as s:
@@ -98,7 +102,7 @@ def start(engine, **turn_overrides):
             prompt_ctx={"protocol": "anthropic", "provider_id": "p1", "model": "claude-opus-5-5",
                         "base_body": {"messages": [{"role": "user", "content": "go"}]}},
             exec_ctx={"current_note_id": "note-1", "valid_note_ids": ["note-1"]},
-            turn_ctx=turn_ctx, note_id="note-1", session_id=None,
+            turn_ctx=turn_ctx, note_id="note-1", session_id=session_id,
         ), SimpleNamespace(state=SimpleNamespace(user_id=USER)), s).data
         planner.run_planning(s, job.id, check_cancelled=lambda: None, report=lambda *a: None)
     with Session(engine) as s:
@@ -166,6 +170,44 @@ def test_reading_a_note_that_is_not_the_persons_is_refused(engine, fake):
     fake.script = [("", [("read_note", {"noteId": "someone-elses"})]), ("Cannot.", [])]
     start(engine)
     assert fake.sent(1)["messages"][-1]["results"][0]["is_error"] is True
+
+
+def test_each_step_is_recorded_as_it_is_taken_with_the_running_cost(engine, fake):
+    # GVC's steps list: what the model searched for (its own web search included, which
+    # never reaches a handler), what it read, and what it proposed, in order.
+    with Session(engine) as s:
+        s.add(AISession(id="chat-1", note_id="note-1", user_id=USER, name="Chat",
+                        created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+        s.commit()
+    fake.script = [
+        ("", [("find_notes", {"query": "Owl"})], ["owl diet"]),
+        ("Found it.", [("read_note", {"noteId": "note-2"}), ("rename_note", {"noteId": "note-2", "title": "Owls"})]),
+        ("I propose renaming it.", []),
+    ]
+    row = start(engine, session_id="chat-1")
+    steps = json.loads(row.steps)
+    assert steps == [
+        {"kind": "search", "text": "Searching the web: owl diet"},
+        {"kind": "search", "text": "Searching your notes for “Owl”"},
+        {"kind": "think", "text": "Found it."},
+        {"kind": "read", "text": "Reading “Owl facts”"},
+        {"kind": "edit", "text": "Proposed: Rename “Owl facts” to “Owls”"},
+    ]
+    # The suite's cost per reply, summed: three replies at 0.001.
+    assert row.cost == pytest.approx(0.003)
+
+    with Session(engine) as s:
+        preview = assistant.get_preview(row.id, SimpleNamespace(state=SimpleNamespace(user_id=USER)), s).data
+        assert preview.steps == steps and preview.cost == pytest.approx(0.003)
+        # The reply in the chat keeps them, for after the live view is gone.
+        message = json.loads(s.get(AISession, "chat-1").messages)[-1]
+        assert message["steps"] == steps and message["cost"] == pytest.approx(0.003)
+
+
+def test_a_failed_tool_call_is_a_step_too(engine, fake):
+    fake.script = [("", [("rename_note", {"noteId": "note-1"})]), ("Sorry, which title?", [])]
+    row = start(engine)
+    assert json.loads(row.steps) == [{"kind": "issue", "text": "A rename note was missing noteId, title; retrying"}]
 
 
 def test_the_suites_sentence_fails_the_turn_in_words(engine, fake):

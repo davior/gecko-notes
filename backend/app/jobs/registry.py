@@ -130,6 +130,9 @@ def _assistant_to_activity(job: AssistantRunJob) -> ActivityJobRead:
             # poll for the streaming reply, open the review modal, or stay out of the
             # way; the indicator reads it for the row's wording.
             "phase": job.phase or "running",
+            # What the turn has cost so far (an estimate; None until a priced call
+            # lands), for the run bar while the bodies are written.
+            "cost": job.cost,
             # A find_notes round happened server-side, so the list view is told what
             # it turned up when the turn comes back rather than mid-loop.
             "found_note_ids": meta_ctx.get("found_note_ids") or [],

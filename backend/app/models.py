@@ -358,6 +358,11 @@ class AssistantRunJob(SQLModel, table=True):
     # read-only while it is in flight.
     touched_note_ids: str = Field(default="[]")
     results: str = Field(default="[]")     # ActionResult[] once it has run
+    # What the turn did as it did it ([{kind, text}]: searches, notes read, changes
+    # proposed) and what its model calls have cost so far, for the panel to show live.
+    # `cost` stays None until a call with a known price lands. See assistant/turn_log.py.
+    steps: str = Field(default="[]")
+    cost: Optional[float] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
