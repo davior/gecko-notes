@@ -19,6 +19,9 @@ services:
       - SUITE_BASE_URL=${SUITE_BASE_URL:-https://suite.geckopico.com}
       - SUITE_APP_ID=${SUITE_APP_ID:-notes}
       - SUITE_PUBLIC_URL=${SUITE_PUBLIC_URL:-}
+      - GAM_BASE_URL=${GAM_BASE_URL:-}
+      - GAM_PUBLIC_URL=${GAM_PUBLIC_URL:-}
+      - GAM_COPY_MAX_BYTES=${GAM_COPY_MAX_BYTES:-}
       - SUITE_APP_SECRET=${SUITE_APP_SECRET:-}
       - IDENTITY_PROVIDER=${IDENTITY_PROVIDER:-notes}
       # Article-to-video rendering (see .env.example).

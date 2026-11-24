@@ -18,7 +18,7 @@ and the model neither notices nor cares. What matters is that the structure surv
 so the conventions here are the ones `markdown_to_blocks` parses most cleanly — which
 makes round-tripping the real test, and the one `tests/test_block_markdown.py` runs.
 
-Blocks Markdown cannot express — diagrams, note references, child notes — are written
+Blocks Markdown cannot express — diagrams, note references, child notes, GAM assets — are written
 as a labelled line carrying their id, rather than dropped. The model is told what is
 in the note and can name it in an action; silently omitting them is how you get a plan
 that "rewrites" a section and deletes the diagram in it.
@@ -158,7 +158,7 @@ def _render_block(block: Mapping[str, Any], depth: int, index: int = 1) -> List[
         lines = [f"[{label}]({props.get('url') or ''})"]
     elif kind == "diagram":
         lines = _render_embed(kind, props)
-    elif kind in ("childNote", "noteReference"):
+    elif kind in ("childNote", "noteReference", "gamAsset"):
         lines = _render_embed(kind, props)
     else:
         # An unknown block still has text worth showing more often than not.
@@ -193,6 +193,11 @@ def _render_embed(kind: str, props: Mapping[str, Any]) -> List[str]:
     if kind == "childNote":
         title = props.get("title") or "Untitled"
         return [f"[child note “{title}” — id {props.get('childNoteId') or ''}]"]
+    if kind == "gamAsset":
+        # No address: GAM's are signed for an hour, and the model only needs to know
+        # what the block is and which asset (read_gam_asset takes the id).
+        name = props.get("name") or "Untitled"
+        return [f"[GAM {props.get('assetType') or 'asset'} “{name}” — asset id {props.get('assetId') or ''}]"]
     title = props.get("noteTitle") or "Untitled"
     return [f"[reference to “{title}” — id {props.get('noteId') or ''}]"]
 

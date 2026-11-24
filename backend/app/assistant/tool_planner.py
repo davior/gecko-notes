@@ -24,7 +24,7 @@ from gecko_suite_client import Image, SuiteChat, SuiteError, ToolSpec, run_agent
 from gecko_suite_client.agent import Stopped
 from sqlmodel import Session
 
-from app import suite
+from app import gam_client, suite
 from app.assistant.provider import PromptContext
 from app.assistant.retrieve import RetrievalContext
 from app.assistant.turn_log import TurnLog
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # How often one turn may search, per tool. The text plan allowed a few retrieval rounds;
 # a model that keeps searching past this is told to carry on without it.
-CAPS = {"find_notes": 6, "read_note": 12, "web_search": 5}
+CAPS = {"find_notes": 6, "read_note": 12, "web_search": 5, "search_gam": 6, "read_gam_asset": 8}
 
 
 def wanted(turn_ctx: Dict[str, Any]) -> bool:
@@ -94,6 +94,7 @@ def run_tool_planning(
     # called; any other model gets the suite's search backend through it.
     web_search = turn_ctx.get("web_search_mode") in ("native", "action")
     voice = bool(turn_ctx.get("voice"))
+    gam = gam_client.enabled()
 
     preview = _Preview(job_id)
     report("Planning", 1, "")
@@ -124,7 +125,7 @@ def run_tool_planning(
                              subject_ref=subject)
             conversation = chat.conversation(
                 system=system_blocks(reference_block=str(tool_ctx.get("reference_block") or ""), voice=voice),
-                tools=[ToolSpec(s["name"], s["description"], s["parameters"]) for s in tool_specs(web_search=web_search)],
+                tools=[ToolSpec(s["name"], s["description"], s["parameters"]) for s in tool_specs(web_search=web_search, gam=gam)],
                 history=history_pairs(tool_ctx.get("history") or []),
                 prompt=prompt_text(current_note_text=tool_ctx.get("current_note_text"),
                                    user_request=str(tool_ctx.get("user_request") or "")),
@@ -132,7 +133,7 @@ def run_tool_planning(
             )
             outcome = run_agent(
                 conversation,
-                handlers=handlers(session, user_id, proposal, retrieval, web_search=web_search, on_step=on_step),
+                handlers=handlers(session, user_id, proposal, retrieval, web_search=web_search, gam=gam, on_step=on_step),
                 caps=CAPS,
                 cancelled=is_cancelled,
                 on_step=on_step,

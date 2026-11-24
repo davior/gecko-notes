@@ -10,6 +10,7 @@ import { noteReferenceBlock } from './noteReferenceBlock'
 import { audioBlock } from './audioBlock'
 import { videoBlock } from './videoBlock'
 import { diagramBlock } from './diagramBlock'
+import { gamAssetBlock } from './gamAssetBlock'
 import { SharedLinkContext } from './sharedLinkContext'
 
 // Tracks the chain of child-note ids currently being rendered so an embed that
@@ -194,5 +195,6 @@ export const noteSchema = BlockNoteSchema.create({
     audioFile: audioBlock,
     videoFile: videoBlock,
     diagram: diagramBlock,
+    gamAsset: gamAssetBlock,
   },
 })

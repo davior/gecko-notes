@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { processCiteTags } from '@/utils/markdown'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard, Loader2 } from 'lucide-react'
+import { ArrowLeft, Printer, Trash2, History, ArrowUp, Send, X, Pin, Link2, MessageSquareText, Tag, Sparkles, Network, Workflow, MessagesSquare, Box, Waypoints, Database, CalendarRange, PieChart, Milestone, Video as VideoIcon, Image as ImageIcon, Info, FolderInput, Search, Clapperboard, Loader2, Library } from 'lucide-react'
 import UserAvatar from '@/components/UserAvatar'
 import NoteHistoryModal from '@/components/NoteHistoryModal'
 import { useCreateBlockNote, SuggestionMenuController, getDefaultReactSlashMenuItems, FormattingToolbar, FormattingToolbarController, getFormattingToolbarItems, useComponentsContext, type DefaultReactSuggestionItem } from '@blocknote/react'
@@ -26,6 +26,8 @@ import FolderBreadcrumb from '@/components/FolderBreadcrumb'
 import AIConversationPanel from '@/components/AIConversationPanel'
 import TTSPlaybackControls from '@/components/TTSPlaybackControls'
 import NotePickerModal from '@/components/NotePickerModal'
+import { GamPickerModal, gamAssetBlockFor } from '@/components/GamBrowser'
+import { useGamStore } from '@/stores/gam'
 import { starterFor, newDiagramId, markPendingOpen, renderMermaid, type DiagramKind } from '@/utils/diagram'
 import AnnotationLayer from '@/components/AnnotationLayer'
 import DocumentOutline from '@/components/DocumentOutline'
@@ -164,6 +166,12 @@ export default function EditorView() {
   const [showNotePicker, setShowNotePicker] = useState(false)
   const [showVideoRecorder, setShowVideoRecorder] = useState(false)
   const [showImageGen, setShowImageGen] = useState(false)
+  const [showGamPicker, setShowGamPicker] = useState(false)
+  // Whether Notes can reach a GAM; `/GAM` is only offered when it can.
+  const gamEnabled = useGamStore((s) => s.enabled)
+  useEffect(() => {
+    if (gamEnabled === null) void useGamStore.getState().loadStatus()
+  }, [gamEnabled])
   const [showVideoGen, setShowVideoGen] = useState(false)
   const [diagramImages, setDiagramImages] = useState<Record<string, string>>({})
   const [selectedContent, setSelectedContent] = useState<string | undefined>(undefined)
@@ -1535,6 +1543,14 @@ export default function EditorView() {
       icon: <Clapperboard className="w-4 h-4" />,
       onItemClick: () => { void openVideoGen() },
     }
+    const gamItem: DefaultReactSuggestionItem = {
+      title: 'From GAM',
+      subtext: 'Insert an image, video, recording or document from your asset library',
+      aliases: ['gam', 'asset', 'assets', 'library', 'media', 'document', 'pdf'],
+      group: 'Basic blocks',
+      icon: <Library className="w-4 h-4" />,
+      onItemClick: () => setShowGamPicker(true),
+    }
     const diagramItems: DefaultReactSuggestionItem[] = [
       { kind: 'flowchart' as const, title: 'Flow chart', subtext: 'Insert a flow chart diagram', aliases: ['flowchart', 'flow chart', 'flow', 'process'], icon: <Workflow className="w-4 h-4" /> },
       { kind: 'mindmap' as const, title: 'Mind map', subtext: 'Insert a mind map diagram', aliases: ['mindmap', 'mind map', 'brainstorm'], icon: <Network className="w-4 h-4" /> },
@@ -1551,7 +1567,7 @@ export default function EditorView() {
     }))
     return filterSuggestionItems(
       [...getDefaultReactSlashMenuItems(editor), childItem, refItem, annotateItem, videoItem, imageGenItem,
-       ...(falKeyConfigured ? [videoGenItem] : []), ...diagramItems],
+       ...(falKeyConfigured ? [videoGenItem] : []), ...(gamEnabled ? [gamItem] : []), ...diagramItems],
       query,
     )
   }
@@ -2077,6 +2093,16 @@ export default function EditorView() {
         <NotePickerModal
           onSelect={(id, title) => { insertNoteReference(id, title); setShowNotePicker(false) }}
           onClose={() => setShowNotePicker(false)}
+        />
+      )}
+
+      {showGamPicker && (
+        <GamPickerModal
+          onSelect={(asset) => {
+            insertBlocksAtCursor([gamAssetBlockFor(asset) as unknown as PartialBlock])
+            setShowGamPicker(false)
+          }}
+          onClose={() => setShowGamPicker(false)}
         />
       )}
 

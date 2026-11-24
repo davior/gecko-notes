@@ -31,6 +31,7 @@ from app.routers import ai_sessions as ai_sessions_router
 from app.routers import recipes as recipes_router
 from app.routers import assistant as assistant_router
 from app.routers import assets as assets_router
+from app.routers import gam as gam_router
 from app.auth import decode_token, encrypt_api_key, decrypt_api_key
 from app.mail import email_enabled
 from app.media_files import RangedStaticFiles
@@ -210,6 +211,7 @@ app.include_router(recipes_router.router, prefix="/api/recipes", tags=["recipes"
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(folders.router, prefix="/api/folders", tags=["folders"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
+app.include_router(gam_router.router, prefix="/api/gam", tags=["gam"])
 app.include_router(transcription.router, prefix="/api/transcription", tags=["transcription"])
 app.include_router(stt_stream.router, prefix="/api/stt-stream", tags=["stt-stream"])
 app.include_router(flux_stream.router, prefix="/api/flux-stream", tags=["flux-stream"])
