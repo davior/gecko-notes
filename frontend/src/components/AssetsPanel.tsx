@@ -9,6 +9,9 @@ import {
   type NoteAsset, type NoteAssetUpdate, type AssetRole, type UnlinkedFile,
 } from '@/api/assets'
 import { formatBytes } from '@/utils/format'
+import type { GamAsset } from '@/api/gam'
+import { GamBrowser } from '@/components/GamBrowser'
+import { useGamStore } from '@/stores/gam'
 
 interface AssetsPanelProps {
   assets: NoteAsset[]
@@ -22,6 +25,10 @@ interface AssetsPanelProps {
   onUpdate: (assetId: string, payload: NoteAssetUpdate) => Promise<void>
   onInsert: (asset: NoteAsset) => void
   onRefresh: () => void
+  /** Put a GAM asset in the note as a live block. With neither GAM prop, no GAM tab. */
+  onInsertGam?: (asset: GamAsset) => void
+  /** Copy a GAM file into this note's assets, as reference material. */
+  onCopyFromGam?: (asset: GamAsset) => Promise<void>
 }
 
 type FilterKey = 'all' | AssetRole
@@ -73,7 +80,15 @@ export default function AssetsPanel({
   onUpdate,
   onInsert,
   onRefresh,
+  onInsertGam,
+  onCopyFromGam,
 }: AssetsPanelProps) {
+  const gamEnabled = useGamStore((s) => s.enabled)
+  const [view, setView] = useState<'note' | 'gam'>('note')
+  useEffect(() => {
+    if (gamEnabled === null) void useGamStore.getState().loadStatus()
+  }, [gamEnabled])
+  const showGam = !!gamEnabled && !!(onInsertGam || onCopyFromGam)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<FilterKey>('all')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -160,6 +175,39 @@ export default function AssetsPanel({
     )
   }
 
+  // "This note" is the note's own files; "From GAM" is the person's whole library,
+  // from which a file can be linked live into the note or copied into it.
+  const viewTabs = showGam && (
+    <div className="shrink-0 flex gap-1 px-3 pt-2">
+      {([['note', 'This note'], ['gam', 'From GAM']] as const).map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => setView(key)}
+          className={`px-2 py-0.5 rounded text-xs ${
+            view === key
+              ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+              : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+
+  if (showGam && view === 'gam') {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {viewTabs}
+        <GamBrowser
+          onInsert={canInsert ? onInsertGam : undefined}
+          onCopy={onCopyFromGam}
+        />
+      </div>
+    )
+  }
+
   return (
     <div
       className="flex-1 min-h-0 flex flex-col overflow-hidden"
@@ -171,6 +219,7 @@ export default function AssetsPanel({
         if (e.dataTransfer.files?.length) void handleFiles(e.dataTransfer.files)
       }}
     >
+      {viewTabs}
       {/* Toolbar */}
       <div className="shrink-0 px-3 pt-2 pb-1.5 space-y-1.5 border-b border-gray-100 dark:border-gray-700">
         <div className="flex items-center gap-1.5">

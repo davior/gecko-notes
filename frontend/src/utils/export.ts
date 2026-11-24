@@ -2,6 +2,7 @@ import type { Note } from '@/api/notes'
 import type Turndown from 'turndown'
 import { notesApi } from '@/api/notes'
 import { renderMermaid, svgToDataUri, noteIdFromHref } from '@/utils/diagram'
+import { resolveGamForExport } from '@/utils/gamExport'
 
 // Rasterise a diagram SVG to a PNG (Uint8Array) for embedding in a Word document,
 // which can't display SVG. Sized from the SVG's own width/height attributes (falling
@@ -331,7 +332,7 @@ function buildMetadataHTML(note: Note): string {
 async function noteToHTML(note: Note): Promise<string> {
   let bodyContent = ''
   try {
-    const blocks = JSON.parse(note.content) as Record<string, unknown>[]
+    const blocks = JSON.parse(await resolveGamForExport(note.content)) as Record<string, unknown>[]
     bodyContent = await buildBlocksHTML(blocks)
   } catch {
     bodyContent = note.content.split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('')
@@ -820,7 +821,7 @@ async function buildDocxBlob(note: Note): Promise<Blob> {
 
   let blocks: Record<string, unknown>[] = []
   try {
-    blocks = JSON.parse(note.content)
+    blocks = JSON.parse(await resolveGamForExport(note.content))
   } catch {
     blocks = []
   }
@@ -1006,7 +1007,7 @@ export async function exportToMarkdown(note: Note): Promise<void> {
   addGfmTableRules(td)
 
   let blocks: Record<string, unknown>[] = []
-  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+  try { blocks = JSON.parse(await resolveGamForExport(note.content)) } catch { blocks = [] }
 
   const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks, 'source')}`
   const frontmatter = buildMarkdownFrontmatter(note)
@@ -1026,7 +1027,7 @@ export async function noteToMarkdownBody(note: Note): Promise<string> {
   addGfmTableRules(td)
 
   let blocks: Record<string, unknown>[] = []
-  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+  try { blocks = JSON.parse(await resolveGamForExport(note.content)) } catch { blocks = [] }
 
   const bodyHTML = await buildBlocksHTML(blocks, 'raster')
   return td.turndown(bodyHTML).trim()
@@ -1052,7 +1053,7 @@ async function buildMarkdownDoc(note: Note): Promise<BuiltDoc> {
   })
 
   let blocks: Record<string, unknown>[] = []
-  try { blocks = JSON.parse(note.content) } catch { blocks = [] }
+  try { blocks = JSON.parse(await resolveGamForExport(note.content)) } catch { blocks = [] }
 
   const base = noteBaseName(note.id, note.title)
   const bodyHTML = `<h1>${escapeHtml(note.title)}</h1>${await buildBlocksHTML(blocks, 'source')}`

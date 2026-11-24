@@ -361,6 +361,19 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
             **trailer,
         }
 
+    if kind == "insert_gam_asset":
+        # Only the ids: the asset's name and type are read from GAM when the change is
+        # applied, since the model chose the id and GAM is what says whose it is.
+        note_id = _as_string(raw.get("noteId"))
+        asset_id = _as_string(raw.get("assetId"))
+        if not note_id or not asset_id or not asset_id.strip():
+            return None
+        action = {"type": "insert_gam_asset", "noteId": note_id, "assetId": asset_id.strip()}
+        section = _as_string(raw.get("section"))
+        if section:
+            action["section"] = section
+        return {**action, **_placement(raw), **trailer}
+
     if kind == "generate_image":
         note_id = _as_string(raw.get("noteId"))
         prompt = _as_string(raw.get("prompt"))

@@ -129,6 +129,7 @@ BODY_WRITING_TARGETS = {
     "create_diagram": "noteId",
     "edit_diagram": "noteId",
     "generate_image": "noteId",
+    "insert_gam_asset": "noteId",
 }
 
 
@@ -999,6 +1000,54 @@ class PlanExecutor:
         return ActionResult(
             ok=True, message=f"Added reference to “{reference_title}”{placement.where}.",
             notes_changed=True, touched_current_note=self._touches_current(note.id),
+            note_id=note.id, note_title=note.title,
+        )
+
+    # ── GAM ──────────────────────────────────────────────────────────────────
+
+    def _do_insert_gam_asset(self, action: Dict[str, Any]) -> ActionResult:
+        """Put a live `gamAsset` block into a note.
+
+        The asset is looked up again here, as the owner, because the model chose the id:
+        an id that is not theirs, or was deleted since the turn was planned, is skipped
+        with a sentence rather than leaving a block that can only say "not found". The
+        block carries the id and what it is, never a file address: GAM's are signed for
+        an hour, so the editor asks for a fresh one whenever it shows the block.
+        """
+        from app import gam_client
+        from app.gam_client import GamClient, GamError
+
+        note_id, error = self._resolve_note(action.get("noteId") or "")
+        if error:
+            return ActionResult(ok=False, message=error)
+        note = self._note(note_id)
+        if not note:
+            return ActionResult(ok=False, message="That note no longer exists — skipped.")
+        if not gam_client.enabled():
+            return ActionResult(ok=False, message="Notes is not connected to GAM — skipped.")
+        try:
+            with GamClient(gam_client.token_for(self.ctx.user_id)) as gam:
+                asset = gam.get_asset(str(action.get("assetId") or ""))
+        except GamError as exc:
+            return ActionResult(ok=False, message=f"GAM asset not inserted: {exc.message}"[:500])
+        if asset is None:
+            return ActionResult(ok=False, message="That GAM asset is not in your library — skipped.")
+
+        self._snapshot_once(note)
+        blocks = parse_blocks(note.content)
+        block = {
+            "id": str(uuid.uuid4()),
+            "type": "gamAsset",
+            "props": {"assetId": asset["id"], "name": asset["name"], "assetType": asset["asset_type"]},
+            "children": [],
+        }
+        placement = resolve_placement(blocks, **_placement_of(action))
+        blocks.insert(placement.index, block)
+        self._write_content(note, blocks)
+
+        return ActionResult(
+            ok=True, message=f"Inserted “{asset['name']}” from GAM{placement.where}.", notes_changed=True,
+            touched_current_note=self._touches_current(note.id),
             note_id=note.id, note_title=note.title,
         )
 

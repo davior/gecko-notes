@@ -8,6 +8,8 @@ import { useSettingsStore } from '@/stores/settings'
 import { useCategoriesStore } from '@/stores/categories'
 import { useRecipesStore } from '@/stores/recipes'
 import { useAssetsStore } from '@/stores/assets'
+import { gamApi, type GamAsset } from '@/api/gam'
+import { gamAssetBlockFor } from '@/components/GamBrowser'
 import type { NoteAsset, NoteAssetUpdate } from '@/api/assets'
 import { useDictation } from '@/hooks/useDictation'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
@@ -37,6 +39,7 @@ import { renderRecipePrompt } from '@/utils/recipeVariables'
 import { matchRecipeVoiceCommand } from '@/utils/recipeVoiceCommand'
 import { extractPlainText, extractLinkedFileUrls, extractBlockTexts, getEditorSelectionMarkdown, type MarkdownEditor } from '@/utils/blocks'
 import { describeDiagrams } from '@/utils/diagram'
+import { describeGamAssets } from '@/utils/gamExport'
 import type { FileAttachment, ConversationTurn, ConversationRequest } from '@/services/ai'
 import {
   normalizeActionTags,
@@ -1124,8 +1127,10 @@ export default function AIConversationPanel({
       if (diagText) {
         diagramSection = `\n\n**Diagrams on this note (edit with edit_diagram using the diagram id):**\n${diagText}`
       }
+      const gamText = describeGamAssets(n.blocks)
+      const gamSection = gamText ? `\n\n**GAM assets in this note:**\n${gamText}` : ''
       const base = heading ? `${heading}\n\n${body}` : body
-      return base + annoSection + diagramSection
+      return base + annoSection + diagramSection + gamSection
     }
 
     const targetNotes: ContextNote[] = notes
@@ -1535,6 +1540,19 @@ export default function AIConversationPanel({
     })()
   }
 
+  function handleGamInsert(asset: GamAsset) {
+    if (!onInsertBlocks) return
+    onInsertBlocks([gamAssetBlockFor(asset)])
+  }
+
+  // Into the note's assets as reference material, not its body: the panel is where
+  // material for writing the note is gathered. Putting it in the body is Insert's job.
+  async function handleGamCopy(asset: GamAsset) {
+    if (!noteId) return
+    await gamApi.copyIntoNote(noteId, asset.id, 'reference')
+    await useAssetsStore.getState().load(noteId, true)
+  }
+
   function handleEdit(idx: number) {
     const priorMessages = conversation.slice(0, idx)
     setEditingId(null)
@@ -1879,6 +1897,8 @@ export default function AIConversationPanel({
           onDelete={handleAssetDelete}
           onUpdate={handleAssetUpdate}
           onInsert={handleAssetInsert}
+          onInsertGam={handleGamInsert}
+          onCopyFromGam={handleGamCopy}
           onRefresh={() => { if (noteId) void useAssetsStore.getState().load(noteId, true) }}
         />
       )}

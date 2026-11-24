@@ -5,12 +5,19 @@ annotations and ai-sessions), `library_router` is account-scoped and mounted und
 /api/assets for the unlinked-file sweep, which spans every note the user has.
 """
 
+import mimetypes
 import os
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
+
+from app import gam_client
+from app.gam_client import GamClient, GamError
 
 from app.asset_utils import (
     ORIGIN_EMBEDDED,
@@ -27,7 +34,10 @@ from app.asset_utils import (
 )
 from app.database import get_session
 from app.models import Note, NoteAsset, NoteVersion, Theme, TranscriptionJob, User, VideoRenderJob
-from app.routers.media import MEDIA_DIR, get_user_media_dir, sanitize_original_name, save_upload
+from app.routers.media import (
+    ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS, MEDIA_DIR, get_user_media_dir, sanitize_original_name,
+    save_upload,
+)
 from app.schemas import (
     AdoptRequest,
     DataResponse,
@@ -208,6 +218,122 @@ async def upload_note_asset(
     note = session.get(Note, note_id)
     in_note_urls = set(extract_media_urls(note.content or "")) if note else set()
     return DataResponse(data=_read(asset, in_note_urls))
+
+
+class GamCopyRequest(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=64)
+    origin: Optional[str] = None
+
+
+def _extension_for(asset: dict) -> str:
+    """The extension to store a GAM file under, which is also what Notes' allowlist and
+    its file blocks key on. GAM's original name first (it is what the person uploaded),
+    then its detected format, then the MIME type."""
+    candidates = []
+    name = asset.get("original_name") or ""
+    if "." in name:
+        candidates.append("." + name.rsplit(".", 1)[-1].lower())
+    if asset.get("file_format"):
+        candidates.append("." + str(asset["file_format"]).lower().lstrip("."))
+    if asset.get("mime_type"):
+        guessed = mimetypes.guess_extension(asset["mime_type"])
+        if guessed:
+            candidates.append(guessed.lower())
+    # mimetypes answers ".jpe" for image/jpeg on some platforms.
+    aliases = {".jpe": ".jpg", ".jpeg": ".jpg"}
+    for ext in candidates:
+        for option in (ext, aliases.get(ext)):
+            if option in ALLOWED_EXTENSIONS:
+                return option
+    return ""
+
+
+@router.post("/{note_id}/assets/from-gam", response_model=DataResponse[NoteAssetRead], status_code=201)
+def copy_from_gam(
+    note_id: str,
+    body: GamCopyRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+):
+    """Copy one of the person's GAM files into this note's own media.
+
+    A `gamAsset` block is a live link, which only works for someone signed in to GAM. A
+    copy is what a shared note, an export or an offline read needs. The editor swaps
+    the block for an ordinary image/video/audio/file block with the URL returned here;
+    as with an upload, this never writes `note.content` itself, because the next autosave
+    would overwrite it.
+
+    A clip (a window on a longer video) copies the whole original: Notes' players have
+    no notion of a window, and cutting one out is GAM's job ("Cut" there).
+    """
+    user_id = _get_user_id(request)
+    _owned_note(note_id, user_id, session)
+    resolved_origin = body.origin if body.origin in VALID_ORIGINS else ORIGIN_EMBEDDED
+
+    try:
+        with GamClient(gam_client.request_token(request)) as gam:
+            asset = gam.get_asset(body.asset_id)
+            if asset is None:
+                raise HTTPException(status_code=404, detail={
+                    "code": "gam_asset_not_found",
+                    "message": "This asset is no longer in your library, or is not yours."})
+            if asset["missing"] or not asset.get("file_url_internal"):
+                raise HTTPException(status_code=409, detail={
+                    "code": "gam_file_missing",
+                    "message": "GAM has this asset but not its file, so there is nothing to copy."})
+            ext = _extension_for(asset)
+            if not ext:
+                raise HTTPException(status_code=400, detail={
+                    "code": "invalid_file_type",
+                    "message": "Notes cannot store this kind of file. Link it from GAM instead."})
+
+            filename = f"{uuid.uuid4()}{ext}"
+            path = os.path.join(get_user_media_dir(user_id), filename)
+            try:
+                with open(path, "wb") as sink:
+                    size = gam.download(asset["file_url_internal"], sink,
+                                        max_bytes=gam_client.copy_max_bytes())
+            except BaseException:
+                # Never leave half a file behind for the unlinked-file sweep to find.
+                if os.path.exists(path):
+                    os.remove(path)
+                raise
+    except GamError as exc:
+        raise exc.http()
+
+    if ext in IMAGE_EXTENSIONS:
+        from app.thumbnails import generate_thumbnail
+        background_tasks.add_task(generate_thumbnail, Path(path))
+
+    original = asset.get("original_name") or asset["name"]
+    if "." not in original:
+        original += ext
+    row = register_asset(
+        session,
+        user_id=user_id,
+        note_id=note_id,
+        url=f"/media/{user_id}/{filename}",
+        original_name=sanitize_original_name(original),
+        mime_type=mimetypes.guess_type(filename)[0] or asset.get("mime_type"),
+        size_bytes=size,
+        origin=resolved_origin,
+    )
+    if row is None:
+        raise HTTPException(status_code=500, detail={
+            "code": "register_failed", "message": "The file was copied but could not be registered"})
+    # Where it came from, in the one free-text field the asset has. The person can edit
+    # it; nothing reads it back.
+    if not row.description:
+        row.description = f"Copied from GAM: {asset['page_url']}"
+        row.title = row.title or asset["name"]
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+    note = session.get(Note, note_id)
+    in_note_urls = set(extract_media_urls(note.content or "")) if note else set()
+    return DataResponse(data=_read(row, in_note_urls))
 
 
 @router.patch("/{note_id}/assets/{asset_id}", response_model=DataResponse[NoteAssetRead])

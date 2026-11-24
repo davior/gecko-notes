@@ -99,6 +99,15 @@ WRITE_TOOLS: Dict[str, tuple] = {
     "delete_recipe": ("Delete a recipe.", {"recipeId": _ID}, ["recipeId"]),
 }
 
+# Offered only when Notes is connected to GAM (`gam_client.enabled()`), like web_search:
+# a model is never told about a library it cannot reach.
+GAM_WRITE_TOOLS: Dict[str, tuple] = {
+    "insert_gam_asset": ("Insert one of the person's GAM assets (an image, video, recording or document found with "
+                         "search_gam) into a note as a live block.",
+                         {"noteId": _ID, "assetId": {"type": "string", "description": "An asset id from search_gam"},
+                          **_PLACEMENT}, ["noteId", "assetId"]),
+}
+
 READ_TOOLS: Dict[str, tuple] = {
     "find_notes": ("Search the person's notes by text and/or folder. Use only when the notes you need are not "
                    "already in context. Returns their ids and full text.",
@@ -111,6 +120,19 @@ READ_TOOLS: Dict[str, tuple] = {
                    {"query": _S, "maxResults": {"type": "integer", "minimum": 1, "maximum": 10}}, ["query"]),
 }
 
+GAM_READ_TOOLS: Dict[str, tuple] = {
+    "search_gam": ("Search the person's asset library (GAM: their images, videos, recordings and documents) by "
+                   "meaning and keywords. Returns asset ids, names and types.",
+                   {"query": _S, "type": {"type": "string", "enum": ["image", "video", "audio", "document"]}},
+                   ["query"]),
+    "read_gam_asset": ("Read one GAM asset by id: its details, and the text of a document or what is said in a "
+                       "video or recording.", {"assetId": _S}, ["assetId"]),
+}
+
+# How much of a document or transcript one read_gam_asset hands the model. A long PDF
+# would otherwise crowd the notes themselves out of the context.
+GAM_TEXT_LIMIT = 12_000
+
 
 def _schema(properties: Dict[str, Any], required: List[str], *, write: bool) -> Dict[str, Any]:
     props = dict(properties)
@@ -119,11 +141,13 @@ def _schema(properties: Dict[str, Any], required: List[str], *, write: bool) -> 
     return {"type": "object", "properties": props, "required": required}
 
 
-def tool_specs(*, web_search: bool) -> List[Dict[str, Any]]:
-    """Every tool as {name, description, parameters}. `web_search` only when it can run:
-    a model is never told about a tool it cannot use."""
-    specs = [{"name": n, "description": d, "parameters": _schema(p, r, write=True)} for n, (d, p, r) in WRITE_TOOLS.items()]
-    for name, (description, props, required) in READ_TOOLS.items():
+def tool_specs(*, web_search: bool, gam: bool = False) -> List[Dict[str, Any]]:
+    """Every tool as {name, description, parameters}. `web_search` and the GAM tools only
+    when they can run: a model is never told about a tool it cannot use."""
+    writes = {**WRITE_TOOLS, **(GAM_WRITE_TOOLS if gam else {})}
+    reads = {**READ_TOOLS, **(GAM_READ_TOOLS if gam else {})}
+    specs = [{"name": n, "description": d, "parameters": _schema(p, r, write=True)} for n, (d, p, r) in writes.items()]
+    for name, (description, props, required) in reads.items():
         if name == "web_search" and not web_search:
             continue
         specs.append({"name": name, "description": description, "parameters": _schema(props, required, write=False)})
@@ -185,6 +209,9 @@ def describe_action(action: Dict[str, Any], label_map: Dict[str, str]) -> str:
         return f"Create folder {_quoted(action.get('name'))}"
     if kind == "generate_image":
         return f"Generate image {_quoted(action.get('alt'))} in {note()}"
+    if kind == "insert_gam_asset":
+        asset = str(action.get("assetId") or "")
+        return f"Insert {_quoted(label_map.get(asset) or 'a GAM asset')} from GAM into {note()}"
     if kind in ("create_recipe", "update_recipe", "delete_recipe"):
         name = action.get("name")
         return f"{kind.split('_')[0].capitalize()} recipe" + (f" {_quoted(name)}" if name else "")
@@ -193,10 +220,13 @@ def describe_action(action: Dict[str, Any], label_map: Dict[str, str]) -> str:
 
 
 def handlers(session: Session, user_id: str, proposal: Proposal, retrieval: RetrievalContext,
-             *, web_search: bool, on_step: Step = lambda kind, text: None) -> Dict[str, Callable[[dict], Any]]:
+             *, web_search: bool, gam: bool = False,
+             on_step: Step = lambda kind, text: None) -> Dict[str, Callable[[dict], Any]]:
     """The handler for every tool this turn offers. `on_step(kind, text)` is told what
     each one does as it does it: kind is search, read, edit or issue."""
     table: Dict[str, Callable[[dict], Any]] = {name: _recorder(name, proposal, on_step) for name in WRITE_TOOLS}
+    if gam:
+        table.update(_gam_handlers(user_id, proposal, on_step))
 
     def find_notes(args: dict):
         action = validate_action({"type": "find_notes", **args})
@@ -240,7 +270,7 @@ def handlers(session: Session, user_id: str, proposal: Proposal, retrieval: Retr
 
 
 def _recorder(name: str, proposal: Proposal, on_step: Step = lambda kind, text: None) -> Callable[[dict], Any]:
-    required = WRITE_TOOLS[name][2]
+    required = {**WRITE_TOOLS, **GAM_WRITE_TOOLS}[name][2]
 
     def record(args: dict):
         if len(proposal.actions) >= MAX_PLAN_ACTIONS:
@@ -260,6 +290,89 @@ def _recorder(name: str, proposal: Proposal, on_step: Step = lambda kind, text: 
                 "approves; carry on, then finish with a short reply saying what you propose.")
 
     return record
+
+
+def _gam_handlers(user_id: str, proposal: Proposal, on_step: Step) -> Dict[str, Callable[[dict], Any]]:
+    """GAM's two looking tools, and the recorder for inserting what they found.
+
+    They run on the worker, which has no request token, so each call mints a
+    five-minute one for this turn's owner (`gam_client.token_for`); GAM then applies its
+    own ownership checks exactly as for the person's browser. A failure is a tool result
+    the model can read and work around, never a failed turn: GAM being down must not
+    stop the assistant answering about the notes.
+    """
+    from app import gam_client
+    from app.gam_client import GamClient, GamError
+
+    def client() -> GamClient:
+        return GamClient(gam_client.token_for(user_id))
+
+    def search_gam(args: dict):
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return "search_gam needs a query.", True
+        kind = args.get("type") if args.get("type") in gam_client.ASSET_TYPES else None
+        on_step("search", f"Searching your asset library for {_quoted(query)}")
+        try:
+            with client() as gam:
+                result = gam.search(query, asset_type=kind, limit=12)
+        except GamError as exc:
+            on_step("issue", f"The asset library did not answer: {exc.message}")
+            return f"The asset library could not be searched: {exc.message}", True
+        if not result["data"]:
+            return f"No assets in the library match {query!r}."
+        lines = []
+        for i, hit in enumerate(result["data"], 1):
+            asset = hit["asset"]
+            proposal.label_map[asset["id"]] = asset["name"]
+            extra = []
+            if asset.get("duration_seconds"):
+                extra.append(f"{round(asset['duration_seconds'])} s")
+            if hit.get("page_label"):
+                extra.append(f"match on {hit['page_label']}")
+            line = f"{i}. {asset['name']} — {asset['asset_type']}{' (' + ', '.join(extra) + ')' if extra else ''} — id {asset['id']}"
+            if hit.get("snippet"):
+                line += f"\n   “{' '.join(hit['snippet'].split())[:200]}”"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def read_gam_asset(args: dict):
+        asset_id = str(args.get("assetId") or "").strip()
+        try:
+            with client() as gam:
+                asset = gam.get_asset(asset_id) if asset_id else None
+                if asset is None:
+                    on_step("issue", f"Could not read asset {_quoted(asset_id)}")
+                    return f"There is no asset {asset_id!r} in the person's library.", True
+                proposal.label_map[asset["id"]] = asset["name"]
+                on_step("read", f"Reading {_quoted(asset['name'])} from your asset library")
+                if asset["asset_type"] == "document":
+                    parts = [f"[{p.get('label') or 'Part ' + str(p.get('idx', 0) + 1)}]\n{p.get('text') or ''}"
+                             for p in gam.document_text(asset["id"])]
+                elif asset["asset_type"] in ("video", "audio"):
+                    parts = [f"[{round(seg.get('start_time') or 0)} s] {seg.get('text') or ''}"
+                             for seg in gam.transcript(asset["id"])]
+                else:
+                    parts = []
+        except GamError as exc:
+            on_step("issue", f"The asset library did not answer: {exc.message}")
+            return f"The asset library could not be read: {exc.message}", True
+        head = [f"{asset['name']} ({asset['asset_type']}), id {asset['id']}"]
+        for key, label in (("description", "Description"), ("credit", "Credit")):
+            if asset.get(key):
+                head.append(f"{label}: {asset[key]}")
+        text = "\n".join(parts)
+        if len(text) > GAM_TEXT_LIMIT:
+            text = text[:GAM_TEXT_LIMIT] + "\n[… the rest is cut off]"
+        if not text and asset["asset_type"] != "image":
+            text = "(GAM has no text for this asset.)"
+        return "\n".join(head) + ("\n\n" + text if text else "")
+
+    return {
+        "search_gam": search_gam,
+        "read_gam_asset": read_gam_asset,
+        "insert_gam_asset": _recorder("insert_gam_asset", proposal, on_step),
+    }
 
 
 def _web_search(session: Session, user_id: str, args: dict):
@@ -282,6 +395,7 @@ How a turn works:
 - Answer by default. A question, an explanation, research or a summary in the chat is answered in your reply, with no tools. Never create, edit, rename, move, tag, annotate or otherwise change a note unless the person explicitly asks you to change their notes. When a request is ambiguous, answer instead.
 - Changes are proposals. Each change tool records one change; nothing is applied until the person approves. Make every change the request needs, then finish with a short reply saying what you propose. Do not describe changes you did not record.
 - Look things up with find_notes, read_note and (when offered) web_search, but only when the notes you need are not already in context.
+- When offered, search_gam and read_gam_asset look in the person's asset library (their images, videos, recordings and documents); insert_gam_asset puts one into a note, as a change to approve. Use ids search_gam returned, never invented ones.
 
 Rules for changes:
 - Note bodies are Markdown, and so are the notes given to you. Preserve existing formatting when editing.

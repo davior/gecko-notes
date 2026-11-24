@@ -193,6 +193,9 @@ def default_action_label(action: Mapping[str, Any], label_map: Mapping[str, str]
             f"{placement_suffix(action, 'insertAfterSection')}"
         )
 
+    if kind == "insert_gam_asset":
+        return f"Insert an asset from GAM into “{name(action.get('noteId'))}”"
+
     if kind == "add_annotation":
         anchor = truncate(action.get("anchorText") or "", 40)
         return f"Annotate “{anchor}” in “{name(action.get('noteId'))}”"
