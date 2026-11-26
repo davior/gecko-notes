@@ -431,16 +431,20 @@ def test_add_to_gam_is_recorded_not_applied(engine, fake, media_dir):
     assert validate_action({"type": "add_to_gam", "noteId": "note-1", "urls": []}) is None
 
 
-def test_applying_add_to_gam_uploads_as_the_owner_and_leaves_the_note_alone(engine, fake, media_dir):
+def test_applying_add_to_gam_uploads_as_the_owner_and_swaps_the_block(engine, fake, media_dir):
     _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
     with Session(engine) as s:
-        before = s.get(Note, "note-1").content
         action = validate_action({"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]})
         [result] = _executor(s).run({"actions": [action]})
         assert result.ok, result.message
         assert "Interview.mp4" in result.message and f"{PUBLIC}/a/new1" in result.message
+        assert result.notes_changed and result.touched_current_note
         s.expire_all()
-        assert s.get(Note, "note-1").content == before
+        video, existing = json.loads(s.get(Note, "note-1").content)
+    # Same block (id, place), now live; the one already from GAM is untouched.
+    assert video["id"] == "v1.mp4" and video["type"] == "gamAsset"
+    assert video["props"] == {"assetId": "new1", "name": "Interview.mp4", "assetType": "video"}
+    assert existing["props"]["assetId"] == "a1"
     [(name, ctype, data)] = fake.uploads
     assert name == "Interview.mp4" and ctype == "video/mp4" and data == b"bytes of v1.mp4"
     post = [c for c in fake.calls if c.method == "POST"][0]
@@ -490,3 +494,42 @@ def test_a_file_over_the_cap_is_not_sent(engine, fake, media_dir, monkeypatch):
         [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
     assert not result.ok and "too large" in result.message
     assert fake.uploads == []
+
+
+def test_only_the_files_gam_accepted_are_swapped(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"), ("videoFile", "v2.mp4", "Outtake"))
+    (media_dir / USER / "v2.mp4").unlink()
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [
+            {"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4", f"/media/{USER}/v2.mp4"]}]})
+        assert result.ok
+        s.expire_all()
+        types = [b["type"] for b in json.loads(s.get(Note, "note-1").content)]
+    assert types == ["gamAsset", "videoFile", "gamAsset"]  # the missing file keeps its block
+
+
+def test_a_rejected_upload_leaves_the_note_untouched(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    fake.upload_reply = (400, {"detail": {"code": "unsupported_type", "message": "That file type is not supported"}})
+    with Session(engine) as s:
+        before = s.get(Note, "note-1").content
+        [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
+        assert not result.ok and not result.notes_changed
+        s.expire_all()
+        assert s.get(Note, "note-1").content == before
+
+
+def test_a_nested_block_is_swapped_and_keeps_its_children(engine, fake, media_dir):
+    (media_dir / USER).mkdir(exist_ok=True)
+    (media_dir / USER / "v1.mp4").write_bytes(b"x")
+    inner = {"id": "inner", "type": "videoFile", "props": {"url": f"/media/{USER}/v1.mp4", "name": "Clip"}, "children": []}
+    with Session(engine) as s:
+        note = s.get(Note, "note-1")
+        note.content = json.dumps([{"id": "outer", "type": "paragraph", "props": {}, "children": [inner]}])
+        s.add(note)
+        s.commit()
+        [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
+        assert result.ok, result.message
+        s.expire_all()
+        [outer] = json.loads(s.get(Note, "note-1").content)
+    assert outer["children"][0]["type"] == "gamAsset" and outer["children"][0]["id"] == "inner"

@@ -107,8 +107,8 @@ GAM_WRITE_TOOLS: Dict[str, tuple] = {
                          {"noteId": _ID, "assetId": {"type": "string", "description": "An asset id from search_gam"},
                           **_PLACEMENT}, ["noteId", "assetId"]),
     "add_to_gam": ("Copy files embedded in a note (videos, images, recordings, documents) into the person's GAM "
-                   "library, where they are catalogued and transcribed like any upload. The note itself is not "
-                   "changed. Use addresses from list_note_media, only for the files asked for, and each file once.",
+                   "library, where they are catalogued and transcribed like any upload. Each copied file's block in "
+                   "the note is replaced by a live GAM block. Use addresses from list_note_media, only for the files asked for, and each file once.",
                    {"noteId": _ID,
                     "urls": {"type": "array", "items": _S,
                              "description": "The /media/... addresses from list_note_media, e.g. just the first video's"}},
@@ -436,7 +436,7 @@ How a turn works:
 - Changes are proposals. Each change tool records one change; nothing is applied until the person approves. Make every change the request needs, then finish with a short reply saying what you propose. Do not describe changes you did not record.
 - Look things up with find_notes, read_note and (when offered) web_search, but only when the notes you need are not already in context.
 - When offered, search_gam and read_gam_asset look in the person's asset library (their images, videos, recordings and documents); insert_gam_asset puts one into a note, as a change to approve. Use ids search_gam returned, never invented ones.
-- When offered, list_note_media lists the files embedded in a note in order, and add_to_gam copies chosen ones into the person's asset library (the note is unchanged). Call list_note_media first, then add_to_gam with only the addresses it returned for the files asked for ("the first video" is the first video in that list). Do not propose a file twice.
+- When offered, list_note_media lists the files embedded in a note in order, and add_to_gam copies chosen ones into the person's asset library and swaps their blocks in the note for live GAM ones. Call list_note_media first, then add_to_gam with only the addresses it returned for the files asked for ("the first video" is the first video in that list). Do not propose a file twice.
 
 Rules for changes:
 - Note bodies are Markdown, and so are the notes given to you. Preserve existing formatting when editing.

@@ -130,6 +130,8 @@ BODY_WRITING_TARGETS = {
     "edit_diagram": "noteId",
     "generate_image": "noteId",
     "insert_gam_asset": "noteId",
+    # Swaps each copied file's block for a live GAM one, so the body is rewritten.
+    "add_to_gam": "noteId",
 }
 
 
@@ -192,6 +194,30 @@ def touched_note_ids(plan: Dict[str, Any], exec_ctx: Dict[str, Any]) -> List[str
 
 
 # ─── block helpers ───────────────────────────────────────────────────────────
+
+
+def _swap_for_gam_blocks(blocks: List[Any], copied: Dict[str, Dict[str, Any]]) -> int:
+    """Replace, in place and at any depth, each block whose file was copied to GAM with a
+    `gamAsset` block. Keeps the block's id, so anything that points at it still does, and
+    its children. Returns how many were swapped."""
+    count = 0
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        children = block.get("children")
+        if isinstance(children, list):
+            count += _swap_for_gam_blocks(children, copied)
+        url = (block.get("props") or {}).get("url")
+        asset = copied.get(url) if isinstance(url, str) else None
+        if asset:
+            blocks[i] = {
+                "id": block.get("id") or str(uuid.uuid4()),
+                "type": "gamAsset",
+                "props": {"assetId": asset["id"], "name": asset["name"], "assetType": asset["asset_type"]},
+                "children": children if isinstance(children, list) else [],
+            }
+            count += 1
+    return count
 
 
 def parse_blocks(content: Optional[str]) -> List[Any]:
@@ -1052,11 +1078,15 @@ class PlanExecutor:
         )
 
     def _do_add_to_gam(self, action: Dict[str, Any]) -> ActionResult:
-        """Send files embedded in a note to the person's GAM library.
+        """Send files embedded in a note to the person's GAM library, then show the
+        GAM copy in the note instead.
 
-        The reverse of `insert_gam_asset`, and it never edits the note: the original
-        block stays, so this is safe to approve twice (it does make a second asset,
-        since GAM does not dedupe uploads). The model typed the addresses, so each one
+        The reverse of `insert_gam_asset`. Once GAM has a file, its block is swapped for
+        a live `gamAsset` block (same place, id and position), so the note shows the
+        library's copy and the two cannot drift. Only a file GAM accepted is swapped: a
+        failed upload leaves its block as it was. The local file is kept on disk (the
+        asset registry is additive), so undoing the edit from the note's history still
+        works. The model typed the addresses, so each one
         must be a file `note_media_files` finds in this note's body for this owner; that
         is what stops a made-up or someone else's `/media/` path from being read off
         disk. One file failing is reported and the rest still go, like a plan's actions.
@@ -1081,6 +1111,7 @@ class PlanExecutor:
         media_dir = get_user_media_dir(self.ctx.user_id)
         sent: List[str] = []
         problems: List[str] = []
+        copied: Dict[str, Dict[str, Any]] = {}  # address -> the GAM asset it became
         try:
             with GamClient(gam_client.token_for(self.ctx.user_id)) as gam:
                 for url in action.get("urls") or []:
@@ -1108,15 +1139,28 @@ class PlanExecutor:
                             break  # the same answer would come for every file
                         continue
                     sent.append(f"“{asset['name']}” ({gam_client.page_url(asset['id'])})")
+                    copied[url] = asset
         except GamError as exc:
             return ActionResult(ok=False, message=f"Nothing was copied to GAM: {exc.message}"[:500])
 
+        swapped = 0
+        if copied:
+            # Re-read the body now: the uploads took a while and the person may have typed.
+            self.session.refresh(note)
+            self._snapshot_once(note)
+            blocks = parse_blocks(note.content)
+            swapped = _swap_for_gam_blocks(blocks, copied)
+            if swapped:
+                self._write_content(note, blocks)
+
         parts = []
         if sent:
-            parts.append(f"Copied {', '.join(sent)} to GAM.")
+            parts.append(f"Copied {', '.join(sent)} to GAM"
+                         + (f" and swapped {swapped} block{'' if swapped == 1 else 's'} in the note for live GAM ones." if swapped else "."))
         if problems:
             parts.append("Not copied: " + "; ".join(problems) + ".")
         return ActionResult(ok=bool(sent), message=" ".join(parts)[:900] or "Nothing to copy — skipped.",
+                            notes_changed=bool(swapped), touched_current_note=bool(swapped) and self._touches_current(note.id),
                             note_id=note.id, note_title=note.title)
 
     # ── annotations ──────────────────────────────────────────────────────────
