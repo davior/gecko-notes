@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 
 # How often one turn may search, per tool. The text plan allowed a few retrieval rounds;
 # a model that keeps searching past this is told to carry on without it.
-CAPS = {"find_notes": 6, "read_note": 12, "web_search": 5, "search_gam": 6, "read_gam_asset": 8}
+CAPS = {"find_notes": 6, "read_note": 12, "web_search": 5, "search_gam": 6, "read_gam_asset": 8,
+        "list_note_media": 12}
 
 
 def wanted(turn_ctx: Dict[str, Any]) -> bool:

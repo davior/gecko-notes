@@ -133,6 +133,34 @@ def guess_mime(filename: str) -> Optional[str]:
     return mimetypes.guess_type(filename)[0]
 
 
+def note_media_files(content: str, user_id: str) -> List[dict]:
+    """The files in a note's body that are this user's own, in reading order.
+
+    This is what "the first video in this note" means, so the assistant's list tool and
+    the executor's check share it: the model names a file by address, and only an
+    address that comes back from here is ever opened. A `gamAsset` block holds no
+    `/media/` address, so those are already in GAM and never appear. Another owner's
+    path in a crafted block is dropped: the file would be readable here, but is not
+    this person's to send anywhere.
+    """
+    files = []
+    for ref in extract_media_refs(content or ""):
+        parsed = parse_media_url(ref.url)
+        if not parsed or parsed[0] != user_id:
+            continue
+        owner, filename = parsed
+        files.append({
+            "index": len(files) + 1,
+            "url": ref.url,
+            "name": ref.name or ref.caption or filename,
+            "kind": kind_for(filename),
+            "block_type": ref.block_type,
+            "filename": filename,
+            "size_bytes": _disk_size(owner, filename),
+        })
+    return files
+
+
 def build_asset(
     *,
     user_id: str,

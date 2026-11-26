@@ -19,7 +19,8 @@ Configuration is read per call, like `suite.py`, so tests can set it with monkey
 - `GAM_PUBLIC_URL` — what the browser opens (the `/a/<id>` page, and the base for GAM's
   relative media URLs). Defaults to `GAM_BASE_URL`; set it when that is an internal
   compose address.
-- `GAM_TIMEOUT_SECONDS`, `GAM_COPY_MAX_BYTES`.
+- `GAM_TIMEOUT_SECONDS`, `GAM_COPY_MAX_BYTES` (GAM → note), `GAM_UPLOAD_MAX_BYTES`
+  (note → GAM, default 2 GiB).
 
 Tests set `TRANSPORT`; production leaves it None, which is httpx's real transport.
 """
@@ -40,6 +41,7 @@ TRANSPORT: Optional[httpx.BaseTransport] = None
 
 ASSET_TYPES = ("image", "video", "audio", "document")
 DEFAULT_COPY_MAX_BYTES = 500 * 1024 * 1024
+DEFAULT_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
 # Long enough for one assistant turn's GAM calls, short enough that a token which
 # somehow leaked from a log would be worthless by the time anyone read it.
 WORKER_TOKEN_MINUTES = 5
@@ -69,6 +71,15 @@ def copy_max_bytes() -> int:
         return int(os.getenv("GAM_COPY_MAX_BYTES") or DEFAULT_COPY_MAX_BYTES)
     except ValueError:
         return DEFAULT_COPY_MAX_BYTES
+
+
+def upload_max_bytes() -> int:
+    """The most one file sent to GAM may weigh. Defaults far above the copy-into-a-note
+    cap, since a library is where large videos belong; GAM's own limit is its proxy's."""
+    try:
+        return int(os.getenv("GAM_UPLOAD_MAX_BYTES") or DEFAULT_UPLOAD_MAX_BYTES)
+    except ValueError:
+        return DEFAULT_UPLOAD_MAX_BYTES
 
 
 class GamError(Exception):
@@ -196,6 +207,9 @@ class GamClient:
                 "The asset library did not accept your session. Notes and GAM probably "
                 "have different JWT_SECRET_KEY values.",
             )
+        if response.status_code == 507:
+            # GAM's disk is full: the one server error the person can act on.
+            raise GamError("gam_disk_full", "The asset library is out of disk space", status_code=507)
         if response.status_code >= 500:
             raise GamError("gam_unavailable", f"The asset library failed ({response.status_code})")
         return response
@@ -268,6 +282,32 @@ class GamClient:
         if response.status_code != 200:
             return []
         return (response.json().get("data") or {}).get("segments") or []
+
+    def upload(self, source: IO[bytes], filename: str, content_type: Optional[str], *,
+               size: int, max_bytes: int) -> Dict[str, Any]:
+        """File one of the person's files into their GAM library, as an ordinary upload.
+
+        This is `POST /api/assets`, the same door GAM's own upload button uses, so the
+        file gets GAM's whole pipeline (thumbnail, probe, transcription when the suite
+        has a key, embeddings) with nothing here to keep in step with it. Streamed from
+        disk: a video can be gigabytes. `source` is left unset on purpose: GAM only lets
+        a client claim `local_upload` or `gvc_export`, and the default is the former.
+
+        `size` is checked before a byte is sent, so a file GAM would take is not
+        refused after minutes of uploading. Returns GAM's asset as `to_asset` shapes it.
+        """
+        if size > max_bytes:
+            raise GamError("gam_media_too_large",
+                           f"{filename} is larger than {max_bytes // (1024 * 1024)} MB, "
+                           "too large to send to the asset library", status_code=413)
+        response = self._request("POST", "/api/assets", files={"files": (filename, source, content_type or "application/octet-stream")},
+                                 timeout=600)
+        if response.status_code not in (200, 201):
+            raise self._fail(response)
+        created = (response.json().get("created") or [])
+        if not created:
+            raise GamError("gam_upload_rejected", f"The asset library did not accept {filename}", status_code=400)
+        return to_asset(created[0])
 
     def download(self, file_url: str, sink: IO[bytes], *, max_bytes: int) -> int:
         """Stream one of GAM's signed media URLs into `sink`. Returns the bytes written."""
