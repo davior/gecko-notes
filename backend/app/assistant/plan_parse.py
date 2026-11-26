@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # Defensive ceiling so a runaway model can't queue thousands of mutations.
 # Mirrors MAX_PLAN_ACTIONS in aiPlan.ts.
 MAX_PLAN_ACTIONS = 50
+# Files one add_to_gam may name. Each is a full upload, and the person approves the lot.
+MAX_GAM_FILES = 20
 
 # Hits a single web_search action may ask for. Mirrors MAX_WEB_SEARCH_RESULTS.
 MAX_WEB_SEARCH_RESULTS = 10
@@ -373,6 +375,23 @@ def validate_action(raw: Any) -> Optional[Dict[str, Any]]:
         if section:
             action["section"] = section
         return {**action, **_placement(raw), **trailer}
+
+    if kind == "add_to_gam":
+        # Addresses only, deduplicated in order. Whether each is really a file of this
+        # note, and this person's, is decided when the change is applied: the model
+        # typed these strings.
+        note_id = _as_string(raw.get("noteId"))
+        raw_urls = raw.get("urls")
+        if not note_id or not isinstance(raw_urls, list):
+            return None
+        urls: List[str] = []
+        for item in raw_urls:
+            url = _as_string(item)
+            if url and url.strip() and url.strip() not in urls:
+                urls.append(url.strip())
+        if not urls:
+            return None
+        return {"type": "add_to_gam", "noteId": note_id, "urls": urls[:MAX_GAM_FILES], **trailer}
 
     if kind == "generate_image":
         note_id = _as_string(raw.get("noteId"))

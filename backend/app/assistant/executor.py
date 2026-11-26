@@ -1051,6 +1051,74 @@ class PlanExecutor:
             note_id=note.id, note_title=note.title,
         )
 
+    def _do_add_to_gam(self, action: Dict[str, Any]) -> ActionResult:
+        """Send files embedded in a note to the person's GAM library.
+
+        The reverse of `insert_gam_asset`, and it never edits the note: the original
+        block stays, so this is safe to approve twice (it does make a second asset,
+        since GAM does not dedupe uploads). The model typed the addresses, so each one
+        must be a file `note_media_files` finds in this note's body for this owner; that
+        is what stops a made-up or someone else's `/media/` path from being read off
+        disk. One file failing is reported and the rest still go, like a plan's actions.
+        """
+        import os
+
+        from app import gam_client
+        from app.asset_utils import guess_mime, note_media_files
+        from app.gam_client import GamClient, GamError
+        from app.routers.media import get_user_media_dir, sanitize_original_name
+
+        note_id, error = self._resolve_note(action.get("noteId") or "")
+        if error:
+            return ActionResult(ok=False, message=error)
+        note = self._note(note_id)
+        if not note:
+            return ActionResult(ok=False, message="That note no longer exists — skipped.")
+        if not gam_client.enabled():
+            return ActionResult(ok=False, message="Notes is not connected to GAM — skipped.")
+
+        in_note = {f["url"]: f for f in note_media_files(note.content, self.ctx.user_id)}
+        media_dir = get_user_media_dir(self.ctx.user_id)
+        sent: List[str] = []
+        problems: List[str] = []
+        try:
+            with GamClient(gam_client.token_for(self.ctx.user_id)) as gam:
+                for url in action.get("urls") or []:
+                    found = in_note.get(url)
+                    if found is None:
+                        problems.append(f"{url} is not a file in this note")
+                        continue
+                    path = os.path.join(media_dir, found["filename"])
+                    if not os.path.isfile(path):
+                        problems.append(f"“{found['name']}” is missing from disk")
+                        continue
+                    self.check_cancelled()
+                    extension = os.path.splitext(found["filename"])[1]
+                    label = sanitize_original_name(found["name"]) or found["filename"]
+                    # GAM decides what a file is from its extension, and a block's display
+                    # name often has none.
+                    upload_name = label if label.lower().endswith(extension.lower()) else label + extension
+                    try:
+                        with open(path, "rb") as handle:
+                            asset = gam.upload(handle, upload_name, guess_mime(found["filename"]),
+                                               size=os.path.getsize(path), max_bytes=gam_client.upload_max_bytes())
+                    except GamError as exc:
+                        problems.append(f"“{found['name']}”: {exc.message}")
+                        if exc.code in ("gam_unavailable", "gam_rejected_session", "gam_disk_full"):
+                            break  # the same answer would come for every file
+                        continue
+                    sent.append(f"“{asset['name']}” ({gam_client.page_url(asset['id'])})")
+        except GamError as exc:
+            return ActionResult(ok=False, message=f"Nothing was copied to GAM: {exc.message}"[:500])
+
+        parts = []
+        if sent:
+            parts.append(f"Copied {', '.join(sent)} to GAM.")
+        if problems:
+            parts.append("Not copied: " + "; ".join(problems) + ".")
+        return ActionResult(ok=bool(sent), message=" ".join(parts)[:900] or "Nothing to copy — skipped.",
+                            note_id=note.id, note_title=note.title)
+
     # ── annotations ──────────────────────────────────────────────────────────
 
     def _do_add_annotation(self, action: Dict[str, Any]) -> ActionResult:

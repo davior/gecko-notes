@@ -174,3 +174,13 @@ describe('parsePlan — block placement', () => {
     expect(defaultActionLabel(action, new Map([['n1', 'Note']]))).toBe(`Generate image${suffix} in “Note”: p`)
   })
 })
+
+describe('add_to_gam', () => {
+  it('labels how many files go to GAM, singular and plural', () => {
+    const labels = new Map([['n1', 'Trip']])
+    const one = { type: 'add_to_gam', noteId: 'n1', urls: ['/media/u/a.mp4'] } as PlanAction
+    const two = { type: 'add_to_gam', noteId: 'n1', urls: ['/media/u/a.mp4', '/media/u/b.mp4'] } as PlanAction
+    expect(defaultActionLabel(one, labels)).toBe('Copy 1 file from “Trip” to GAM')
+    expect(defaultActionLabel(two, labels)).toBe('Copy 2 files from “Trip” to GAM')
+  })
+})

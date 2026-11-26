@@ -106,6 +106,13 @@ GAM_WRITE_TOOLS: Dict[str, tuple] = {
                          "search_gam) into a note as a live block.",
                          {"noteId": _ID, "assetId": {"type": "string", "description": "An asset id from search_gam"},
                           **_PLACEMENT}, ["noteId", "assetId"]),
+    "add_to_gam": ("Copy files embedded in a note (videos, images, recordings, documents) into the person's GAM "
+                   "library, where they are catalogued and transcribed like any upload. The note itself is not "
+                   "changed. Use addresses from list_note_media, only for the files asked for, and each file once.",
+                   {"noteId": _ID,
+                    "urls": {"type": "array", "items": _S,
+                             "description": "The /media/... addresses from list_note_media, e.g. just the first video's"}},
+                   ["noteId", "urls"]),
 }
 
 READ_TOOLS: Dict[str, tuple] = {
@@ -127,6 +134,10 @@ GAM_READ_TOOLS: Dict[str, tuple] = {
                    ["query"]),
     "read_gam_asset": ("Read one GAM asset by id: its details, and the text of a document or what is said in a "
                        "video or recording.", {"assetId": _S}, ["assetId"]),
+    "list_note_media": ("List the files embedded in a note (videos, images, recordings, documents) in the order "
+                        "they appear, with the addresses add_to_gam needs. Files already from GAM are not listed.",
+                        {"noteId": {"type": "string", "description": "A note id from context, or \"current\""}},
+                        ["noteId"]),
 }
 
 # How much of a document or transcript one read_gam_asset hands the model. A long PDF
@@ -212,6 +223,9 @@ def describe_action(action: Dict[str, Any], label_map: Dict[str, str]) -> str:
     if kind == "insert_gam_asset":
         asset = str(action.get("assetId") or "")
         return f"Insert {_quoted(label_map.get(asset) or 'a GAM asset')} from GAM into {note()}"
+    if kind == "add_to_gam":
+        count = len(action.get("urls") or [])
+        return f"Copy {count} file{'' if count == 1 else 's'} from {note()} to GAM"
     if kind in ("create_recipe", "update_recipe", "delete_recipe"):
         name = action.get("name")
         return f"{kind.split('_')[0].capitalize()} recipe" + (f" {_quoted(name)}" if name else "")
@@ -226,7 +240,7 @@ def handlers(session: Session, user_id: str, proposal: Proposal, retrieval: Retr
     each one does as it does it: kind is search, read, edit or issue."""
     table: Dict[str, Callable[[dict], Any]] = {name: _recorder(name, proposal, on_step) for name in WRITE_TOOLS}
     if gam:
-        table.update(_gam_handlers(user_id, proposal, on_step))
+        table.update(_gam_handlers(session, user_id, proposal, on_step))
 
     def find_notes(args: dict):
         action = validate_action({"type": "find_notes", **args})
@@ -292,8 +306,9 @@ def _recorder(name: str, proposal: Proposal, on_step: Step = lambda kind, text: 
     return record
 
 
-def _gam_handlers(user_id: str, proposal: Proposal, on_step: Step) -> Dict[str, Callable[[dict], Any]]:
-    """GAM's two looking tools, and the recorder for inserting what they found.
+def _gam_handlers(session: Session, user_id: str, proposal: Proposal, on_step: Step) -> Dict[str, Callable[[dict], Any]]:
+    """GAM's looking tools, and the recorders for inserting what they found or filing a
+    note's own files into the library.
 
     They run on the worker, which has no request token, so each call mints a
     five-minute one for this turn's owner (`gam_client.token_for`); GAM then applies its
@@ -368,10 +383,35 @@ def _gam_handlers(user_id: str, proposal: Proposal, on_step: Step) -> Dict[str, 
             text = "(GAM has no text for this asset.)"
         return "\n".join(head) + ("\n\n" + text if text else "")
 
+    def list_note_media(args: dict):
+        from app.asset_utils import note_media_files
+
+        note_id = str(args.get("noteId") or "")
+        if note_id == "current":
+            note_id = proposal.exec_ctx.get("current_note_id") or ""
+        notes = _load_notes(session, user_id, [note_id]) if note_id else []
+        if not notes:
+            on_step("issue", f"Could not read note {_quoted(args.get('noteId'))}")
+            return f"There is no note {note_id!r} you can read.", True
+        note = notes[0]
+        proposal.note_found(note.id, note.title or "Untitled")
+        on_step("read", f"Listing the files in {_quoted(note.title or 'Untitled')}")
+        files = note_media_files(note.content, user_id)
+        if not files:
+            return "This note has no embedded files of its own to copy (files already from GAM are not listed)."
+        lines = []
+        for f in files:
+            size = f["size_bytes"]
+            size_text = f"{size / (1024 * 1024):.1f} MB" if size else "file missing on disk"
+            lines.append(f"{f['index']}. {f['kind']} “{f['name']}” — {size_text} — {f['url']}")
+        return "\n".join(lines)
+
     return {
         "search_gam": search_gam,
         "read_gam_asset": read_gam_asset,
+        "list_note_media": list_note_media,
         "insert_gam_asset": _recorder("insert_gam_asset", proposal, on_step),
+        "add_to_gam": _recorder("add_to_gam", proposal, on_step),
     }
 
 
@@ -396,6 +436,7 @@ How a turn works:
 - Changes are proposals. Each change tool records one change; nothing is applied until the person approves. Make every change the request needs, then finish with a short reply saying what you propose. Do not describe changes you did not record.
 - Look things up with find_notes, read_note and (when offered) web_search, but only when the notes you need are not already in context.
 - When offered, search_gam and read_gam_asset look in the person's asset library (their images, videos, recordings and documents); insert_gam_asset puts one into a note, as a change to approve. Use ids search_gam returned, never invented ones.
+- When offered, list_note_media lists the files embedded in a note in order, and add_to_gam copies chosen ones into the person's asset library (the note is unchanged). Call list_note_media first, then add_to_gam with only the addresses it returned for the files asked for ("the first video" is the first video in that list). Do not propose a file twice.
 
 Rules for changes:
 - Note bodies are Markdown, and so are the notes given to you. Preserve existing formatting when editing.

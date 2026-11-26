@@ -72,6 +72,10 @@ export type PlanAction =
   // Inserts one of the person's GAM assets as a live `gamAsset` block. Proposed only by
   // the tool planner (search_gam finds the id); the text plan is never offered it.
   | ({ type: 'insert_gam_asset'; noteId: string; assetId: string; section?: string; description?: string } & Placement)
+  // The reverse: copies files embedded in a note into the person's GAM library. `urls` are
+  // the note's own /media/ addresses (list_note_media finds them); the note is not changed.
+  // Tool planner only, like insert_gam_asset.
+  | { type: 'add_to_gam'; noteId: string; urls: string[]; description?: string }
   // Recipes: saved, reusable prompts the user runs later from the composer's picker or by
   // voice ("run the summary recipe") instead of retyping them — see the "Recipes" rule below.
   | { type: 'create_recipe'; name: string; prompt: string; tags?: string[]; description?: string }
@@ -782,6 +786,7 @@ export function defaultActionLabel(action: PlanAction, labelMap: Map<string, str
     case 'edit_diagram': return `Update diagram in “${name(action.noteId)}”`
     case 'generate_image': return `Generate image${placementSuffix(action, action.section)} in “${name(action.noteId)}”: ${truncate(action.prompt, 60)}`
     case 'insert_gam_asset': return `Insert “${name(action.assetId)}” from GAM${placementSuffix(action, action.section)} in “${name(action.noteId)}”`
+    case 'add_to_gam': return `Copy ${action.urls.length} file${action.urls.length === 1 ? '' : 's'} from “${name(action.noteId)}” to GAM`
     case 'create_recipe': return `Create recipe “${action.name}”`
     case 'update_recipe': return `Update recipe “${name(action.recipeId)}”`
     case 'delete_recipe': return `Delete recipe “${name(action.recipeId)}”`

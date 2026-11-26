@@ -53,12 +53,16 @@ class FakeGam:
         self.assets = {"a1": gam_asset()}
         self.files = {"/media/a1.png": b"\x89PNG fakebytes"}
         self.down = False
+        self.uploads = []        # (filename, content_type, bytes) of each POST /api/assets
+        self.upload_reply = None  # (status, json) to answer an upload with instead
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         if self.down:
             raise httpx.ConnectError("refused")
         path = request.url.path
+        if request.method == "POST" and path == "/api/assets":
+            return self._upload(request)
         if path in self.files:
             return httpx.Response(200, content=self.files[path])
         if path == "/api/search":
@@ -84,6 +88,20 @@ class FakeGam:
                 return httpx.Response(200, json={"data": {"asset_id": asset["id"], "segments": [
                     {"id": "s1", "idx": 0, "text": "Hello there.", "start_time": 0.0, "end_time": 1.0}]}})
         return httpx.Response(404, json={"detail": {"code": "not_found", "message": "No route"}})
+
+
+    def _upload(self, request: httpx.Request) -> httpx.Response:
+        # A multipart body is enough to read the one file back out of: boundary, headers, bytes.
+        body = request.read()
+        head, _, rest = body.partition(b"\r\n\r\n")
+        name = head.split(b'filename="')[1].split(b'"')[0].decode()
+        ctype = head.split(b"Content-Type: ")[1].split(b"\r\n")[0].decode() if b"Content-Type: " in head else None
+        data = rest.rsplit(b"\r\n--", 1)[0]
+        self.uploads.append((name, ctype, data))
+        if self.upload_reply:
+            return httpx.Response(self.upload_reply[0], json=self.upload_reply[1])
+        asset = gam_asset(f"new{len(self.uploads)}", name=name, original_name=name, asset_type="video")
+        return httpx.Response(201, json={"created": [asset], "rejected": []})
 
 
 @pytest.fixture
@@ -353,3 +371,122 @@ def test_a_gam_block_reads_as_a_labelled_line_for_the_model():
     markdown = blocks_to_markdown([{"id": "b", "type": "gamAsset",
                                     "props": {"assetId": "a1", "name": "Harbour", "assetType": "image"}}])
     assert markdown.strip() == "[GAM image “Harbour” — asset id a1]"
+
+
+# ─── copying a note's files into GAM ─────────────────────────────────────────
+
+
+def _note_with_files(engine, media_dir, *files):
+    """Give note-1 a block per (block type, url, name) and put bytes on disk for each."""
+    blocks = []
+    for block_type, filename, name in files:
+        (media_dir / USER).mkdir(exist_ok=True)
+        (media_dir / USER / filename).write_bytes(b"bytes of " + filename.encode())
+        blocks.append({"id": filename, "type": block_type, "props": {"url": f"/media/{USER}/{filename}", "name": name}, "children": []})
+    blocks.append({"id": "g", "type": "gamAsset", "props": {"assetId": "a1", "name": "Harbour", "assetType": "image"}, "children": []})
+    with Session(engine) as s:
+        note = s.get(Note, "note-1")
+        note.content = json.dumps(blocks)
+        s.add(note)
+        s.commit()
+
+
+def test_add_to_gam_tools_are_offered_only_when_connected():
+    assert {"list_note_media", "add_to_gam"} <= set(_names(tool_specs(web_search=False, gam=True)))
+    assert not {"list_note_media", "add_to_gam"} & set(_names(tool_specs(web_search=False)))
+
+
+def test_list_note_media_numbers_files_in_order_and_skips_gam_blocks(engine, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"), ("image", "i1.png", "Chart"),
+                     ("videoFile", "v2.mp4", "Outtake"))
+    _, table = _tools(engine)
+    lines = table["list_note_media"]({"noteId": "note-1"}).splitlines()
+    assert len(lines) == 3  # the gamAsset block is already in GAM
+    assert lines[0].startswith("1. video “Interview”") and lines[0].endswith(f"/media/{USER}/v1.mp4")
+    assert lines[1].startswith("2. images “Chart”") and lines[2].startswith("3. video “Outtake”")
+
+
+def test_list_note_media_refuses_a_note_that_is_not_theirs(engine, media_dir):
+    _, table = _tools(engine)
+    text, is_error = table["list_note_media"]({"noteId": "theirs"})
+    assert is_error and "no note" in text
+
+
+def test_list_note_media_leaves_out_another_users_path(engine, media_dir):
+    with Session(engine) as s:
+        note = s.get(Note, "note-1")
+        note.content = json.dumps([{"id": "x", "type": "videoFile", "props": {"url": "/media/someone-else/v.mp4", "name": "Theirs"}}])
+        s.add(note)
+        s.commit()
+    _, table = _tools(engine)
+    assert "no embedded files" in table["list_note_media"]({"noteId": "note-1"})
+
+
+def test_add_to_gam_is_recorded_not_applied(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    proposal, table = _tools(engine)
+    table["add_to_gam"]({"noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4", f"/media/{USER}/v1.mp4"]})
+    assert proposal.actions == [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]
+    assert fake.uploads == []
+    assert validate_action({"type": "add_to_gam", "noteId": "note-1", "urls": []}) is None
+
+
+def test_applying_add_to_gam_uploads_as_the_owner_and_leaves_the_note_alone(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    with Session(engine) as s:
+        before = s.get(Note, "note-1").content
+        action = validate_action({"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]})
+        [result] = _executor(s).run({"actions": [action]})
+        assert result.ok, result.message
+        assert "Interview.mp4" in result.message and f"{PUBLIC}/a/new1" in result.message
+        s.expire_all()
+        assert s.get(Note, "note-1").content == before
+    [(name, ctype, data)] = fake.uploads
+    assert name == "Interview.mp4" and ctype == "video/mp4" and data == b"bytes of v1.mp4"
+    post = [c for c in fake.calls if c.method == "POST"][0]
+    assert jwt.get_unverified_claims(post.headers["Authorization"].removeprefix("Bearer "))["sub"] == USER
+
+
+def test_applying_add_to_gam_refuses_a_path_that_is_not_in_the_note(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    (media_dir / USER / "secret.mp4").write_bytes(b"not in the note")
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [
+            {"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/secret.mp4", "/media/someone-else/v.mp4"]}]})
+    assert not result.ok and "not a file in this note" in result.message
+    assert fake.uploads == []
+
+
+def test_applying_add_to_gam_reports_one_failure_and_sends_the_rest(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"), ("videoFile", "v2.mp4", "Gone"))
+    (media_dir / USER / "v2.mp4").unlink()
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [
+            {"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v2.mp4", f"/media/{USER}/v1.mp4"]}]})
+    assert result.ok and "Interview.mp4" in result.message and "“Gone” is missing from disk" in result.message
+    assert len(fake.uploads) == 1
+
+
+def test_applying_add_to_gam_says_why_gam_refused(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    fake.upload_reply = (400, {"detail": {"code": "unsupported_type", "message": "That file type is not supported"}})
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
+    assert not result.ok and "not supported" in result.message
+
+
+def test_applying_add_to_gam_with_gam_down_is_a_skipped_step(engine, fake, media_dir):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    fake.down = True
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
+    assert not result.ok and "Could not reach" in result.message
+
+
+def test_a_file_over_the_cap_is_not_sent(engine, fake, media_dir, monkeypatch):
+    _note_with_files(engine, media_dir, ("videoFile", "v1.mp4", "Interview"))
+    monkeypatch.setenv("GAM_UPLOAD_MAX_BYTES", "4")
+    with Session(engine) as s:
+        [result] = _executor(s).run({"actions": [{"type": "add_to_gam", "noteId": "note-1", "urls": [f"/media/{USER}/v1.mp4"]}]})
+    assert not result.ok and "too large" in result.message
+    assert fake.uploads == []
